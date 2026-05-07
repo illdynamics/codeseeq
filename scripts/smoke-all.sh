@@ -98,7 +98,7 @@ done
 
 echo "[smoke-all] step: grep wrong openresponses references in operational files"
 if rg -n "masaic|openresponses/openresponses|docker.io/masaicai/open-responses" \
-  README.md docs/architecture.md docs/security.md Dockerfile Makefile bin codeseeq config >/dev/null; then
+  README.md docs/ARCHITECTURE.md docs/SECURITY.md Dockerfile Makefile bin codeseeq config >/dev/null; then
   echo "[smoke-all] FAIL: found old/wrong OpenResponses references" >&2
   exit 1
 fi
@@ -110,14 +110,14 @@ if [[ -f docker-compose.yml ]]; then
 fi
 
 if rg -n "docker compose up|docker-compose up|compose-first|fallback compose|two-container fallback" \
-  README.md docs/architecture.md docs/security.md Makefile codeseeq >/dev/null; then
+  README.md docs/ARCHITECTURE.md docs/SECURITY.md Makefile codeseeq >/dev/null; then
   echo "[smoke-all] FAIL: found compose/two-container operational guidance" >&2
   exit 1
 fi
 
 echo "[smoke-all] step: grep .codex operational usage"
 if rg -n "/home/codeseeq/\.codex|CODESEEQ_CODEX_HOME=.*/\.codex" \
-  README.md docs/architecture.md docs/security.md Dockerfile Makefile bin codeseeq config >/dev/null; then
+  README.md docs/ARCHITECTURE.md docs/SECURITY.md Dockerfile Makefile bin codeseeq config >/dev/null; then
   echo "[smoke-all] FAIL: found .codex in supported operational paths" >&2
   exit 1
 fi

@@ -87,9 +87,9 @@ version="$(cat VERSION)"
 for f in \
   README.md \
   quickstart.md \
-  docs/architecture.md \
-  docs/security.md \
-  docs/troubleshooting.md \
+  docs/ARCHITECTURE.md \
+  docs/SECURITY.md \
+  docs/TROUBLESHOOTING.md \
   codeseeq-current-state.md \
   codeseeq-desired-state.md \
   codeseeq-blueprint.md \
