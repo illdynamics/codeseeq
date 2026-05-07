@@ -1,0 +1,591 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+log() {
+  printf '[codeseeq] %s\n' "$*" >&2
+}
+
+warn() {
+  printf '[codeseeq:warn] %s\n' "$*" >&2
+}
+
+die() {
+  printf '[codeseeq:error] %s\n' "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "required command missing: $1"
+}
+
+bool_normalize() {
+  local v="${1:-}"
+  local vl
+  vl="$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')"
+  case "$vl" in
+    1|true|yes|on) printf 'true' ;;
+    0|false|no|off) printf 'false' ;;
+    *) printf '%s' "$v" ;;
+  esac
+}
+
+key_state() {
+  local v="${1:-}"
+  if [[ -n "$v" ]]; then
+    printf 'present'
+  else
+    printf 'missing'
+  fi
+}
+
+: "${CODESEEQ_MODEL:=deepseek-v4-flash}"
+: "${CODESEEQ_THINKING:=}"
+: "${CODESEEQ_OPENRESPONSES_HOST:=127.0.0.1}"
+: "${CODESEEQ_OPENRESPONSES_PORT:=8080}"
+: "${CODESEEQ_OPENRESPONSES_URL:=http://${CODESEEQ_OPENRESPONSES_HOST}:${CODESEEQ_OPENRESPONSES_PORT}/v1}"
+: "${CODESEEQ_OPENRESPONSES_CMD:=/usr/local/bin/codeseeq-bridge.py}"
+: "${CODESEEQ_CODEX_HOME:=/home/codeseeq/.codeseeq}"
+: "${CODESEEQ_WORKDIR:=/workspace}"
+: "${CODESEEQ_APPROVAL_POLICY:=never}"
+: "${CODESEEQ_SANDBOX_MODE:=danger-full-access}"
+: "${CODESEEQ_STREAM:=true}"
+: "${CODESEEQ_STREAM_IDLE_TIMEOUT_MS:=600000}"
+: "${CODESEEQ_REQUEST_MAX_RETRIES:=2}"
+: "${CODESEEQ_CONTEXT_WINDOW:=1000000}"
+: "${CODESEEQ_MAX_OUTPUT_TOKENS:=384000}"
+: "${CODESEEQ_RUNTIME_DIR:=/run/codeseeq}"
+: "${CODESEEQ_LOG_DIR:=/var/log/codeseeq}"
+: "${CODESEEQ_OPENRESPONSES_START_TIMEOUT_SECONDS:=45}"
+: "${CODESEEQ_YOLO:=false}"
+
+export CODESEEQ_MODEL CODESEEQ_THINKING CODESEEQ_OPENRESPONSES_HOST CODESEEQ_OPENRESPONSES_PORT
+export CODESEEQ_OPENRESPONSES_URL CODESEEQ_OPENRESPONSES_CMD CODESEEQ_CODEX_HOME CODESEEQ_WORKDIR
+export CODESEEQ_APPROVAL_POLICY CODESEEQ_SANDBOX_MODE CODESEEQ_STREAM CODESEEQ_STREAM_IDLE_TIMEOUT_MS
+export CODESEEQ_REQUEST_MAX_RETRIES CODESEEQ_CONTEXT_WINDOW CODESEEQ_MAX_OUTPUT_TOKENS CODESEEQ_YOLO
+
+mkdir -p "$CODESEEQ_CODEX_HOME" "$CODESEEQ_WORKDIR" "$CODESEEQ_RUNTIME_DIR" "$CODESEEQ_LOG_DIR"
+CODESEEQ_PID_FILE="$CODESEEQ_RUNTIME_DIR/openresponses.pid"
+CODESEEQ_LOG_FILE="$CODESEEQ_LOG_DIR/openresponses.log"
+
+# Check workspace writability early.
+if [[ ! -w "$CODESEEQ_WORKDIR" ]]; then
+  warn "workspace ${CODESEEQ_WORKDIR} is not writable by $(id -u). host volume mapping might have permission issues."
+  # Attempt a tiny test write.
+  if ! touch "$CODESEEQ_WORKDIR/.codeseeq-write-test" 2>/dev/null; then
+    warn "write test failed in ${CODESEEQ_WORKDIR}"
+  else
+    rm "$CODESEEQ_WORKDIR/.codeseeq-write-test"
+    log "workspace is writable despite warning"
+  fi
+else
+  log "workspace ${CODESEEQ_WORKDIR} is writable"
+fi
+
+MODEL_INPUT="$CODESEEQ_MODEL"
+PROVIDER_MODEL=""
+THINKING_EFFECTIVE=""
+
+normalize_model() {
+  local model="$1"
+  local thinking_override="${2:-}"
+  local alias_thinking="false"
+
+  if [[ "$model" == deepseek/deepseek-v4-* ]]; then
+    model="${model/deepseek\//deepseek@}"
+  fi
+
+  case "$model" in
+    deepseek-v4-flash)
+      PROVIDER_MODEL="deepseek@deepseek-v4-flash"
+      alias_thinking="false"
+      ;;
+    deepseek-v4-flash-thinking)
+      PROVIDER_MODEL="deepseek@deepseek-v4-flash"
+      alias_thinking="true"
+      ;;
+    deepseek-v4-pro)
+      PROVIDER_MODEL="deepseek@deepseek-v4-pro"
+      alias_thinking="false"
+      ;;
+    deepseek-v4-pro-thinking)
+      PROVIDER_MODEL="deepseek@deepseek-v4-pro"
+      alias_thinking="true"
+      ;;
+    deepseek@deepseek-v4-flash)
+      PROVIDER_MODEL="deepseek@deepseek-v4-flash"
+      alias_thinking="false"
+      ;;
+    deepseek@deepseek-v4-flash-thinking)
+      PROVIDER_MODEL="deepseek@deepseek-v4-flash"
+      alias_thinking="true"
+      ;;
+    deepseek@deepseek-v4-pro)
+      PROVIDER_MODEL="deepseek@deepseek-v4-pro"
+      alias_thinking="false"
+      ;;
+    deepseek@deepseek-v4-pro-thinking)
+      PROVIDER_MODEL="deepseek@deepseek-v4-pro"
+      alias_thinking="true"
+      ;;
+    *)
+      die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro"
+      ;;
+  esac
+
+  if [[ -n "$thinking_override" ]]; then
+    THINKING_EFFECTIVE="$(bool_normalize "$thinking_override")"
+  else
+    THINKING_EFFECTIVE="$alias_thinking"
+  fi
+
+  THINKING_EFFECTIVE="$(bool_normalize "$THINKING_EFFECTIVE")"
+  if [[ "$THINKING_EFFECTIVE" != "true" && "$THINKING_EFFECTIVE" != "false" ]]; then
+    die "invalid thinking value: ${THINKING_EFFECTIVE}"
+  fi
+
+  CODESEEQ_MODEL="$model"
+  CODESEEQ_THINKING="$THINKING_EFFECTIVE"
+  export CODESEEQ_MODEL CODESEEQ_THINKING
+}
+
+bridge_health() {
+  curl --silent --show-error --fail --max-time 2 --connect-timeout 1 "${CODESEEQ_OPENRESPONSES_URL%/v1}/health" >/dev/null 2>&1
+}
+
+bridge_pid_running() {
+  [[ -s "$CODESEEQ_PID_FILE" ]] || return 1
+  local pid
+  pid="$(cat "$CODESEEQ_PID_FILE")"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" >/dev/null 2>&1
+}
+
+start_bridge() {
+  require_cmd curl
+
+  if bridge_health; then
+    return 0
+  fi
+
+  if bridge_pid_running; then
+    sleep 1
+    if bridge_health; then
+      return 0
+    fi
+  fi
+
+  log "starting bridge with: ${CODESEEQ_OPENRESPONSES_CMD}"
+  # shellcheck disable=SC2086
+  bash -lc "${CODESEEQ_OPENRESPONSES_CMD}" >"$CODESEEQ_LOG_FILE" 2>&1 &
+  echo "$!" > "$CODESEEQ_PID_FILE"
+
+  local deadline=$((SECONDS + CODESEEQ_OPENRESPONSES_START_TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do
+    if bridge_health; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  warn "bridge failed to become healthy"
+  if [[ -f "$CODESEEQ_LOG_FILE" ]]; then
+    tail -n 60 "$CODESEEQ_LOG_FILE" >&2 || true
+  fi
+  return 1
+}
+
+write_config() {
+  export CODEX_HOME="$CODESEEQ_CODEX_HOME"
+
+  cat > "$CODESEEQ_CODEX_HOME/config.toml" <<EOF
+model = "${PROVIDER_MODEL}"
+model_provider = "codeseeq"
+model_catalog_json = "/etc/codeseeq/codex-model-catalog.json"
+
+approval_policy = "${CODESEEQ_APPROVAL_POLICY}"
+sandbox_mode = "${CODESEEQ_SANDBOX_MODE}"
+
+model_context_window = ${CODESEEQ_CONTEXT_WINDOW}
+model_supports_reasoning_summaries = false
+model_reasoning_summary = "none"
+
+[model_providers.codeseeq]
+name = "CodeSeeq OpenResponses Bridge"
+base_url = "${CODESEEQ_OPENRESPONSES_URL}"
+env_key = "DEEPSEEK_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+request_max_retries = ${CODESEEQ_REQUEST_MAX_RETRIES}
+stream_max_retries = 2
+stream_idle_timeout_ms = ${CODESEEQ_STREAM_IDLE_TIMEOUT_MS}
+supports_websockets = false
+EOF
+
+  chmod 600 "$CODESEEQ_CODEX_HOME/config.toml"
+}
+
+print_config() {
+  write_config
+  printf 'CODEX_HOME=%s\n' "$CODEX_HOME"
+  cat "$CODESEEQ_CODEX_HOME/config.toml"
+}
+
+require_deepseek_key() {
+  [[ -n "${DEEPSEEK_API_KEY:-}" ]] || die "DEEPSEEK_API_KEY is required"
+  # Compatibility for OpenAI-shaped clients and OpenResponses ecosystem tooling.
+  export OPENAI_API_KEY="${OPENAI_API_KEY:-$DEEPSEEK_API_KEY}"
+}
+
+ping_deepseek() {
+  require_deepseek_key
+  start_bridge || die "failed to start bridge"
+
+  local payload
+  payload=$(cat <<EOF
+{"model":"${PROVIDER_MODEL}","stream":false,"input":"Return exactly: codeseeq-ok"}
+EOF
+)
+
+  local out
+  out="$(curl --silent --show-error --fail \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+    -d "$payload" \
+    "${CODESEEQ_OPENRESPONSES_URL}/responses")"
+
+  if grep -Eqi 'codeseeq-ok|codeseek-ok|codeeseq-ok' <<<"$out"; then
+    echo "PONG: codeseeq-ok"
+  else
+    echo "$out" >&2
+    die "ping response missing expected token"
+  fi
+}
+
+ping_stream() {
+  require_deepseek_key
+  start_bridge || die "failed to start bridge"
+
+  local payload
+  payload=$(cat <<EOF
+{"model":"${PROVIDER_MODEL}","stream":true,"input":"Return exactly: codeseeq-stream-ok"}
+EOF
+)
+
+  local out
+  out="$(curl --silent --show-error --fail \
+    -N \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+    -d "$payload" \
+    "${CODESEEQ_OPENRESPONSES_URL}/responses")"
+
+  if grep -q 'response.output_text.delta' <<<"$out" \
+    && grep -q 'response.completed' <<<"$out" \
+    && grep -Eqi 'codeseeq-stream-ok|codeseek-stream-ok' <<<"$out"; then
+    echo "PONG-STREAM: codeseeq-stream-ok"
+  else
+    echo "$out" >&2
+    die "streaming ping failed"
+  fi
+}
+
+ping_web() {
+  require_deepseek_key
+  [[ -n "${BRAVE_API_KEY:-}" ]] || die "BRAVE_API_KEY is required for ping-web"
+  start_bridge || die "failed to start bridge"
+
+  local payload
+  payload=$(cat <<EOF
+{"model":"${PROVIDER_MODEL}","stream":false,"codeseeq_tool":"web_search","query":"latest DeepSeek API update"}
+EOF
+)
+
+  local out attempt
+  for attempt in 1 2 3; do
+    if out="$(curl --silent --show-error --fail \
+      -H 'Content-Type: application/json' \
+      -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+      -d "$payload" \
+      "${CODESEEQ_OPENRESPONSES_URL}/responses")"; then
+      break
+    fi
+    if (( attempt == 3 )); then
+      die "web search ping failed after retries"
+    fi
+    sleep 1
+  done
+
+  if grep -q 'result_count' <<<"$out"; then
+    echo "PONG-WEB: success"
+  else
+    echo "$out" >&2
+    die "web search ping failed"
+  fi
+}
+
+ping_docs() {
+  require_deepseek_key
+  [[ -n "${UNSTRUCTURED_API_KEY:-}" ]] || die "UNSTRUCTURED_API_KEY is required for ping-docs"
+  start_bridge || die "failed to start bridge"
+
+  local payload
+  payload=$(cat <<EOF
+{"model":"${PROVIDER_MODEL}","stream":false,"codeseeq_tool":"doc_parse","text":"CodeSeeq parser smoke: list three nouns only."}
+EOF
+)
+
+  local out attempt
+  for attempt in 1 2 3; do
+    if out="$(curl --silent --show-error --fail \
+      -H 'Content-Type: application/json' \
+      -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+      -d "$payload" \
+      "${CODESEEQ_OPENRESPONSES_URL}/responses")"; then
+      break
+    fi
+    if (( attempt == 3 )); then
+      die "doc parsing ping failed after retries"
+    fi
+    sleep 1
+  done
+
+  if grep -q 'elements' <<<"$out"; then
+    echo "PONG-DOCS: success"
+  else
+    echo "$out" >&2
+    die "doc parsing ping failed"
+  fi
+}
+
+doctor() {
+  write_config
+
+  local deepseek_state brave_state unstructured_state stream_state health_state deepseek_provider_state
+  deepseek_state="$(key_state "${DEEPSEEK_API_KEY:-}")"
+  brave_state="$(key_state "${BRAVE_API_KEY:-}")"
+  unstructured_state="$(key_state "${UNSTRUCTURED_API_KEY:-}")"
+
+  if [[ "$brave_state" == "present" ]]; then
+    brave_state="enabled"
+  else
+    brave_state="disabled"
+  fi
+
+  if [[ "$unstructured_state" == "present" ]]; then
+    unstructured_state="enabled"
+  else
+    unstructured_state="disabled"
+  fi
+
+  stream_state="supported"
+  if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
+    deepseek_provider_state="configured"
+  else
+    deepseek_provider_state="not-configured"
+  fi
+
+  if start_bridge && bridge_health; then
+    health_state="up"
+  else
+    health_state="down"
+  fi
+
+  cat <<EOF
+CodeSeeq Doctor
+==============
+Model (logical): ${CODESEEQ_MODEL}
+Model (provider): ${PROVIDER_MODEL}
+Thinking: ${CODESEEQ_THINKING}
+CODEX_HOME: ${CODEX_HOME}
+Config path: ${CODESEEQ_CODEX_HOME}/config.toml
+Approval policy: ${CODESEEQ_APPROVAL_POLICY}
+Sandbox mode: ${CODESEEQ_SANDBOX_MODE}
+Yolo mode: ${CODESEEQ_YOLO}
+OpenResponses URL: ${CODESEEQ_OPENRESPONSES_URL}
+OpenResponses startup command: ${CODESEEQ_OPENRESPONSES_CMD}
+OpenResponses health: ${health_state}
+DeepSeek provider: ${deepseek_provider_state}
+DeepSeek provider key: ${deepseek_state}
+Brave web_search: ${brave_state}
+Unstructured doc parsing: ${unstructured_state}
+Streaming/chunked responses: ${stream_state}
+OpenResponses source reference: ./open-responses (official repo)
+EOF
+}
+
+print_models() {
+  cat /etc/codeseeq/model-catalog.json
+}
+
+run_codex_exec() {
+  require_deepseek_key
+  write_config
+  start_bridge || die "failed to start bridge"
+  cd "$CODESEEQ_WORKDIR"
+
+  if (( $# == 0 )); then
+    die "run requires a prompt"
+  fi
+
+  local prompt
+  prompt="$*"
+  build_codex_global_args
+  build_codex_exec_args
+  exec codex "${CODEX_GLOBAL_ARGS[@]}" exec "${CODEX_EXEC_ARGS[@]}" "$prompt"
+}
+
+run_codex_interactive() {
+  require_deepseek_key
+  write_config
+  start_bridge || die "failed to start bridge"
+  cd "$CODESEEQ_WORKDIR"
+  build_codex_global_args
+  exec codex "${CODEX_GLOBAL_ARGS[@]}" "$@"
+}
+
+build_codex_global_args() {
+  CODEX_GLOBAL_ARGS=(--model "$PROVIDER_MODEL")
+  if [[ "$CODESEEQ_YOLO" == "true" ]]; then
+    CODEX_GLOBAL_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
+  elif [[ "$CODESEEQ_SANDBOX_MODE" == "danger-full-access" ]]; then
+    CODEX_GLOBAL_ARGS+=(--dangerously-bypass-approvals-and-sandbox)
+  else
+    CODEX_GLOBAL_ARGS+=(--ask-for-approval "$CODESEEQ_APPROVAL_POLICY")
+    CODEX_GLOBAL_ARGS+=(--sandbox "$CODESEEQ_SANDBOX_MODE")
+  fi
+}
+
+build_codex_exec_args() {
+  CODEX_EXEC_ARGS=(--skip-git-repo-check)
+}
+
+codex_args_have() {
+  local needle="$1"
+  shift
+  local arg
+  for arg in "$@"; do
+    [[ "$arg" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+run_codex_passthrough() {
+  require_deepseek_key
+  write_config
+  start_bridge || die "failed to start bridge"
+  cd "$CODESEEQ_WORKDIR"
+
+  build_codex_global_args
+
+  if [[ "${1:-}" == "exec" || "${1:-}" == "e" ]]; then
+    local passthrough=("$@")
+    if ! codex_args_have "--skip-git-repo-check" "${passthrough[@]}"; then
+      passthrough=("${passthrough[0]}" --skip-git-repo-check "${passthrough[@]:1}")
+    fi
+    exec codex "${CODEX_GLOBAL_ARGS[@]}" "${passthrough[@]}"
+  fi
+
+  exec codex "${CODEX_GLOBAL_ARGS[@]}" "$@"
+}
+
+open_shell() {
+  write_config
+  start_bridge || true
+  cd "$CODESEEQ_WORKDIR"
+  exec bash
+}
+
+# Parse wrapper flags before subcommand/args.
+args=()
+while (( $# > 0 )); do
+  case "$1" in
+    --model|-m)
+      [[ $# -ge 2 ]] || die "--model requires a value"
+      CODESEEQ_MODEL="$2"
+      shift 2
+      ;;
+    --thinking)
+      CODESEEQ_THINKING="true"
+      shift
+      ;;
+    --no-thinking)
+      CODESEEQ_THINKING="false"
+      shift
+      ;;
+    --yolo|-y)
+      CODESEEQ_YOLO="true"
+      shift
+      ;;
+    --)
+      shift
+      while (( $# > 0 )); do
+        args+=("$1")
+        shift
+      done
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+  if (( $# == 0 )); then
+    break
+  fi
+
+done
+
+set -- "${args[@]}"
+
+CODESEEQ_YOLO="$(bool_normalize "$CODESEEQ_YOLO")"
+if [[ "$CODESEEQ_YOLO" != "true" && "$CODESEEQ_YOLO" != "false" ]]; then
+  die "invalid yolo value: ${CODESEEQ_YOLO}"
+fi
+export CODESEEQ_YOLO CODESEEQ_APPROVAL_POLICY CODESEEQ_SANDBOX_MODE
+
+normalize_model "$CODESEEQ_MODEL" "$CODESEEQ_THINKING"
+export CODEX_HOME="$CODESEEQ_CODEX_HOME"
+
+subcmd="${1:-}"
+if [[ -n "$subcmd" ]]; then
+  shift
+fi
+
+case "$subcmd" in
+  "")
+    run_codex_interactive
+    ;;
+  run)
+    run_codex_exec "$@"
+    ;;
+  ping)
+    ping_deepseek
+    ;;
+  ping-stream)
+    ping_stream
+    ;;
+  ping-web)
+    ping_web
+    ;;
+  ping-docs)
+    ping_docs
+    ;;
+  doctor)
+    doctor
+    ;;
+  models)
+    print_models
+    ;;
+  config)
+    print_config
+    ;;
+  shell)
+    open_shell
+    ;;
+  codex)
+    run_codex_passthrough "$@"
+    ;;
+  *)
+    # Prompt shortcut: `codeseeq-entrypoint "prompt text"`
+    run_codex_exec "$subcmd" "$@"
+    ;;
+esac

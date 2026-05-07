@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+CONTAINER="${CONTAINER:-podman}"
+IMAGE="${IMAGE:-codeseeq:dev}"
+MODEL="${MODEL:-deepseek-v4-flash}"
+
+if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
+  echo "[smoke-openresponses-stream] SKIP: DEEPSEEK_API_KEY missing"
+  exit 0
+fi
+
+echo "[smoke-openresponses-stream] run ping-stream"
+out="$($CONTAINER run --rm \
+  -e DEEPSEEK_API_KEY \
+  -e CODESEEQ_MODEL="$MODEL" \
+  "$IMAGE" ping-stream)"
+
+grep -q 'PONG-STREAM: codeseeq-stream-ok' <<<"$out"
+echo "[smoke-openresponses-stream] PASS"

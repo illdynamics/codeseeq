@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+: "${CODESEEQ_CODEX_HOME:=/home/codeseeq/.codeseeq}"
+
+if [[ -f "$CODESEEQ_CODEX_HOME/config.toml" ]]; then
+  cat "$CODESEEQ_CODEX_HOME/config.toml"
+else
+  echo "No config found at $CODESEEQ_CODEX_HOME/config.toml" >&2
+  exit 1
+fi

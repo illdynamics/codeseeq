@@ -1,0 +1,58 @@
+{
+  "default": "deepseek-v4-flash",
+  "sources": {
+    "deepseek_models": "https://api-docs.deepseek.com/api/list-models",
+    "deepseek_pricing": "https://api-docs.deepseek.com/quick_start/pricing",
+    "deepseek_thinking": "https://api-docs.deepseek.com/guides/thinking_mode"
+  },
+  "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "provider_model": "deepseek@deepseek-v4-flash",
+      "thinking": false,
+      "group": "non-thinking",
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "supports_streaming": true,
+      "supports_tools": "via-open-responses-if-supported",
+      "notes": "DeepSeek docs list V4-Flash with 1M context and max output 384K; thinking can be toggled via thinking.type.",
+      "recommended_for": ["fast coding", "repo inspection", "daily edits"]
+    },
+    {
+      "id": "deepseek-v4-flash-thinking",
+      "provider_model": "deepseek@deepseek-v4-flash",
+      "thinking": true,
+      "group": "thinking",
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "supports_streaming": true,
+      "supports_tools": "via-open-responses-if-supported",
+      "notes": "Thinking mode enabled via thinking.type=enabled. DeepSeek docs note reasoning_content handling for tool-call loops.",
+      "recommended_for": ["fast reasoning", "debugging", "planning"]
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "provider_model": "deepseek@deepseek-v4-pro",
+      "thinking": false,
+      "group": "non-thinking",
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "supports_streaming": true,
+      "supports_tools": "via-open-responses-if-supported",
+      "notes": "DeepSeek docs list V4-Pro with 1M context and max output 384K.",
+      "recommended_for": ["larger coding tasks", "reviews", "refactors"]
+    },
+    {
+      "id": "deepseek-v4-pro-thinking",
+      "provider_model": "deepseek@deepseek-v4-pro",
+      "thinking": true,
+      "group": "thinking",
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "supports_streaming": true,
+      "supports_tools": "via-open-responses-if-supported",
+      "notes": "Thinking mode enabled via thinking.type=enabled. reasoning_effort high/max supported in docs.",
+      "recommended_for": ["hard debugging", "architecture", "deep review"]
+    }
+  ]
+}

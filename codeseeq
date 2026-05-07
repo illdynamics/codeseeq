@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+log() {
+  printf '[codeseeq] %s\n' "$*" >&2
+}
+
+die() {
+  printf '[codeseeq:error] %s\n' "$*" >&2
+  exit 1
+}
+
+is_truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+resolve_self_path() {
+  local source="$1"
+  while [[ -h "$source" ]]; do
+    local dir
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    [[ "$source" == /* ]] || source="${dir}/${source}"
+  done
+  printf '%s\n' "$(cd -P "$(dirname "$source")" && pwd)/$(basename "$source")"
+}
+
+SELF_PATH="$(resolve_self_path "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd -P "$(dirname "$SELF_PATH")" && pwd)"
+: "${CODESEEQ_INSTALL_ROOT:=$SCRIPT_DIR}"
+
+if [[ "${1:-}" == "install" ]]; then
+  installer="${CODESEEQ_INSTALL_ROOT}/scripts/install.sh"
+  [[ -x "$installer" ]] || die "installer not found or not executable: $installer"
+  shift
+  exec "$installer" "$@"
+fi
+
+CONTAINER="${CONTAINER:-podman}"
+IMAGE="${IMAGE:-codeseeq:dev}"
+WORKDIR_HOST="${CODESEEQ_WORKDIR_HOST:-$PWD}"
+WORKDIR_CONTAINER="${CODESEEQ_WORKDIR:-/workspace}"
+BUILD_CONTEXT="${CODESEEQ_BUILD_CONTEXT:-$CODESEEQ_INSTALL_ROOT}"
+AUTO_BUILD="${CODESEEQ_AUTO_BUILD:-true}"
+
+if ! command -v "$CONTAINER" >/dev/null 2>&1; then
+  die "container runtime not found: ${CONTAINER}. install podman (default) or set CONTAINER=docker"
+fi
+
+image_exists() {
+  if [[ "$CONTAINER" == "podman" ]]; then
+    "$CONTAINER" image exists "$IMAGE" >/dev/null 2>&1
+  else
+    "$CONTAINER" image inspect "$IMAGE" >/dev/null 2>&1
+  fi
+}
+
+if ! image_exists; then
+  if is_truthy "$AUTO_BUILD"; then
+    log "image ${IMAGE} not found; building from ${BUILD_CONTEXT} with ${CONTAINER}"
+    "$CONTAINER" build -t "$IMAGE" "$BUILD_CONTEXT"
+  else
+    die "image ${IMAGE} missing; run: ${CONTAINER} build -t ${IMAGE} ${BUILD_CONTEXT}"
+  fi
+fi
+
+volume_spec="${WORKDIR_HOST}:${WORKDIR_CONTAINER}"
+if [[ "$CONTAINER" == "podman" ]]; then
+  # Use :Z for SELinux (mostly Linux but good practice) 
+  # and keep-id to map host UID to container user.
+  volume_spec="${volume_spec}:Z"
+  run_args=(run --rm --userns=keep-id)
+else
+  run_args=(run --rm)
+fi
+
+if [[ -t 0 && -t 1 ]]; then
+  run_args+=(-it)
+fi
+
+run_args+=(-v "$volume_spec" -w "$WORKDIR_CONTAINER")
+
+# Runtime secrets / toggles.
+if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
+  run_args+=(-e DEEPSEEK_API_KEY)
+fi
+if [[ -n "${BRAVE_API_KEY:-}" ]]; then
+  run_args+=(-e BRAVE_API_KEY)
+fi
+if [[ -n "${UNSTRUCTURED_API_KEY:-}" ]]; then
+  run_args+=(-e UNSTRUCTURED_API_KEY)
+fi
+
+# Optional model/runtime controls.
+for name in \
+  CODESEEQ_MODEL \
+  CODESEEQ_THINKING \
+  CODESEEQ_APPROVAL_POLICY \
+  CODESEEQ_SANDBOX_MODE \
+  CODESEEQ_YOLO \
+  CODESEEQ_STREAM \
+  CODESEEQ_STREAM_IDLE_TIMEOUT_MS \
+  CODESEEQ_REQUEST_MAX_RETRIES \
+  CODESEEQ_OPENRESPONSES_HOST \
+  CODESEEQ_OPENRESPONSES_PORT \
+  CODESEEQ_OPENRESPONSES_URL \
+  CODESEEQ_OPENRESPONSES_CMD \
+  CODESEEQ_CODEX_HOME \
+  CODESEEQ_LOG_DIR \
+  CODESEEQ_RUNTIME_DIR \
+  CODESEEQ_CONTEXT_WINDOW \
+  CODESEEQ_MAX_OUTPUT_TOKENS; do
+  if [[ -n "${!name:-}" ]]; then
+    run_args+=(-e "$name")
+  fi
+done
+
+exec "$CONTAINER" "${run_args[@]}" "$IMAGE" "$@"

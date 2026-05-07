@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+: "${CODESEEQ_OPENRESPONSES_HOST:=127.0.0.1}"
+: "${CODESEEQ_OPENRESPONSES_PORT:=8080}"
+: "${CODESEEQ_OPENRESPONSES_URL:=http://${CODESEEQ_OPENRESPONSES_HOST}:${CODESEEQ_OPENRESPONSES_PORT}/v1}"
+: "${CODESEEQ_CURL_MAX_TIME:=3}"
+: "${CODESEEQ_CURL_CONNECT_TIMEOUT:=2}"
+: "${CODESEEQ_RUNTIME_DIR:=/run/codeseeq}"
+
+health_url="${CODESEEQ_OPENRESPONSES_URL%/v1}/health"
+pid_file="${CODESEEQ_RUNTIME_DIR}/openresponses.pid"
+
+if curl --silent --show-error --fail \
+  --max-time "$CODESEEQ_CURL_MAX_TIME" \
+  --connect-timeout "$CODESEEQ_CURL_CONNECT_TIMEOUT" \
+  "$health_url" >/dev/null 2>&1; then
+  exit 0
+fi
+
+if [[ -s "$pid_file" ]]; then
+  pid="$(cat "$pid_file")"
+  if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+    exit 0
+  fi
+fi
+
+exit 1
