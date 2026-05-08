@@ -35,6 +35,8 @@ zip_excludes=(
   "*/.git/*"
   ".codeseeq/*"
   "*/.codeseeq/*"
+  "system-prompt.md"
+  "*/system-prompt.md"
   "__MACOSX/*"
   "*/__MACOSX/*"
   ".DS_Store"
@@ -133,6 +135,8 @@ patterns = [
     "*/.git/*",
     ".codeseeq/*",
     "*/.codeseeq/*",
+    "system-prompt.md",
+    "*/system-prompt.md",
     "__MACOSX/*",
     "*/__MACOSX/*",
     ".DS_Store",
@@ -274,7 +278,7 @@ validate_archive() {
     esac
 
     case "$base" in
-      .DS_Store|*.pyc|*.zip|*.log)
+      .DS_Store|*.pyc|*.zip|*.log|system-prompt.md)
         printf '[package:check:error] forbidden file in archive: %s\n' "$entry" >&2
         failures=$((failures + 1))
         continue
@@ -311,6 +315,8 @@ static_package_check() {
     '"*/.git/*"'
     '".codeseeq/*"'
     '"*/.codeseeq/*"'
+    '"system-prompt.md"'
+    '"*/system-prompt.md"'
     '"__MACOSX/*"'
     '"*/.DS_Store"'
     '"dist/*"'

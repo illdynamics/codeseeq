@@ -53,6 +53,7 @@ UNSTRUCTURED_API_URL = os.environ.get(
 )
 HTTP_TIMEOUT = float(os.environ.get("CODESEEQ_BRIDGE_TIMEOUT_SECONDS", "120"))
 CHUNK_SIZE = int(os.environ.get("CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE", "120"))
+DEFAULT_DEEPSEEK_MAX_OUTPUT_TOKENS = 384000
 
 MODEL_ALIASES: Dict[str, Tuple[str, bool]] = {
     "deepseek-v4-flash": ("deepseek-v4-flash", False),
@@ -469,6 +470,99 @@ def normalize_tool_arguments_json(
     return json.dumps(normalized, ensure_ascii=False)
 
 
+def _arguments_value_to_json_text(value: Any) -> str:
+    if value is None or value == "":
+        return "{}"
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def validate_tool_arguments_json(
+    arguments_value: Any,
+    *,
+    raw_name: str,
+    resolved_name: str,
+    registered_arg_names: Optional[Dict[str, Set[str]]] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Return normalized arguments JSON, or an error string if it is unsafe.
+
+    Codex parses function-call arguments after the bridge completes the
+    Responses lifecycle. Forwarding truncated JSON makes Codex's tool router
+    fail with messages such as "EOF while parsing a string", so the bridge must
+    validate before exposing a tool call as executable.
+    """
+    arguments_json = _arguments_value_to_json_text(arguments_value)
+    try:
+        parsed = json.loads(arguments_json or "{}")
+    except Exception as exc:
+        return None, str(exc)
+
+    if not isinstance(parsed, dict):
+        return None, "tool arguments must be a JSON object"
+
+    normalized = normalize_tool_arguments_dict(
+        parsed,
+        raw_name=raw_name,
+        resolved_name=resolved_name,
+        registered_arg_names=registered_arg_names,
+    )
+    return json.dumps(normalized, ensure_ascii=False), None
+
+
+def prepare_structured_tool_call(
+    tool_call: Dict[str, Any],
+    *,
+    registered_tools: Set[str],
+    registered_arg_names: Optional[Dict[str, Set[str]]] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else None
+    if not isinstance(fn, dict):
+        return None, "missing function payload"
+
+    raw_name = str(fn.get("name") or "").strip()
+    if not raw_name:
+        return None, "missing tool name"
+
+    resolved = resolve_tool_name(raw_name, registered_tools)
+    if resolved != raw_name:
+        log(f"structured tool name remapped: {raw_name!r} -> {resolved!r}")
+
+    normalized_args, err = validate_tool_arguments_json(
+        fn.get("arguments"),
+        raw_name=raw_name,
+        resolved_name=resolved,
+        registered_arg_names=registered_arg_names,
+    )
+    if err:
+        arg_len = len(_arguments_value_to_json_text(fn.get("arguments")))
+        return (
+            None,
+            f"tool={raw_name or '<missing>'} argument_chars={arg_len} error={err}",
+        )
+
+    prepared = dict(tool_call)
+    prepared["function"] = dict(fn)
+    prepared["function"]["name"] = resolved
+    prepared["function"]["arguments"] = normalized_args or "{}"
+    return prepared, None
+
+
+def malformed_tool_call_message(errors: List[str]) -> str:
+    details = "; ".join(errors[:3])
+    if len(errors) > 3:
+        details += f"; and {len(errors) - 3} more"
+    return (
+        "CodeSeeq blocked a malformed upstream tool call before Codex could "
+        "execute it. The model produced invalid function-call arguments "
+        f"({details}). Retry the request, or ask it to split large file writes "
+        "and patches into smaller tool calls."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
@@ -489,6 +583,31 @@ def env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_positive_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(value)
+    except Exception:
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def resolve_max_tokens(body: Dict[str, Any]) -> int:
+    provider_cap = (
+        parse_positive_int(os.environ.get("CODESEEQ_MAX_OUTPUT_TOKENS"))
+        or DEFAULT_DEEPSEEK_MAX_OUTPUT_TOKENS
+    )
+    requested = parse_positive_int(body.get("max_output_tokens"))
+    if requested is None:
+        requested = parse_positive_int(body.get("max_tokens"))
+    if requested is None:
+        return provider_cap
+    return min(requested, provider_cap)
 
 
 def normalize_model(model: str) -> Tuple[str, str, bool]:
@@ -1070,7 +1189,9 @@ TOOL_STEERING_INSTRUCTION_TEMPLATE = (
     "or <parameter> in plain text are not the protocol and may be discarded. "
     "Wrong example: <exec_command><command>echo hi</command></exec_command>. "
     "Correct behavior: call the matching function in `tool_calls` with JSON "
-    "arguments. "
+    "arguments. Keep every tool-call arguments value complete and valid JSON; "
+    "for large file creation or edits, split the work into smaller tool calls "
+    "instead of placing a very large file body or patch in one call. "
     "Available tools: {tool_names}."
 )
 
@@ -1112,6 +1233,7 @@ def deepseek_payload(
         "model": deepseek_model,
         "messages": messages,
         "stream": bool(body.get("stream", False)),
+        "max_tokens": resolve_max_tokens(body),
     }
 
     tools = body.get("tools")
@@ -1437,28 +1559,32 @@ async def responses(request: Request) -> Any:
         output_items: List[Dict[str, Any]] = []
         tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
         structured_tool_call_count = 0
+        malformed_tool_errors: List[str] = []
+        prepared_tool_calls: List[Dict[str, Any]] = []
         if isinstance(tool_calls, list) and tool_calls:
             for tc in tool_calls:
                 if not isinstance(tc, dict):
                     continue
-                fn = tc.get("function") if isinstance(tc.get("function"), dict) else None
-                if isinstance(fn, dict) and fn.get("name"):
-                    raw_structured_name = str(fn.get("name"))
-                    resolved = resolve_tool_name(str(fn.get("name")), registered_set)
-                    if resolved != fn.get("name"):
-                        log(
-                            "structured tool name remapped: "
-                            f"{fn.get('name')!r} -> {resolved!r}"
-                        )
-                        fn["name"] = resolved
-                    fn["arguments"] = normalize_tool_arguments_json(
-                        str(fn.get("arguments") or "{}"),
-                        raw_name=raw_structured_name,
-                        resolved_name=resolved,
-                        registered_arg_names=registered_arg_names,
-                    )
-                output_items.append(tool_call_to_response_item(tc))
-                structured_tool_call_count += 1
+                prepared, err = prepare_structured_tool_call(
+                    tc,
+                    registered_tools=registered_set,
+                    registered_arg_names=registered_arg_names,
+                )
+                if err:
+                    malformed_tool_errors.append(err)
+                    continue
+                if prepared:
+                    prepared_tool_calls.append(prepared)
+
+            if malformed_tool_errors:
+                log(
+                    "blocked malformed non-stream structured tool call(s): "
+                    + "; ".join(malformed_tool_errors)
+                )
+            else:
+                for prepared in prepared_tool_calls:
+                    output_items.append(tool_call_to_response_item(prepared))
+                    structured_tool_call_count += 1
 
         reasoning = msg.get("reasoning_content")
         if isinstance(reasoning, str) and reasoning.strip():
@@ -1473,7 +1599,11 @@ async def responses(request: Request) -> Any:
             )
 
         text = normalize_dsml_display(str(msg.get("content") or ""))
-        if structured_tool_call_count == 0:
+        if malformed_tool_errors:
+            text = (
+                (text.strip() + "\n\n") if text.strip() else ""
+            ) + malformed_tool_call_message(malformed_tool_errors)
+        elif structured_tool_call_count == 0:
             text, dsml_calls = extract_dsml_tool_calls(
                 text,
                 registered_set,
@@ -1507,9 +1637,6 @@ async def responses(request: Request) -> Any:
         text_parts: List[str] = []
         reasoning_parts: List[str] = []
         tool_states: Dict[int, Dict[str, Any]] = {}
-        tool_item_ids: Dict[int, str] = {}
-        tool_output_indices: Dict[int, int] = {}
-        tool_emitted_added: Dict[int, bool] = {}
         message_item_id_local = f"msg_{uuid.uuid4().hex[:20]}"
         message_item_open = {"value": False}
         message_output_index: Dict[str, Optional[int]] = {"value": None}
@@ -1691,9 +1818,6 @@ async def responses(request: Request) -> Any:
                                         "type": "function",
                                         "function": {"name": "", "arguments": ""},
                                     }
-                                    tool_item_ids[idx] = f"fc_{uuid.uuid4().hex[:12]}"
-                                    tool_output_indices[idx] = allocate_output_index()
-                                    tool_emitted_added[idx] = False
 
                                 state = tool_states[idx]
                                 if isinstance(tc.get("id"), str) and tc.get("id"):
@@ -1707,59 +1831,8 @@ async def responses(request: Request) -> Any:
                                     if delta_name:
                                         state["function"]["name"] += delta_name
 
-                                    if (
-                                        state["function"]["name"]
-                                        and not tool_emitted_added[idx]
-                                    ):
-                                        resolved = resolve_tool_name(
-                                            state["function"]["name"], registered_set
-                                        )
-                                        if resolved != state["function"]["name"]:
-                                            log(
-                                                "structured streaming tool name remapped: "
-                                                f"{state['function']['name']!r} -> {resolved!r}"
-                                            )
-                                            state["function"]["name"] = resolved
-
-                                        tool_emitted_added[idx] = True
-                                        yield sse_event(
-                                            "response.output_item.added",
-                                            {
-                                                "type": "response.output_item.added",
-                                                "output_index": tool_output_indices[idx],
-                                                "item": {
-                                                    "id": tool_item_ids[idx],
-                                                    "type": "function_call",
-                                                    "call_id": state["id"],
-                                                    "name": state["function"]["name"],
-                                                    "arguments": "",
-                                                },
-                                            },
-                                        )
-
                                     if delta_args:
                                         state["function"]["arguments"] += delta_args
-                                        if tool_emitted_added.get(idx):
-                                            yield sse_event(
-                                                "response.function_call_arguments.delta",
-                                                {
-                                                    "type": "response.function_call_arguments.delta",
-                                                    "item_id": tool_item_ids[idx],
-                                                    "output_index": tool_output_indices[idx],
-                                                    "call_id": state["id"],
-                                                    "delta": delta_args,
-                                                },
-                                            )
-                                            yield sse_event(
-                                                "response.custom_tool_call_input.delta",
-                                                {
-                                                    "type": "response.custom_tool_call_input.delta",
-                                                    "item_id": tool_item_ids[idx],
-                                                    "output_index": tool_output_indices[idx],
-                                                    "call_id": state["id"],
-                                                    "delta": delta_args,
-                                                },
-                                            )
 
                         # 3. Text content (with inline DSML detection)
                         content_delta = delta.get("content")
@@ -1813,65 +1886,46 @@ async def responses(request: Request) -> Any:
             for ev in dsml_block_events(residual_blocks):
                 yield ev
 
-        # Close any structured tool items.
+        # Close structured tool items only after the full argument JSON is
+        # available and validated. DeepSeek can end a stream while still inside
+        # a large JSON string; forwarding that partial call makes Codex's tool
+        # router fail before the model can recover.
+        prepared_structured_calls: List[Dict[str, Any]] = []
+        malformed_tool_errors: List[str] = []
         for idx in sorted(tool_states.keys()):
-            state = tool_states[idx]
-            if not tool_emitted_added.get(idx):
-                resolved = resolve_tool_name(
-                    state["function"]["name"] or "tool", registered_set
-                )
-                state["function"]["name"] = resolved
-                yield sse_event(
-                    "response.output_item.added",
-                    {
-                        "type": "response.output_item.added",
-                        "output_index": tool_output_indices[idx],
-                        "item": {
-                            "id": tool_item_ids[idx],
-                            "type": "function_call",
-                            "call_id": state["id"],
-                            "name": resolved,
-                            "arguments": "",
-                        },
-                    },
-                )
-                if state["function"]["arguments"]:
-                    yield sse_event(
-                        "response.function_call_arguments.delta",
-                        {
-                            "type": "response.function_call_arguments.delta",
-                            "item_id": tool_item_ids[idx],
-                            "output_index": tool_output_indices[idx],
-                            "call_id": state["id"],
-                            "delta": state["function"]["arguments"],
-                        },
-                    )
-                tool_emitted_added[idx] = True
+            prepared, err = prepare_structured_tool_call(
+                tool_states[idx],
+                registered_tools=registered_set,
+                registered_arg_names=registered_arg_names,
+            )
+            if err:
+                malformed_tool_errors.append(err)
+                continue
+            if prepared:
+                prepared_structured_calls.append(prepared)
 
-            yield sse_event(
-                "response.function_call_arguments.done",
-                {
-                    "type": "response.function_call_arguments.done",
-                    "item_id": tool_item_ids[idx],
-                    "output_index": tool_output_indices[idx],
-                    "call_id": state["id"],
-                    "arguments": state["function"]["arguments"] or "{}",
-                },
+        if malformed_tool_errors:
+            log(
+                "blocked malformed streaming structured tool call(s): "
+                + "; ".join(malformed_tool_errors)
             )
-            yield sse_event(
-                "response.output_item.done",
-                {
-                    "type": "response.output_item.done",
-                    "output_index": tool_output_indices[idx],
-                    "item": {
-                        "type": "function_call",
-                        "id": tool_item_ids[idx],
-                        "call_id": state["id"],
-                        "name": state["function"]["name"] or "tool",
-                        "arguments": state["function"]["arguments"] or "{}",
-                    },
-                },
-            )
+            diagnostic = malformed_tool_call_message(malformed_tool_errors)
+            if text_parts and not text_parts[-1].endswith("\n"):
+                diagnostic = "\n\n" + diagnostic
+            for ev in text_delta_events(diagnostic):
+                yield ev
+        else:
+            for prepared in prepared_structured_calls:
+                fn = prepared.get("function") or {}
+                for ev in _function_call_lifecycle_events(
+                    item_id=f"fc_{uuid.uuid4().hex[:12]}",
+                    call_id=prepared.get("id") or f"call_{uuid.uuid4().hex[:12]}",
+                    name=fn.get("name") or "tool",
+                    arguments_json=fn.get("arguments") or "{}",
+                    output_index=allocate_output_index(),
+                    chunk_size=CHUNK_SIZE,
+                ):
+                    yield ev
 
         # Reasoning summary item.
         full_reasoning = "".join(reasoning_parts).strip()

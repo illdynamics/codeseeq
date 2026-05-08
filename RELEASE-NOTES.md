@@ -1,6 +1,57 @@
 # Release Notes
 
-## 0.2.5 - 2026-05-07
+## 0.2.6 - 2026-05-08
+
+### Added
+
+- **Container-launcher rewrite.** The `./codeseeq` launcher was substantially
+  rewritten with robust configuration defaults, helper functions (`warn`,
+  `bool_normalize`), and expanded environment-variable plumbing for
+  `CODESEEQ_MODEL`, `CODESEEQ_THINKING`, `CODESEEQ_APPROVAL_POLICY`,
+  `CODESEEQ_SANDBOX_MODE`, `CODESEEQ_OPENRESPONSES_PORT`,
+  `CODESEEQ_OPENRESPONSES_URL`, `CODESEEQ_CONTEXT_WINDOW`,
+  `CODESEEQ_HOST_CODEX_HOME`, and `CODESEEQ_SYSTEM_PROMPT_FILE`.
+- **System prompt injection.** New `CODESEEQ_SYSTEM_PROMPT_FILE` (default
+  `${WORKDIR}/.codeseeq/system-prompt.md`) is read and injected into Codex's
+  TOML config as a quoted string. Helper functions (`system_prompt_present`,
+  `system_prompt_state`, `system_prompt_bytes`, `system_prompt_lines`) report
+  prompt state at startup.
+- **Workspace banner.** Entrypoint prints a summary banner showing the
+  workspace path, version, model, approval policy, sandbox mode, key
+  configuration hash, and system-prompt state on each launch.
+- **`.env.example` template.** Documented all supported environment variables
+  with their defaults, so users can copy `.env.example` to `.env` and customize.
+- **Expanded smoke-test suite.** `scripts/smoke-all.sh` now runs container
+  smoke tests and host-cli smoke tests. New `scripts/runtime.sh` checks for
+  container and GPU host capabilities.
+- **Bridge binary on `codeseeq-bridge.py`.** The bridge now lives at its own
+  path (`bin/codeseeq-bridge.py`) in the container, launched side-by-side with
+  Codex rather than being embedded.
+
+### Changed
+
+- **Launcher becomes dual-purpose.** `./codeseeq` now detects the `install`
+  subcommand automatically and delegates to `scripts/install.sh`. Running
+  without subcommand starts the container with all configuration variables
+  forwarded.
+- **`CODESEEQ_WORKDIR_HOST` now resolves symlinks.** Uses `pwd -P` instead of
+  plain `$PWD` so bind-mount paths are canonical.
+- **Documentation overhaul.** `README.md`, `docs/ARCHITECTURE.md`,
+  `docs/SECURITY.md`, and `docs/TROUBLESHOOTING.md` were rewritten with
+  up-to-date configuration references, container-runtime instructions, and
+  security/architecture guidance.
+- **Scripts polished.** `scripts/check.sh` extended with bridge-extraction
+  regression tests; `scripts/package.sh` streamlined; `scripts/install.sh`
+  updated for the new launcher layout.
+
+### Fixed
+
+- **`codeseeq` binary made executable in-repo.** The root `codeseeq` file now
+  has the executable bit set so it runs directly without `bash codeseeq`.
+
+---
+
+0.2.5 - 2026-05-07
 
 ### Fixed
 
@@ -144,3 +195,4 @@ entrypoint, or scripts.
 - Added DeepSeek/OpenResponses bridge runtime wiring and smoke scripts.
 - Added `VERSION` file with starting semantic version.
 - Added AGPL licensing files (`LICENSE`, `COPYRIGHT`) and README license notice.
+

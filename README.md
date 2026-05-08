@@ -2,7 +2,7 @@
 
 CodeSeeq is a Codex CLI command switch for DeepSeek: in normal use, replace `codex ...` with `codeseeq ...`. It runs Codex against a local OpenResponses-compatible CodeSeeq bridge, which forwards model traffic to DeepSeek.
 
-Current version: `0.2.5` (from [`VERSION`](./VERSION)).
+Current version: `0.2.6` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -70,7 +70,7 @@ Danger mode is explicit:
 ./codeseeq --sanbox danger-full-access "fix the tests"
 ```
 
-In danger mode, CodeSeeq starts only the bridge in the selected container runtime and runs local host `codex` directly on the current checkout. It uses isolated repo-local `CODEX_HOME=$PWD/.codeseeq`, never the user's real `~/.codex`.
+In danger mode, CodeSeeq starts only the bridge in the selected container runtime and runs local host `codex` directly on the current checkout. It uses isolated repo-local `CODEX_HOME=$PWD/.codeseeq`, never the user's real `~/.codex`. Each danger-mode invocation gets its own bridge on the first free localhost port starting at `CODESEEQ_OPENRESPONSES_PORT` (default `8080`).
 
 If local `codex` is missing, install it:
 
@@ -125,7 +125,7 @@ CODESEEQ_WORKSPACE_BANNER=false ./codeseeq run "say hi"
 
 ## Persistent System Prompt
 
-CodeSeeq can store a repo-local persistent system prompt:
+CodeSeeq can store a user-level persistent system prompt:
 
 ```bash
 ./codeseeq system add "You are terse and practical."
@@ -143,12 +143,12 @@ Aliases:
 Storage path:
 
 ```text
-$PWD/.codeseeq/system-prompt.md
+~/.config/codeseeq/system-prompt.md
 ```
 
 The prompt is injected into Codex config as `developer_instructions`, which Codex sends as a developer instruction while preserving Codex's built-in base instructions. It applies to normal Codex request paths including interactive sessions, bare direct prompts, `run`, `run -f/--file`, explicit `codex` passthrough, safe container mode, and danger host mode.
 
-Do not put secrets in the system prompt unless you understand that prompt text is sent to the model and stored in repo-local state. `.codeseeq/` is gitignored.
+Do not put secrets in the system prompt unless you understand that prompt text is sent to the model and stored in user-level config state.
 
 ## Prompt Files
 

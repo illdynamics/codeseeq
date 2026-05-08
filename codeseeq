@@ -53,12 +53,18 @@ WORKDIR_CONTAINER="${CODESEEQ_WORKDIR:-/workspace}"
 BUILD_CONTEXT="${CODESEEQ_BUILD_CONTEXT:-$CODESEEQ_INSTALL_ROOT}"
 AUTO_BUILD="${CODESEEQ_AUTO_BUILD:-true}"
 HOST_CODEX_HOME="${CODESEEQ_HOST_CODEX_HOME:-${WORKDIR_HOST}/.codeseeq}"
-SYSTEM_PROMPT_PATH="${CODESEEQ_SYSTEM_PROMPT_FILE:-${WORKDIR_HOST}/.codeseeq/system-prompt.md}"
+HOST_CONFIG_ROOT="${XDG_CONFIG_HOME:-${HOME:-${WORKDIR_HOST}}/.config}"
+CODESEEQ_CONFIG_HOME="${CODESEEQ_CONFIG_HOME:-${HOST_CONFIG_ROOT}/codeseeq}"
+CONTAINER_CONFIG_HOME="${CODESEEQ_CONTAINER_CONFIG_HOME:-/home/codeseeq/.config/codeseeq}"
+SYSTEM_PROMPT_PATH="${CODESEEQ_SYSTEM_PROMPT_FILE:-${CODESEEQ_CONFIG_HOME}/system-prompt.md}"
+SYSTEM_PROMPT_CONTAINER_PATH="${CONTAINER_CONFIG_HOME}/$(basename "$SYSTEM_PROMPT_PATH")"
+LEGACY_SYSTEM_PROMPT_PATH="${WORKDIR_HOST}/.codeseeq/system-prompt.md"
 : "${CODESEEQ_MODEL:=deepseek-v4-flash}"
 : "${CODESEEQ_THINKING:=}"
 : "${CODESEEQ_APPROVAL_POLICY:=on-request}"
 : "${CODESEEQ_SANDBOX_MODE:=workspace-write}"
 : "${CODESEEQ_OPENRESPONSES_PORT:=8080}"
+: "${CODESEEQ_OPENRESPONSES_PORT_SCAN_LIMIT:=100}"
 : "${CODESEEQ_OPENRESPONSES_URL:=http://127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT}/v1}"
 : "${CODESEEQ_CONTEXT_WINDOW:=1000000}"
 : "${CODESEEQ_MAX_OUTPUT_TOKENS:=384000}"
@@ -104,7 +110,7 @@ CodeSeeq commands:
   ping-docs             Check document parsing diagnostic path
   shell                 Open a shell in the CodeSeeq container
   smoke                 Run smoke tests
-  system                Manage repo-local persistent system prompt
+  system                Manage user-config persistent system prompt
   package               Create a clean release zip
 
 Prompt files:
@@ -134,7 +140,7 @@ EOF
 }
 
 print_system_help() {
-  cat <<'EOF'
+  cat <<EOF
 Usage:
   codeseeq system add "system prompt text"
   codeseeq system add -f path/to/system-prompt.md
@@ -147,8 +153,8 @@ Usage:
   codeseeq system clear
   codeseeq system --help
 
-The prompt is stored repo-locally at:
-  .codeseeq/system-prompt.md
+The prompt is stored at:
+  ${SYSTEM_PROMPT_PATH}
 EOF
 }
 
@@ -184,6 +190,18 @@ volume_suffix_for_runtime() {
   fi
   if [[ "$CONTAINER" == "podman" ]]; then
     printf ':Z'
+  fi
+}
+
+readonly_volume_suffix_for_runtime() {
+  if [[ -n "${CODESEEQ_CONFIG_VOLUME_SUFFIX+x}" ]]; then
+    printf '%s' "$CODESEEQ_CONFIG_VOLUME_SUFFIX"
+    return 0
+  fi
+  if [[ "$CONTAINER" == "podman" ]]; then
+    printf ':ro,Z'
+  else
+    printf ':ro'
   fi
 }
 
@@ -301,10 +319,18 @@ system_view() {
 }
 
 system_remove() {
+  local removed="false"
   if [[ -f "$SYSTEM_PROMPT_PATH" ]]; then
     rm -f -- "$SYSTEM_PROMPT_PATH"
     printf 'Removed CodeSeeq system prompt at %s\n' "$SYSTEM_PROMPT_PATH"
-  else
+    removed="true"
+  fi
+  if [[ "$LEGACY_SYSTEM_PROMPT_PATH" != "$SYSTEM_PROMPT_PATH" && -f "$LEGACY_SYSTEM_PROMPT_PATH" ]]; then
+    rm -f -- "$LEGACY_SYSTEM_PROMPT_PATH"
+    printf 'Removed legacy CodeSeeq system prompt at %s\n' "$LEGACY_SYSTEM_PROMPT_PATH"
+    removed="true"
+  fi
+  if [[ "$removed" != "true" ]]; then
     printf 'No CodeSeeq system prompt configured; nothing to remove.\n'
     printf 'Path: %s\n' "$SYSTEM_PROMPT_PATH"
   fi
@@ -578,14 +604,51 @@ bridge_health_host() {
     "${CODESEEQ_OPENRESPONSES_URL%/v1}/health" >/dev/null 2>&1
 }
 
+host_port_listening() {
+  local port="$1"
+  if [[ -n "${CODESEEQ_TEST_BUSY_PORTS+x}" ]]; then
+    case " ${CODESEEQ_TEST_BUSY_PORTS:-} " in
+      *" ${port} "*) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  (exec 3<>"/dev/tcp/127.0.0.1/${port}") >/dev/null 2>&1
+}
+
+set_bridge_port() {
+  CODESEEQ_OPENRESPONSES_PORT="$1"
+  CODESEEQ_OPENRESPONSES_URL="http://127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT}/v1"
+  export CODESEEQ_OPENRESPONSES_PORT CODESEEQ_OPENRESPONSES_URL
+}
+
+select_host_bridge_port() {
+  local start="$CODESEEQ_OPENRESPONSES_PORT"
+  local limit="$CODESEEQ_OPENRESPONSES_PORT_SCAN_LIMIT"
+  [[ "$start" =~ ^[0-9]+$ ]] || die "invalid CODESEEQ_OPENRESPONSES_PORT: ${start}"
+  [[ "$limit" =~ ^[0-9]+$ && "$limit" -gt 0 ]] || die "invalid CODESEEQ_OPENRESPONSES_PORT_SCAN_LIMIT: ${limit}"
+
+  local port end
+  end=$((start + limit))
+  for ((port = start; port < end; port++)); do
+    if host_port_listening "$port"; then
+      continue
+    fi
+    set_bridge_port "$port"
+    return 0
+  done
+
+  die "no free host bridge port found in range ${start}-$((end - 1))"
+}
+
 start_bridge_container() {
   ensure_image
-  if bridge_health_host; then
-    return 0
-  fi
+  select_host_bridge_port
 
-  local name="${CODESEEQ_BRIDGE_CONTAINER_NAME:-codeseeq-bridge-${CODESEEQ_OPENRESPONSES_PORT}}"
+  local name="${CODESEEQ_BRIDGE_CONTAINER_NAME:-codeseeq-bridge-${CODESEEQ_OPENRESPONSES_PORT}-$$}"
   if container_exists_by_name "$name"; then
+    if [[ -n "${CODESEEQ_BRIDGE_CONTAINER_NAME:-}" ]]; then
+      die "bridge container name already exists: $name"
+    fi
     warn "removing stale bridge container: $name"
     "$CONTAINER" rm -f "$name" >/dev/null 2>&1 || true
   fi
@@ -607,7 +670,7 @@ start_bridge_container() {
   done
   run_args+=(--entrypoint /usr/local/bin/codeseeq-bridge.py "$IMAGE")
 
-  log "starting bridge container with ${CONTAINER} on ${CODESEEQ_OPENRESPONSES_URL}"
+  log "starting bridge container ${name} with ${CONTAINER} on ${CODESEEQ_OPENRESPONSES_URL}"
   "$CONTAINER" "${run_args[@]}" >/dev/null
   BRIDGE_CONTAINER_STARTED="$name"
 
@@ -660,6 +723,10 @@ parse_run_prompt() {
         [[ $# -ge 2 ]] || die "run: $arg requires a value"
         CODESEEQ_MODEL="$2"
         shift 2
+        ;;
+      --model=*)
+        CODESEEQ_MODEL="${arg#--model=}"
+        shift
         ;;
       --thinking)
         CODESEEQ_THINKING="true"
@@ -818,7 +885,8 @@ collect_env() {
     -e "CODESEEQ_YOLO=${CODESEEQ_YOLO:-false}"
     -e "CODESEEQ_HOST_WORKDIR=${WORKDIR_HOST}"
     -e "CODESEEQ_WORKDIR=${WORKDIR_CONTAINER}"
-    -e "CODESEEQ_SYSTEM_PROMPT_FILE=${WORKDIR_CONTAINER}/.codeseeq/system-prompt.md"
+    -e "CODESEEQ_CONFIG_HOME=${CONTAINER_CONFIG_HOME}"
+    -e "CODESEEQ_SYSTEM_PROMPT_FILE=${SYSTEM_PROMPT_CONTAINER_PATH}"
     -e "CODESEEQ_OPENRESPONSES_PORT=${CODESEEQ_OPENRESPONSES_PORT}"
     -e "CODESEEQ_OPENRESPONSES_URL=${CODESEEQ_OPENRESPONSES_URL}"
     -e "CODESEEQ_CONTEXT_WINDOW=${CODESEEQ_CONTEXT_WINDOW}"
@@ -849,9 +917,16 @@ run_safe_container() {
   rewrite_safe_run_file_args "$@"
   ensure_image
 
-  local suffix volume_spec
+  local suffix volume_spec config_suffix config_volume_spec system_prompt_dir
   suffix="$(volume_suffix_for_runtime)"
   volume_spec="${WORKDIR_HOST}:${WORKDIR_CONTAINER}${suffix}"
+  system_prompt_dir="$(dirname "$SYSTEM_PROMPT_PATH")"
+  if [[ -d "$system_prompt_dir" ]]; then
+    config_suffix="$(readonly_volume_suffix_for_runtime)"
+    config_volume_spec="${system_prompt_dir}:${CONTAINER_CONFIG_HOME}${config_suffix}"
+  else
+    config_volume_spec=""
+  fi
 
   local run_args=(run --rm)
   if [[ "$CONTAINER" == "podman" && -n "${CODESEEQ_PODMAN_USERNS:-}" ]]; then
@@ -860,7 +935,11 @@ run_safe_container() {
   if [[ -t 0 && -t 1 ]]; then
     run_args+=(-it)
   fi
-  run_args+=(-v "$volume_spec" -w "$WORKDIR_CONTAINER")
+  run_args+=(-v "$volume_spec")
+  if [[ -n "$config_volume_spec" ]]; then
+    run_args+=(-v "$config_volume_spec")
+  fi
+  run_args+=(-w "$WORKDIR_CONTAINER")
   collect_env
   run_args+=("${CONTAINER_ENV_ARGS[@]}")
 
@@ -906,6 +985,10 @@ run_host_codex() {
           CODESEEQ_MODEL="$2"
           shift 2
           ;;
+        --model=*)
+          CODESEEQ_MODEL="${arg#--model=}"
+          shift
+          ;;
         --thinking)
           CODESEEQ_THINKING="true"
           shift
@@ -944,10 +1027,9 @@ run_host_codex() {
     fi
   fi
 
-	normalize_model "$CODESEEQ_MODEL" "$CODESEEQ_THINKING"
-	CODESEEQ_OPENRESPONSES_URL="http://127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT}/v1"
-	write_host_config
-	start_bridge_container
+  normalize_model "$CODESEEQ_MODEL" "$CODESEEQ_THINKING"
+  start_bridge_container
+  write_host_config
 
   export CODEX_HOME="$HOST_CODEX_HOME"
   export CODESEEQ_HOST_MODE=true

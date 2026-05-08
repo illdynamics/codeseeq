@@ -46,6 +46,7 @@ if command -v rsync >/dev/null 2>&1; then
   rsync -a --delete \
     --exclude '.git/' \
     --exclude '.codeseeq/' \
+    --exclude 'system-prompt.md' \
     --exclude '.env' \
     --exclude '.env.*' \
     --exclude '.tmp-*/' \
@@ -58,6 +59,7 @@ else
   tar -C "$SOURCE_ROOT" \
     --exclude '.git' \
     --exclude '.codeseeq' \
+    --exclude 'system-prompt.md' \
     --exclude '.env' \
     --exclude '.env.*' \
     --exclude '.tmp-*' \

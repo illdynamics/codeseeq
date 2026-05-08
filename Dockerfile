@@ -38,13 +38,14 @@ RUN chmod +x \
 
 RUN groupadd -g 10001 codeseeq && \
     useradd -m -u 10001 -g 10001 -s /bin/bash codeseeq && \
-    mkdir -p /workspace /home/codeseeq/.codeseeq /run/codeseeq /var/log/codeseeq && \
+    mkdir -p /workspace /home/codeseeq/.codeseeq /home/codeseeq/.config/codeseeq /run/codeseeq /var/log/codeseeq && \
     chown -R codeseeq:codeseeq /workspace /home/codeseeq /run/codeseeq /var/log/codeseeq /etc/codeseeq
 
 WORKDIR /workspace
 
 ENV CODESEEQ_IN_CONTAINER=1 \
     CODESEEQ_CODEX_HOME=/home/codeseeq/.codeseeq \
+    CODESEEQ_CONFIG_HOME=/home/codeseeq/.config/codeseeq \
     CODESEEQ_WORKDIR=/workspace \
     CODESEEQ_OPENRESPONSES_HOST=127.0.0.1 \
     CODESEEQ_OPENRESPONSES_PORT=8080 \

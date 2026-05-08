@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -117,30 +118,76 @@ def main() -> None:
     assert payloads[-1]["type"] == "response.output_item.done"
     assert payloads[-1]["output_index"] == 3
 
-    payload = bridge.deepseek_payload(
+    prepared, err = bridge.prepare_structured_tool_call(
         {
-            "stream": True,
-            "tools": [
-                {
-                    "type": "function",
-                    "name": "exec_command",
-                    "description": "Run a command",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"cmd": {"type": "string"}},
-                    },
-                    "strict": False,
-                }
-            ],
-            "tool_choice": {"type": "function", "name": "exec_command"},
+            "id": "call_good",
+            "type": "function",
+            "function": {
+                "name": "exec_command",
+                "arguments": '{"command":"pwd"}',
+            },
         },
-        "deepseek-v4-flash",
-        False,
-        [{"role": "user", "content": "pwd"}],
+        registered_tools={"exec_command"},
+        registered_arg_names={"exec_command": {"cmd"}},
     )
-    assert payload["tools"][0]["function"]["name"] == "exec_command"
-    assert payload["tools"][0]["function"]["parameters"]["properties"]["cmd"]["type"] == "string"
-    assert payload["tool_choice"]["function"]["name"] == "exec_command"
+    assert err is None, err
+    assert prepared is not None
+    assert json.loads(prepared["function"]["arguments"]) == {"cmd": "pwd"}
+
+    prepared, err = bridge.prepare_structured_tool_call(
+        {
+            "id": "call_bad",
+            "type": "function",
+            "function": {
+                "name": "exec_command",
+                "arguments": '{"cmd":"unterminated',
+            },
+        },
+        registered_tools={"exec_command"},
+        registered_arg_names={"exec_command": {"cmd"}},
+    )
+    assert prepared is None, prepared
+    assert err and "argument_chars" in err and "tool=exec_command" in err, err
+    assert "blocked a malformed upstream tool call" in bridge.malformed_tool_call_message([err])
+
+    previous_max = os.environ.pop("CODESEEQ_MAX_OUTPUT_TOKENS", None)
+    try:
+        payload = bridge.deepseek_payload(
+            {
+                "stream": True,
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "exec_command",
+                        "description": "Run a command",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"cmd": {"type": "string"}},
+                        },
+                        "strict": False,
+                    }
+                ],
+                "tool_choice": {"type": "function", "name": "exec_command"},
+            },
+            "deepseek-v4-flash",
+            False,
+            [{"role": "user", "content": "pwd"}],
+        )
+        assert payload["tools"][0]["function"]["name"] == "exec_command"
+        assert payload["tools"][0]["function"]["parameters"]["properties"]["cmd"]["type"] == "string"
+        assert payload["tool_choice"]["function"]["name"] == "exec_command"
+        assert payload["max_tokens"] == 384000
+
+        capped_payload = bridge.deepseek_payload(
+            {"stream": False, "max_output_tokens": 999999},
+            "deepseek-v4-flash",
+            False,
+            [{"role": "user", "content": "pwd"}],
+        )
+        assert capped_payload["max_tokens"] == 384000
+    finally:
+        if previous_max is not None:
+            os.environ["CODESEEQ_MAX_OUTPUT_TOKENS"] = previous_max
 
     buf = bridge.StreamingDsmlBuffer({"exec_command"})
     safe_parts: list[str] = []

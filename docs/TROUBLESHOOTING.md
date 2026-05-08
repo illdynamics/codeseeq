@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `0.2.5`
+Current version: `0.2.6`
 
 ## `./codeseeq` is not executable
 
@@ -142,23 +142,23 @@ CodeSeeq will not silently fall back to container Codex for danger-full-access, 
 
 ## Bridge Port Conflict
 
-Danger host mode publishes the bridge on:
+Danger host mode starts a bridge for each CodeSeeq invocation. It picks the first free localhost port starting at:
 
 ```text
 http://127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT:-8080}/v1
 ```
 
-Change the port:
+Change the starting port:
 
 ```bash
 CODESEEQ_OPENRESPONSES_PORT=18080 ./codeseeq -y "say hi"
 ```
 
-If startup fails, inspect the bridge container logs:
+If startup fails, inspect the bridge container name printed in the startup log, or list bridge containers:
 
 ```bash
-podman logs codeseeq-bridge-8080
-docker logs codeseeq-bridge-8080
+podman ps --filter name=codeseeq-bridge
+docker ps --filter name=codeseeq-bridge
 ```
 
 ## Codex Asks For OpenAI Login
@@ -190,7 +190,7 @@ Check:
 Expected storage path:
 
 ```text
-$PWD/.codeseeq/system-prompt.md
+~/.config/codeseeq/system-prompt.md
 ```
 
 Set one:

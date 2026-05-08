@@ -484,6 +484,23 @@ if ./scripts/package.sh --check-archive "$dirty_zip" >"${tmp_check_dir}/dirty-pa
 elif ! grep -Fq '.env' "${tmp_check_dir}/dirty-package.err"; then
   fail "dirty archive failure did not mention .env"
 fi
+dirty_prompt_zip="${package_dir}/dirty-system-prompt.zip"
+python3 - "$dirty_prompt_zip" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1], "w") as zf:
+    zf.writestr("system-prompt.md", "do-not-ship\n")
+    zf.writestr("README.md", "dirty fixture\n")
+PY
+if ./scripts/package.sh --check-archive "$dirty_prompt_zip" >"${tmp_check_dir}/dirty-system-prompt-package.out" 2>"${tmp_check_dir}/dirty-system-prompt-package.err"; then
+  fail "dirty archive containing system-prompt.md unexpectedly passed --check-archive"
+elif ! grep -Fq 'system-prompt.md' "${tmp_check_dir}/dirty-system-prompt-package.err"; then
+  fail "dirty system-prompt archive failure did not mention system-prompt.md"
+fi
+if ! rg -n "system-prompt.md" scripts/install.sh >/dev/null 2>&1; then
+  fail "installer does not preserve user-config system-prompt.md"
+fi
 
 note "checking root wrapper fake runtime env and CLI passthrough"
 runtimebin="${tmp_check_dir}/runtimebin"
@@ -542,6 +559,30 @@ fi
 EOF
 chmod +x "${runtimebin}/podman" "${runtimebin}/docker" "${runtimebin}/curl" "${runtimebin}/codex"
 
+note "checking root wrapper user-config system prompt management"
+prompt_workspace="${tmp_check_dir}/prompt-workspace"
+prompt_config_home="${tmp_check_dir}/user-config/codeseeq"
+mkdir -p "$prompt_workspace"
+if ! CODESEEQ_WORKDIR_HOST="$prompt_workspace" \
+  CODESEEQ_CONFIG_HOME="$prompt_config_home" \
+  ./codeseeq system add "persistent-prompt" >"${tmp_check_dir}/system-add.out"; then
+  fail "root wrapper system add failed"
+else
+  if [[ ! -f "${prompt_config_home}/system-prompt.md" ]]; then
+    fail "system add did not store prompt under CODESEEQ_CONFIG_HOME"
+  fi
+  if [[ -f "${prompt_workspace}/.codeseeq/system-prompt.md" ]]; then
+    fail "system add wrote legacy repo-local system prompt"
+  fi
+fi
+if ! CODESEEQ_WORKDIR_HOST="$prompt_workspace" \
+  CODESEEQ_CONFIG_HOME="$prompt_config_home" \
+  ./codeseeq system remove >"${tmp_check_dir}/system-remove.out"; then
+  fail "root wrapper system remove failed"
+elif [[ -f "${prompt_config_home}/system-prompt.md" ]]; then
+  fail "system remove did not remove user-config system prompt"
+fi
+
 if ! env -u BRAVE_API_KEY -u UNSTRUCTURED_API_KEY -u RESPONSES_API_KEY \
   PATH="${runtimebin}:$PATH" \
   DEEPSEEK_API_KEY="dummy-test-key" \
@@ -554,7 +595,8 @@ else
     "CODESEEQ_MODEL=deepseek-v4-flash" \
     "CODESEEQ_APPROVAL_POLICY=on-request" \
     "CODESEEQ_SANDBOX_MODE=workspace-write" \
-    "CODESEEQ_SYSTEM_PROMPT_FILE=/workspace/.codeseeq/system-prompt.md"; do
+    "CODESEEQ_CONFIG_HOME=/home/codeseeq/.config/codeseeq" \
+    "CODESEEQ_SYSTEM_PROMPT_FILE=/home/codeseeq/.config/codeseeq/system-prompt.md"; do
     if ! grep -Fxq -- "$expected_env" "${tmp_check_dir}/runtime-models.args"; then
       fail "root runtime args missing explicit env: ${expected_env}"
     fi
@@ -674,6 +716,30 @@ else
   fi
   if ! grep -Fxq -- "${host_workspace}/.codeseeq" "${tmp_check_dir}/runtime-danger-codex-home.out"; then
     fail "danger host mode did not use workspace-local CODEX_HOME"
+  fi
+fi
+
+port_scan_workspace="${tmp_check_dir}/host-port-scan-workspace"
+mkdir -p "$port_scan_workspace"
+if ! PATH="${runtimebin}:$PATH" \
+  DEEPSEEK_API_KEY="dummy-test-key" \
+  CODESEEQ_AUTO_BUILD=false \
+  CODESEEQ_WORKDIR_HOST="$port_scan_workspace" \
+  CODESEEQ_TEST_RUNTIME_ARGS="${tmp_check_dir}/runtime-danger-port-scan-bridge.args" \
+  CODESEEQ_TEST_CODEX_ARGS="${tmp_check_dir}/runtime-danger-port-scan-codex.args" \
+  CODESEEQ_TEST_CODEX_HOME="${tmp_check_dir}/runtime-danger-port-scan-codex-home.out" \
+  CODESEEQ_TEST_CODEX_STDIN="${tmp_check_dir}/runtime-danger-port-scan-codex-stdin.out" \
+  CODESEEQ_TEST_BRIDGE_UP="${tmp_check_dir}/bridge-up-port-scan" \
+  CODESEEQ_TEST_BUSY_PORTS="18083 18084" \
+  CODESEEQ_OPENRESPONSES_PORT=18083 \
+  ./codeseeq -y "Return exactly: codeseeq-ok"; then
+  fail "danger host mode did not complete when base bridge ports were busy"
+else
+  if ! grep -Fxq -- "127.0.0.1:18085:18085" "${tmp_check_dir}/runtime-danger-port-scan-bridge.args"; then
+    fail "danger host mode did not advance to the first free bridge port"
+  fi
+  if ! rg -n '^base_url = "http://127.0.0.1:18085/v1"$' "${port_scan_workspace}/.codeseeq/config.toml" >/dev/null 2>&1; then
+    fail "danger host Codex config did not remember selected bridge port"
   fi
 fi
 

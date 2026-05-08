@@ -1,6 +1,6 @@
 # Security
 
-Current version: `0.2.5`
+Current version: `0.2.6`
 
 ## Runtime Secrets
 
@@ -96,13 +96,11 @@ No supported path mounts or writes the user's normal `~/.codex`.
 
 ## Persistent System Prompt
 
-System prompts are stored repo-locally:
+System prompts are stored in user-level CodeSeeq config:
 
 ```text
-$PWD/.codeseeq/system-prompt.md
+~/.config/codeseeq/system-prompt.md
 ```
-
-`.codeseeq/` is gitignored and should stay gitignored.
 
 System prompts are not treated as secrets by default. They are sent to the model as `developer_instructions` on normal CodeSeeq/Codex requests. Do not place secrets in a system prompt unless you understand that risk.
 
@@ -138,5 +136,5 @@ This does not grant the container extra paths. It only explains where the `/work
 ## Network Scope
 
 - Safe-mode bridge binds to `127.0.0.1` inside the container.
-- Danger host-mode bridge is published to `127.0.0.1:<CODESEEQ_OPENRESPONSES_PORT>` on the host.
+- Danger host-mode bridge is published to the first free host port starting at `CODESEEQ_OPENRESPONSES_PORT`.
 - Examples mount only the current project path into `/workspace`.

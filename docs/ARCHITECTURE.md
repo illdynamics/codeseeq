@@ -1,6 +1,6 @@
 # Architecture
 
-Current version: `0.2.5`
+Current version: `0.2.6`
 
 ## Runtime Modes
 
@@ -84,6 +84,7 @@ Danger host mode:
 - config path `$PWD/.codeseeq/config.toml`
 - local `codex` is invoked with `--dangerously-bypass-approvals-and-sandbox`.
 - bridge remains containerized and bound to `127.0.0.1` on the host.
+- each invocation starts its own bridge on the first free port starting at `CODESEEQ_OPENRESPONSES_PORT` (default `8080`).
 
 No supported path uses the user's real `~/.codex`.
 
@@ -92,7 +93,7 @@ No supported path uses the user's real `~/.codex`.
 The persistent system prompt source of truth is:
 
 ```text
-$PWD/.codeseeq/system-prompt.md
+~/.config/codeseeq/system-prompt.md
 ```
 
 The wrapper manages it through:

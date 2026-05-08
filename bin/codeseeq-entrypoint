@@ -90,6 +90,12 @@ print_workspace_banner() {
   fi
 }
 
+if [[ -n "${CODESEEQ_SYSTEM_PROMPT_FILE+x}" ]]; then
+  CODESEEQ_SYSTEM_PROMPT_FILE_EXPLICIT=true
+else
+  CODESEEQ_SYSTEM_PROMPT_FILE_EXPLICIT=false
+fi
+
 : "${CODESEEQ_MODEL:=deepseek-v4-flash}"
 : "${CODESEEQ_THINKING:=}"
 : "${CODESEEQ_OPENRESPONSES_HOST:=127.0.0.1}"
@@ -111,14 +117,16 @@ print_workspace_banner() {
 : "${CODESEEQ_YOLO:=false}"
 : "${CODESEEQ_HOST_WORKDIR:=}"
 : "${CODESEEQ_WORKSPACE_BANNER:=true}"
-: "${CODESEEQ_SYSTEM_PROMPT_FILE:=${CODESEEQ_WORKDIR}/.codeseeq/system-prompt.md}"
+: "${CODESEEQ_CONFIG_HOME:=${XDG_CONFIG_HOME:-/home/codeseeq/.config}/codeseeq}"
+: "${CODESEEQ_SYSTEM_PROMPT_FILE:=${CODESEEQ_CONFIG_HOME}/system-prompt.md}"
 : "${CODESEEQ_SYSTEM_PROMPT_INJECTION:=codex-config-developer_instructions}"
 
 export CODESEEQ_MODEL CODESEEQ_THINKING CODESEEQ_OPENRESPONSES_HOST CODESEEQ_OPENRESPONSES_PORT
 export CODESEEQ_OPENRESPONSES_URL CODESEEQ_OPENRESPONSES_CMD CODESEEQ_CODEX_HOME CODESEEQ_WORKDIR
 export CODESEEQ_APPROVAL_POLICY CODESEEQ_SANDBOX_MODE CODESEEQ_STREAM CODESEEQ_STREAM_IDLE_TIMEOUT_MS
 export CODESEEQ_REQUEST_MAX_RETRIES CODESEEQ_CONTEXT_WINDOW CODESEEQ_MAX_OUTPUT_TOKENS CODESEEQ_YOLO
-export CODESEEQ_HOST_WORKDIR CODESEEQ_WORKSPACE_BANNER CODESEEQ_SYSTEM_PROMPT_FILE CODESEEQ_SYSTEM_PROMPT_INJECTION
+export CODESEEQ_HOST_WORKDIR CODESEEQ_WORKSPACE_BANNER CODESEEQ_CONFIG_HOME CODESEEQ_SYSTEM_PROMPT_FILE
+export CODESEEQ_SYSTEM_PROMPT_INJECTION
 
 mkdir -p "$CODESEEQ_CODEX_HOME" "$CODESEEQ_WORKDIR" "$CODESEEQ_RUNTIME_DIR" "$CODESEEQ_LOG_DIR"
 CODESEEQ_PID_FILE="$CODESEEQ_RUNTIME_DIR/openresponses.pid"
@@ -130,10 +138,12 @@ resolve_system_prompt_file() {
   local candidates=()
 
   [[ -n "$configured" ]] && candidates+=("$configured")
-  candidates+=(
-    "${CODESEEQ_WORKDIR}/.codeseeq/system-prompt.md"
-    "${CODESEEQ_CODEX_HOME}/system-prompt.md"
-  )
+  if [[ "$CODESEEQ_SYSTEM_PROMPT_FILE_EXPLICIT" != "true" ]]; then
+    candidates+=(
+      "${CODESEEQ_WORKDIR}/.codeseeq/system-prompt.md"
+      "${CODESEEQ_CODEX_HOME}/system-prompt.md"
+    )
+  fi
 
   for candidate in "${candidates[@]}"; do
     if [[ -f "$candidate" && -s "$candidate" ]]; then
@@ -146,7 +156,7 @@ resolve_system_prompt_file() {
   if [[ -n "$configured" ]]; then
     CODESEEQ_SYSTEM_PROMPT_FILE="$configured"
   else
-    CODESEEQ_SYSTEM_PROMPT_FILE="${CODESEEQ_WORKDIR}/.codeseeq/system-prompt.md"
+    CODESEEQ_SYSTEM_PROMPT_FILE="${CODESEEQ_CONFIG_HOME}/system-prompt.md"
   fi
   export CODESEEQ_SYSTEM_PROMPT_FILE
 }
