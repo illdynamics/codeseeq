@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `0.2.6`
+Current version: `0.2.7`
 
 ## `./codeseeq` is not executable
 
@@ -125,7 +125,7 @@ These forms should trigger host Codex mode:
 ./codeseeq --yolo "say hi"
 ./codeseeq --dangerously-bypass-approvals-and-sandbox "say hi"
 ./codeseeq --sandbox danger-full-access "say hi"
-./codeseeq --sanbox danger-full-access "say hi"
+./codeseeq --sandbox danger-full-access "say hi"
 ```
 
 In that mode CodeSeeq starts a bridge container, then runs local host `codex` with `CODEX_HOME=$PWD/.codeseeq`.

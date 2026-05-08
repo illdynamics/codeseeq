@@ -101,6 +101,7 @@ Usage:
 CodeSeeq commands:
   build                 Build the CodeSeeq image
   install               Install the user-local launcher
+  nuke                  Remove all installed CodeSeeq artifacts
   models                Print supported DeepSeek models
   doctor                Check bridge/config/runtime status
   config                Print generated Codex config status
@@ -1070,6 +1071,35 @@ run_host_codex() {
   exit $status
 }
 
+
+cmd_nuke() {
+  local install_dir="${CODESEEQ_INSTALL_DIR:-${HOME}/.config/codeseeq}"
+  local bin_dir="${CODESEEQ_BIN_DIR:-${HOME}/bin}"
+  local launcher="${bin_dir}/codeseeq"
+
+  warn "This will remove:"
+  warn "  - ${install_dir} (installed snapshot)"
+  warn "  - ${launcher} (launcher script)"
+  warn "  - ${HOME}/.codeseeq (user Codex state, if any)"
+  warn ""
+  warn "Your repo checkout and container images are left untouched."
+  printf 'Are you sure? [y/N] ' >&2
+  local reply
+  read -r reply
+  case "$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')" in
+    y|yes)
+      rm -rf -- "${install_dir}" 2>/dev/null || true
+      rm -f -- "${launcher}" 2>/dev/null || true
+      rm -rf -- "${HOME}/.codeseeq" 2>/dev/null || true
+      log "CodeSeeq has been nuked from your user environment."
+      ;;
+    *)
+      log "Nuke cancelled."
+      exit 0
+      ;;
+  esac
+}
+
 case "${1:-}" in
   install)
     installer="${CODESEEQ_INSTALL_ROOT}/scripts/install.sh"
@@ -1095,6 +1125,10 @@ case "${1:-}" in
   system)
     shift
     system_cmd "$@"
+    exit $?
+    ;;
+  nuke)
+    cmd_nuke "$@"
     exit $?
     ;;
   --help|-h)

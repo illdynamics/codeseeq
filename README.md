@@ -1,8 +1,12 @@
 # CodeSeeq
 
-CodeSeeq is a Codex CLI command switch for DeepSeek: in normal use, replace `codex ...` with `codeseeq ...`. It runs Codex against a local OpenResponses-compatible CodeSeeq bridge, which forwards model traffic to DeepSeek.
+CodeSeeq is a drop-in launcher and CLI wrapper for OpenAI's Codex CLI, routing all model traffic through a local OpenResponses-compatible bridge to DeepSeek. Where you would normally type `codex ...`, you type `codeseeq ...` instead — it manages the container runtime, bridge lifecycle, configuration, and DeepSeek model wiring so you get a seamless Codex experience backed by DeepSeek.
 
-Current version: `0.2.6` (from [`VERSION`](./VERSION)).
+<p align="center">
+  <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
+</p>
+
+Current version: `0.2.7` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -42,6 +46,12 @@ Install the user-local command:
 ```
 
 This installs a snapshot to `~/.config/codeseeq` and a launcher at `~/bin/codeseeq`.
+
+Uninstall with:
+
+```bash
+./codeseeq nuke
+```
 
 ## Runtime Model
 
@@ -174,6 +184,7 @@ CodeSeeq-specific commands remain available:
 ```bash
 ./codeseeq build
 ./codeseeq install
+./codeseeq nuke
 ./codeseeq doctor
 ./codeseeq models
 ./codeseeq config

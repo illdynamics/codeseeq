@@ -1,3 +1,34 @@
+## 0.2.7 - 2026-05-08
+
+### Added
+
+- **`codeseeq nuke` subcommand.** Uninstalls all CodeSeeq user artifacts — the
+  installed snapshot at `~/.config/codeseeq`, the launcher at `~/bin/codeseeq`,
+  and any leftover `~/.codeseeq` state — with a confirmation prompt before
+  removal. The local repo checkout and container images are left untouched.
+
+### Changed
+
+- **README.md description rewritten.** The first paragraph now describes
+  CodeSeeq as a "drop-in launcher and CLI wrapper" rather than a "command
+  switch", better reflecting its role as a full launcher/substitute that
+  manages container runtime, bridge lifecycle, configuration, and DeepSeek
+  model wiring.
+- **CodeSeeq splash image.** The `codeseeq.jpg` image was added to the README
+  between the introductory paragraph and the version/release-notes section.
+- **Version bumped to `0.2.7`.** Updated `VERSION`, `README.md`, and all
+  doc-version references in `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, and
+  `docs/TROUBLESHOOTING.md`.
+
+### Fixed
+
+- **Typo `--sanbox` in README.md and doc examples.** The documented alias
+  examples in `README.md`, `docs/TROUBLESHOOTING.md`, and `docs/SECURITY.md`
+  were using `--sanbox` instead of the correct `--sandbox`. Fixed to show the
+  proper flag spelling while keeping `--sanbox` as an accepted internal alias.
+
+---
+
 # Release Notes
 
 ## 0.2.6 - 2026-05-08

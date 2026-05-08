@@ -1,6 +1,6 @@
 # Security
 
-Current version: `0.2.6`
+Current version: `0.2.7`
 
 ## Runtime Secrets
 
@@ -60,7 +60,7 @@ These forms opt into Codex's dangerous bypass:
 ./codeseeq --yolo ...
 ./codeseeq --dangerously-bypass-approvals-and-sandbox ...
 ./codeseeq --sandbox danger-full-access ...
-./codeseeq --sanbox danger-full-access ...
+./codeseeq --sandbox danger-full-access ...
 ```
 
 In danger mode:
