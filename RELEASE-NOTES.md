@@ -225,5 +225,5 @@ entrypoint, or scripts.
 - Added root `./codeseeq` launcher and container entrypoint path.
 - Added DeepSeek/OpenResponses bridge runtime wiring and smoke scripts.
 - Added `VERSION` file with starting semantic version.
-- Added AGPL licensing files (`LICENSE`, `COPYRIGHT`) and README license notice.
+- Switched license from AGPL-3.0 to Apache 2.0 (updated `LICENSE`, `COPYRIGHT`, `README.md`).
 
