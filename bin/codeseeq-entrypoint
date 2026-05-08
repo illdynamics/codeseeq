@@ -38,6 +38,58 @@ key_state() {
   fi
 }
 
+toml_quote_file() {
+  local path="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -Rs . < "$path"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' < "$path"
+  else
+    die "jq or python3 is required to quote system prompt text for Codex config"
+  fi
+}
+
+system_prompt_present() {
+  [[ -f "$CODESEEQ_SYSTEM_PROMPT_FILE" && -s "$CODESEEQ_SYSTEM_PROMPT_FILE" ]]
+}
+
+system_prompt_state() {
+  if system_prompt_present; then
+    printf 'present'
+  else
+    printf 'missing'
+  fi
+}
+
+system_prompt_bytes() {
+  if [[ -f "$CODESEEQ_SYSTEM_PROMPT_FILE" ]]; then
+    wc -c < "$CODESEEQ_SYSTEM_PROMPT_FILE" | tr -d '[:space:]'
+  else
+    printf '0'
+  fi
+}
+
+system_prompt_lines() {
+  if [[ -f "$CODESEEQ_SYSTEM_PROMPT_FILE" ]]; then
+    awk 'END { print NR }' "$CODESEEQ_SYSTEM_PROMPT_FILE"
+  else
+    printf '0'
+  fi
+}
+
+print_workspace_banner() {
+  if [[ "$(bool_normalize "${CODESEEQ_WORKSPACE_BANNER:-true}")" == "false" ]]; then
+    return 0
+  fi
+  if [[ -n "${CODESEEQ_HOST_WORKDIR:-}" ]]; then
+    {
+      printf 'CodeSeeq workspace:\n'
+      printf '  host: %s\n' "$CODESEEQ_HOST_WORKDIR"
+      printf '  container: %s\n' "$CODESEEQ_WORKDIR"
+    } >&2
+  fi
+}
+
 : "${CODESEEQ_MODEL:=deepseek-v4-flash}"
 : "${CODESEEQ_THINKING:=}"
 : "${CODESEEQ_OPENRESPONSES_HOST:=127.0.0.1}"
@@ -46,8 +98,8 @@ key_state() {
 : "${CODESEEQ_OPENRESPONSES_CMD:=/usr/local/bin/codeseeq-bridge.py}"
 : "${CODESEEQ_CODEX_HOME:=/home/codeseeq/.codeseeq}"
 : "${CODESEEQ_WORKDIR:=/workspace}"
-: "${CODESEEQ_APPROVAL_POLICY:=never}"
-: "${CODESEEQ_SANDBOX_MODE:=danger-full-access}"
+: "${CODESEEQ_APPROVAL_POLICY:=on-request}"
+: "${CODESEEQ_SANDBOX_MODE:=workspace-write}"
 : "${CODESEEQ_STREAM:=true}"
 : "${CODESEEQ_STREAM_IDLE_TIMEOUT_MS:=600000}"
 : "${CODESEEQ_REQUEST_MAX_RETRIES:=2}"
@@ -57,15 +109,49 @@ key_state() {
 : "${CODESEEQ_LOG_DIR:=/var/log/codeseeq}"
 : "${CODESEEQ_OPENRESPONSES_START_TIMEOUT_SECONDS:=45}"
 : "${CODESEEQ_YOLO:=false}"
+: "${CODESEEQ_HOST_WORKDIR:=}"
+: "${CODESEEQ_WORKSPACE_BANNER:=true}"
+: "${CODESEEQ_SYSTEM_PROMPT_FILE:=${CODESEEQ_WORKDIR}/.codeseeq/system-prompt.md}"
+: "${CODESEEQ_SYSTEM_PROMPT_INJECTION:=codex-config-developer_instructions}"
 
 export CODESEEQ_MODEL CODESEEQ_THINKING CODESEEQ_OPENRESPONSES_HOST CODESEEQ_OPENRESPONSES_PORT
 export CODESEEQ_OPENRESPONSES_URL CODESEEQ_OPENRESPONSES_CMD CODESEEQ_CODEX_HOME CODESEEQ_WORKDIR
 export CODESEEQ_APPROVAL_POLICY CODESEEQ_SANDBOX_MODE CODESEEQ_STREAM CODESEEQ_STREAM_IDLE_TIMEOUT_MS
 export CODESEEQ_REQUEST_MAX_RETRIES CODESEEQ_CONTEXT_WINDOW CODESEEQ_MAX_OUTPUT_TOKENS CODESEEQ_YOLO
+export CODESEEQ_HOST_WORKDIR CODESEEQ_WORKSPACE_BANNER CODESEEQ_SYSTEM_PROMPT_FILE CODESEEQ_SYSTEM_PROMPT_INJECTION
 
 mkdir -p "$CODESEEQ_CODEX_HOME" "$CODESEEQ_WORKDIR" "$CODESEEQ_RUNTIME_DIR" "$CODESEEQ_LOG_DIR"
 CODESEEQ_PID_FILE="$CODESEEQ_RUNTIME_DIR/openresponses.pid"
 CODESEEQ_LOG_FILE="$CODESEEQ_LOG_DIR/openresponses.log"
+
+resolve_system_prompt_file() {
+  local configured="${CODESEEQ_SYSTEM_PROMPT_FILE:-}"
+  local candidate
+  local candidates=()
+
+  [[ -n "$configured" ]] && candidates+=("$configured")
+  candidates+=(
+    "${CODESEEQ_WORKDIR}/.codeseeq/system-prompt.md"
+    "${CODESEEQ_CODEX_HOME}/system-prompt.md"
+  )
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -f "$candidate" && -s "$candidate" ]]; then
+      CODESEEQ_SYSTEM_PROMPT_FILE="$candidate"
+      export CODESEEQ_SYSTEM_PROMPT_FILE
+      return 0
+    fi
+  done
+
+  if [[ -n "$configured" ]]; then
+    CODESEEQ_SYSTEM_PROMPT_FILE="$configured"
+  else
+    CODESEEQ_SYSTEM_PROMPT_FILE="${CODESEEQ_WORKDIR}/.codeseeq/system-prompt.md"
+  fi
+  export CODESEEQ_SYSTEM_PROMPT_FILE
+}
+
+resolve_system_prompt_file
 
 # Check workspace writability early.
 if [[ ! -w "$CODESEEQ_WORKDIR" ]]; then
@@ -208,6 +294,18 @@ sandbox_mode = "${CODESEEQ_SANDBOX_MODE}"
 model_context_window = ${CODESEEQ_CONTEXT_WINDOW}
 model_supports_reasoning_summaries = false
 model_reasoning_summary = "none"
+EOF
+
+  if system_prompt_present; then
+    {
+      printf '\n# CodeSeeq-managed persistent system prompt.\n'
+      printf 'developer_instructions = '
+      toml_quote_file "$CODESEEQ_SYSTEM_PROMPT_FILE"
+      printf '\n'
+    } >> "$CODESEEQ_CODEX_HOME/config.toml"
+  fi
+
+  cat >> "$CODESEEQ_CODEX_HOME/config.toml" <<EOF
 
 [model_providers.codeseeq]
 name = "CodeSeeq OpenResponses Bridge"
@@ -227,7 +325,13 @@ EOF
 print_config() {
   write_config
   printf 'CODEX_HOME=%s\n' "$CODEX_HOME"
-  cat "$CODESEEQ_CODEX_HOME/config.toml"
+  printf 'Config path=%s\n' "$CODESEEQ_CODEX_HOME/config.toml"
+  printf 'System prompt status=%s\n' "$(system_prompt_state)"
+  printf 'System prompt path=%s\n' "$CODESEEQ_SYSTEM_PROMPT_FILE"
+  printf 'System prompt bytes=%s\n' "$(system_prompt_bytes)"
+  printf 'System prompt lines=%s\n' "$(system_prompt_lines)"
+  printf 'System prompt injection=%s\n' "$CODESEEQ_SYSTEM_PROMPT_INJECTION"
+  sed 's/^developer_instructions = .*/developer_instructions = "<redacted: CodeSeeq system prompt>"/' "$CODESEEQ_CODEX_HOME/config.toml"
 }
 
 require_deepseek_key() {
@@ -401,6 +505,13 @@ Config path: ${CODESEEQ_CODEX_HOME}/config.toml
 Approval policy: ${CODESEEQ_APPROVAL_POLICY}
 Sandbox mode: ${CODESEEQ_SANDBOX_MODE}
 Yolo mode: ${CODESEEQ_YOLO}
+Workspace host: ${CODESEEQ_HOST_WORKDIR:-unknown}
+Workspace container: ${CODESEEQ_WORKDIR}
+System prompt: $(system_prompt_state)
+System prompt path: ${CODESEEQ_SYSTEM_PROMPT_FILE}
+System prompt bytes: $(system_prompt_bytes)
+System prompt lines: $(system_prompt_lines)
+System prompt injection: ${CODESEEQ_SYSTEM_PROMPT_INJECTION}
 OpenResponses URL: ${CODESEEQ_OPENRESPONSES_URL}
 OpenResponses startup command: ${CODESEEQ_OPENRESPONSES_CMD}
 OpenResponses health: ${health_state}
@@ -418,19 +529,123 @@ print_models() {
 }
 
 run_codex_exec() {
+  cd "$CODESEEQ_WORKDIR"
+
+  local prompt_file="${CODESEEQ_RUN_PROMPT_FILE:-}"
+  local inline=()
+  local exec_passthrough=()
+  local arg
+  while (( $# > 0 )); do
+    arg="$1"
+    case "$arg" in
+      -f|--file)
+        [[ $# -ge 2 ]] || die "run: $arg requires a file path"
+        [[ -z "$prompt_file" || "$prompt_file" == "$2" ]] || die "run: only one prompt file may be provided"
+        prompt_file="$2"
+        shift 2
+        ;;
+      --file=*)
+        local file_arg="${arg#--file=}"
+        [[ -z "$prompt_file" || "$prompt_file" == "$file_arg" ]] || die "run: only one prompt file may be provided"
+        prompt_file="$file_arg"
+        shift
+        ;;
+      --model|-m)
+        [[ $# -ge 2 ]] || die "run: $arg requires a value"
+        CODESEEQ_MODEL="$2"
+        shift 2
+        ;;
+      --model=*)
+        CODESEEQ_MODEL="${arg#--model=}"
+        shift
+        ;;
+      --thinking)
+        CODESEEQ_THINKING="true"
+        shift
+        ;;
+      --no-thinking)
+        CODESEEQ_THINKING="false"
+        shift
+        ;;
+      --yolo|-y|--dangerously-bypass-approvals-and-sandbox)
+        CODESEEQ_YOLO="true"
+        shift
+        ;;
+      --sandbox|--sanbox|-s)
+        [[ $# -ge 2 ]] || die "run: $arg requires a value"
+        CODESEEQ_SANDBOX_MODE="$2"
+        shift 2
+        ;;
+      --sandbox=*|--sanbox=*)
+        CODESEEQ_SANDBOX_MODE="${arg#*=}"
+        shift
+        ;;
+      --ask-for-approval|-a)
+        [[ $# -ge 2 ]] || die "run: $arg requires a value"
+        CODESEEQ_APPROVAL_POLICY="$2"
+        shift 2
+        ;;
+      --ask-for-approval=*)
+        CODESEEQ_APPROVAL_POLICY="${arg#--ask-for-approval=}"
+        shift
+        ;;
+      --)
+        shift
+        while (( $# > 0 )); do
+          inline+=("$1")
+          shift
+        done
+        ;;
+      --*=*)
+        exec_passthrough+=("$arg")
+        shift
+        ;;
+      -*)
+        if codex_option_takes_value "$arg"; then
+          [[ $# -ge 2 ]] || die "run: $arg requires a value"
+          exec_passthrough+=("$arg" "$2")
+          shift 2
+        else
+          exec_passthrough+=("$arg")
+          shift
+        fi
+        ;;
+      *)
+        inline+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -n "$prompt_file" && ${#inline[@]} -gt 0 ]]; then
+    die "run: provide either -f/--file or inline prompt text, not both"
+  fi
+  if [[ -z "$prompt_file" && ${#inline[@]} -eq 0 ]]; then
+    die "run requires a prompt or -f/--file"
+  fi
+  if [[ -n "$prompt_file" ]]; then
+    [[ -f "$prompt_file" ]] || die "run: prompt file not found: $prompt_file"
+    [[ -r "$prompt_file" ]] || die "run: prompt file is not readable: $prompt_file"
+  fi
+
+  normalize_model "$CODESEEQ_MODEL" "$CODESEEQ_THINKING"
+  CODESEEQ_YOLO="$(bool_normalize "$CODESEEQ_YOLO")"
+  export CODESEEQ_YOLO CODESEEQ_APPROVAL_POLICY CODESEEQ_SANDBOX_MODE
   require_deepseek_key
   write_config
   start_bridge || die "failed to start bridge"
-  cd "$CODESEEQ_WORKDIR"
 
-  if (( $# == 0 )); then
-    die "run requires a prompt"
-  fi
-
-  local prompt
-  prompt="$*"
   build_codex_global_args
   build_codex_exec_args
+  if ((${#exec_passthrough[@]} > 0)); then
+    CODEX_EXEC_ARGS+=("${exec_passthrough[@]}")
+  fi
+  print_workspace_banner
+  if [[ -n "$prompt_file" ]]; then
+    exec codex "${CODEX_GLOBAL_ARGS[@]}" exec "${CODEX_EXEC_ARGS[@]}" - < "$prompt_file"
+  fi
+  local prompt
+  prompt="${inline[*]}"
   exec codex "${CODEX_GLOBAL_ARGS[@]}" exec "${CODEX_EXEC_ARGS[@]}" "$prompt"
 }
 
@@ -440,6 +655,7 @@ run_codex_interactive() {
   start_bridge || die "failed to start bridge"
   cd "$CODESEEQ_WORKDIR"
   build_codex_global_args
+  print_workspace_banner
   exec codex "${CODEX_GLOBAL_ARGS[@]}" "$@"
 }
 
@@ -469,7 +685,76 @@ codex_args_have() {
   return 1
 }
 
+is_codex_subcommand() {
+  case "$1" in
+    exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|app|completion|update|sandbox|debug|apply|a|resume|fork|cloud|exec-server|features|help|version)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+codex_option_takes_value() {
+  case "$1" in
+    --model|-m|--sandbox|--sanbox|-s|-p|--profile|--prompt|--cd|-C|--ask-for-approval|-a|--config|-c|--output-last-message|-o|--output-schema|--color|--image|-i|--add-dir|--enable|--disable|--remote|--remote-auth-token-env|--local-provider)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+split_direct_prompt_args() {
+  DIRECT_CODEX_ARGS=()
+  DIRECT_PROMPT_PARTS=()
+
+  local arg
+  while (( $# > 0 )); do
+    arg="$1"
+    case "$arg" in
+      --)
+        shift
+        [[ $# -gt 0 ]] || return 1
+        DIRECT_PROMPT_PARTS=("$@")
+        return 0
+        ;;
+      --*=*)
+        DIRECT_CODEX_ARGS+=("$arg")
+        shift
+        ;;
+      -*)
+        if codex_option_takes_value "$arg"; then
+          [[ $# -ge 2 ]] || die "$arg requires a value"
+          DIRECT_CODEX_ARGS+=("$arg" "$2")
+          shift 2
+        else
+          DIRECT_CODEX_ARGS+=("$arg")
+          shift
+        fi
+        ;;
+      *)
+        if is_codex_subcommand "$arg"; then
+          return 1
+        fi
+        DIRECT_PROMPT_PARTS=("$@")
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
 run_codex_passthrough() {
+  case "${1:-}" in
+    --help|-h|help|--version|-V|version)
+      exec codex "$@"
+      ;;
+  esac
+
   require_deepseek_key
   write_config
   start_bridge || die "failed to start bridge"
@@ -482,9 +767,11 @@ run_codex_passthrough() {
     if ! codex_args_have "--skip-git-repo-check" "${passthrough[@]}"; then
       passthrough=("${passthrough[0]}" --skip-git-repo-check "${passthrough[@]:1}")
     fi
+    print_workspace_banner
     exec codex "${CODEX_GLOBAL_ARGS[@]}" "${passthrough[@]}"
   fi
 
+  print_workspace_banner
   exec codex "${CODEX_GLOBAL_ARGS[@]}" "$@"
 }
 
@@ -493,6 +780,29 @@ open_shell() {
   start_bridge || true
   cd "$CODESEEQ_WORKDIR"
   exec bash
+}
+
+print_help() {
+  cat <<'EOF'
+CodeSeeq - Codex CLI wired to DeepSeek through the CodeSeeq bridge
+
+Usage:
+  codeseeq [codex-options] [prompt]
+  codeseeq "prompt"
+  codeseeq run "prompt"
+  codeseeq run -f task.md
+  codeseeq codex [args...]
+
+Commands:
+  run, models, doctor, config, ping, ping-stream, ping-web, ping-docs, shell, codex
+
+Safety defaults:
+  approval_policy=on-request
+  sandbox_mode=workspace-write
+
+Explicit --yolo/-y maps to Codex's dangerous bypass switch.
+-p and --profile are Codex profile flags, not CodeSeeq prompt flags.
+EOF
 }
 
 # Parse wrapper flags before subcommand/args.
@@ -504,6 +814,10 @@ while (( $# > 0 )); do
       CODESEEQ_MODEL="$2"
       shift 2
       ;;
+    --model=*)
+      CODESEEQ_MODEL="${1#--model=}"
+      shift
+      ;;
     --thinking)
       CODESEEQ_THINKING="true"
       shift
@@ -514,6 +828,28 @@ while (( $# > 0 )); do
       ;;
     --yolo|-y)
       CODESEEQ_YOLO="true"
+      shift
+      ;;
+    --dangerously-bypass-approvals-and-sandbox)
+      CODESEEQ_YOLO="true"
+      shift
+      ;;
+    --sandbox|--sanbox|-s)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      CODESEEQ_SANDBOX_MODE="$2"
+      shift 2
+      ;;
+    --sandbox=*|--sanbox=*)
+      CODESEEQ_SANDBOX_MODE="${1#*=}"
+      shift
+      ;;
+    --ask-for-approval|-a)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      CODESEEQ_APPROVAL_POLICY="$2"
+      shift 2
+      ;;
+    --ask-for-approval=*)
+      CODESEEQ_APPROVAL_POLICY="${1#--ask-for-approval=}"
       shift
       ;;
     --)
@@ -534,7 +870,11 @@ while (( $# > 0 )); do
 
 done
 
-set -- "${args[@]}"
+if ((${#args[@]} > 0)); then
+  set -- "${args[@]}"
+else
+  set --
+fi
 
 CODESEEQ_YOLO="$(bool_normalize "$CODESEEQ_YOLO")"
 if [[ "$CODESEEQ_YOLO" != "true" && "$CODESEEQ_YOLO" != "false" ]]; then
@@ -545,47 +885,67 @@ export CODESEEQ_YOLO CODESEEQ_APPROVAL_POLICY CODESEEQ_SANDBOX_MODE
 normalize_model "$CODESEEQ_MODEL" "$CODESEEQ_THINKING"
 export CODEX_HOME="$CODESEEQ_CODEX_HOME"
 
-subcmd="${1:-}"
-if [[ -n "$subcmd" ]]; then
-  shift
-fi
-
-case "$subcmd" in
+case "${1:-}" in
   "")
     run_codex_interactive
     ;;
   run)
+    shift
     run_codex_exec "$@"
     ;;
   ping)
+    shift
     ping_deepseek
     ;;
   ping-stream)
+    shift
     ping_stream
     ;;
   ping-web)
+    shift
     ping_web
     ;;
   ping-docs)
+    shift
     ping_docs
     ;;
   doctor)
+    shift
     doctor
     ;;
   models)
+    shift
     print_models
     ;;
   config)
+    shift
     print_config
     ;;
   shell)
+    shift
     open_shell
     ;;
   codex)
+    shift
     run_codex_passthrough "$@"
     ;;
+  --help|-h|help)
+    shift || true
+    print_help
+    ;;
+  --version|-V|version)
+    shift || true
+    run_codex_passthrough --version
+    ;;
   *)
-    # Prompt shortcut: `codeseeq-entrypoint "prompt text"`
-    run_codex_exec "$subcmd" "$@"
+    if split_direct_prompt_args "$@"; then
+      if ((${#DIRECT_CODEX_ARGS[@]} > 0)); then
+        run_codex_exec "${DIRECT_CODEX_ARGS[@]}" -- "${DIRECT_PROMPT_PARTS[@]}"
+      else
+        run_codex_exec -- "${DIRECT_PROMPT_PARTS[@]}"
+      fi
+    else
+      run_codex_passthrough "$@"
+    fi
     ;;
 esac

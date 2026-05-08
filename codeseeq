@@ -5,6 +5,10 @@ log() {
   printf '[codeseeq] %s\n' "$*" >&2
 }
 
+warn() {
+  printf '[codeseeq:warn] %s\n' "$*" >&2
+}
+
 die() {
   printf '[codeseeq:error] %s\n' "$*" >&2
   exit 1
@@ -14,6 +18,17 @@ is_truthy() {
   case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
     1|true|yes|on) return 0 ;;
     *) return 1 ;;
+  esac
+}
+
+bool_normalize() {
+  local v="${1:-}"
+  local vl
+  vl="$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')"
+  case "$vl" in
+    1|true|yes|on) printf 'true' ;;
+    0|false|no|off) printf 'false' ;;
+    *) printf '%s' "$v" ;;
   esac
 }
 
@@ -32,23 +47,145 @@ SELF_PATH="$(resolve_self_path "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd -P "$(dirname "$SELF_PATH")" && pwd)"
 : "${CODESEEQ_INSTALL_ROOT:=$SCRIPT_DIR}"
 
-if [[ "${1:-}" == "install" ]]; then
-  installer="${CODESEEQ_INSTALL_ROOT}/scripts/install.sh"
-  [[ -x "$installer" ]] || die "installer not found or not executable: $installer"
-  shift
-  exec "$installer" "$@"
-fi
-
-CONTAINER="${CONTAINER:-podman}"
 IMAGE="${IMAGE:-codeseeq:dev}"
-WORKDIR_HOST="${CODESEEQ_WORKDIR_HOST:-$PWD}"
+WORKDIR_HOST="${CODESEEQ_WORKDIR_HOST:-$(pwd -P)}"
 WORKDIR_CONTAINER="${CODESEEQ_WORKDIR:-/workspace}"
 BUILD_CONTEXT="${CODESEEQ_BUILD_CONTEXT:-$CODESEEQ_INSTALL_ROOT}"
 AUTO_BUILD="${CODESEEQ_AUTO_BUILD:-true}"
+HOST_CODEX_HOME="${CODESEEQ_HOST_CODEX_HOME:-${WORKDIR_HOST}/.codeseeq}"
+SYSTEM_PROMPT_PATH="${CODESEEQ_SYSTEM_PROMPT_FILE:-${WORKDIR_HOST}/.codeseeq/system-prompt.md}"
+: "${CODESEEQ_MODEL:=deepseek-v4-flash}"
+: "${CODESEEQ_THINKING:=}"
+: "${CODESEEQ_APPROVAL_POLICY:=on-request}"
+: "${CODESEEQ_SANDBOX_MODE:=workspace-write}"
+: "${CODESEEQ_OPENRESPONSES_PORT:=8080}"
+: "${CODESEEQ_OPENRESPONSES_URL:=http://127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT}/v1}"
+: "${CODESEEQ_CONTEXT_WINDOW:=1000000}"
+: "${CODESEEQ_MAX_OUTPUT_TOKENS:=384000}"
+: "${CODESEEQ_REQUEST_MAX_RETRIES:=2}"
+: "${CODESEEQ_STREAM_IDLE_TIMEOUT_MS:=600000}"
 
-if ! command -v "$CONTAINER" >/dev/null 2>&1; then
-  die "container runtime not found: ${CONTAINER}. install podman (default) or set CONTAINER=docker"
-fi
+PROVIDER_MODEL=""
+THINKING_EFFECTIVE=""
+TMP_FILES=()
+BRIDGE_CONTAINER_STARTED=""
+
+cleanup_tmp_files() {
+  local f
+  for f in "${TMP_FILES[@]:-}"; do
+    [[ -n "$f" ]] && rm -f -- "$f" 2>/dev/null || true
+  done
+  if [[ -n "${BRIDGE_CONTAINER_STARTED:-}" ]] && ! is_truthy "${CODESEEQ_KEEP_BRIDGE_CONTAINER:-false}"; then
+    "$CONTAINER" stop "$BRIDGE_CONTAINER_STARTED" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_tmp_files EXIT
+
+print_help() {
+  cat <<'EOF'
+CodeSeeq - Codex CLI wired to DeepSeek through the CodeSeeq bridge
+
+Usage:
+  codeseeq [codex-options] [prompt]
+  codeseeq "prompt"
+  codeseeq run "prompt"
+  codeseeq run -f task.md
+  codeseeq codex [args...]
+
+CodeSeeq commands:
+  build                 Build the CodeSeeq image
+  install               Install the user-local launcher
+  models                Print supported DeepSeek models
+  doctor                Check bridge/config/runtime status
+  config                Print generated Codex config status
+  ping                  Run a non-streaming bridge ping
+  ping-stream           Run a streaming bridge ping
+  ping-web              Check web_search diagnostic path
+  ping-docs             Check document parsing diagnostic path
+  shell                 Open a shell in the CodeSeeq container
+  smoke                 Run smoke tests
+  system                Manage repo-local persistent system prompt
+  package               Create a clean release zip
+
+Prompt files:
+  codeseeq run -f task.md
+  codeseeq run --file task.md
+  codeseeq run --file=task.md
+
+System prompt:
+  codeseeq system add "You are terse and practical."
+  codeseeq system add -f prompts/system.md
+  codeseeq system view
+  codeseeq system remove
+
+Runtime:
+  Podman is preferred. Docker is used as a compatible fallback when Podman is
+  unavailable, or explicitly with CONTAINER=docker. Docker Compose is not used.
+
+Safety:
+  Default mode runs Codex safely inside the CodeSeeq container. Explicit
+  -y, --yolo, --dangerously-bypass-approvals-and-sandbox, or
+  --sandbox danger-full-access runs local host Codex against a bridge container.
+
+Codex compatibility:
+  -p and --profile are Codex profile flags. They are passed through unchanged
+  and are not CodeSeeq prompt flags.
+EOF
+}
+
+print_system_help() {
+  cat <<'EOF'
+Usage:
+  codeseeq system add "system prompt text"
+  codeseeq system add -f path/to/system-prompt.md
+  codeseeq system add --file path/to/system-prompt.md
+  codeseeq system view
+  codeseeq system show
+  codeseeq system cat
+  codeseeq system remove
+  codeseeq system rm
+  codeseeq system clear
+  codeseeq system --help
+
+The prompt is stored repo-locally at:
+  .codeseeq/system-prompt.md
+EOF
+}
+
+detect_container() {
+  if [[ -n "${CONTAINER:-}" ]]; then
+    case "$CONTAINER" in
+      podman|docker) ;;
+      *) die "unsupported container runtime: ${CONTAINER}. Use CONTAINER=podman or CONTAINER=docker." ;;
+    esac
+    command -v "$CONTAINER" >/dev/null 2>&1 || die "container runtime not found: ${CONTAINER}"
+    printf '%s\n' "$CONTAINER"
+    return 0
+  fi
+
+  if command -v podman >/dev/null 2>&1; then
+    printf '%s\n' podman
+    return 0
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    warn "podman not found; using docker as compatible fallback"
+    printf '%s\n' docker
+    return 0
+  fi
+
+  die "no container runtime found. Install Podman (preferred) or Docker, or set CONTAINER=podman|docker."
+}
+
+volume_suffix_for_runtime() {
+  if [[ -n "${CODESEEQ_VOLUME_SUFFIX+x}" ]]; then
+    printf '%s' "$CODESEEQ_VOLUME_SUFFIX"
+    return 0
+  fi
+  if [[ "$CONTAINER" == "podman" ]]; then
+    printf ':Z'
+  fi
+}
 
 image_exists() {
   if [[ "$CONTAINER" == "podman" ]]; then
@@ -58,64 +195,836 @@ image_exists() {
   fi
 }
 
-if ! image_exists; then
+ensure_image() {
+  if image_exists; then
+    return 0
+  fi
   if is_truthy "$AUTO_BUILD"; then
     log "image ${IMAGE} not found; building from ${BUILD_CONTEXT} with ${CONTAINER}"
     "$CONTAINER" build -t "$IMAGE" "$BUILD_CONTEXT"
   else
     die "image ${IMAGE} missing; run: ${CONTAINER} build -t ${IMAGE} ${BUILD_CONTEXT}"
   fi
-fi
+}
 
-volume_spec="${WORKDIR_HOST}:${WORKDIR_CONTAINER}"
-if [[ "$CONTAINER" == "podman" ]]; then
-  # Use :Z for SELinux (mostly Linux but good practice) 
-  # and keep-id to map host UID to container user.
-  volume_spec="${volume_spec}:Z"
-  run_args=(run --rm --userns=keep-id)
-else
-  run_args=(run --rm)
-fi
-
-if [[ -t 0 && -t 1 ]]; then
-  run_args+=(-it)
-fi
-
-run_args+=(-v "$volume_spec" -w "$WORKDIR_CONTAINER")
-
-# Runtime secrets / toggles.
-if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
-  run_args+=(-e DEEPSEEK_API_KEY)
-fi
-if [[ -n "${BRAVE_API_KEY:-}" ]]; then
-  run_args+=(-e BRAVE_API_KEY)
-fi
-if [[ -n "${UNSTRUCTURED_API_KEY:-}" ]]; then
-  run_args+=(-e UNSTRUCTURED_API_KEY)
-fi
-
-# Optional model/runtime controls.
-for name in \
-  CODESEEQ_MODEL \
-  CODESEEQ_THINKING \
-  CODESEEQ_APPROVAL_POLICY \
-  CODESEEQ_SANDBOX_MODE \
-  CODESEEQ_YOLO \
-  CODESEEQ_STREAM \
-  CODESEEQ_STREAM_IDLE_TIMEOUT_MS \
-  CODESEEQ_REQUEST_MAX_RETRIES \
-  CODESEEQ_OPENRESPONSES_HOST \
-  CODESEEQ_OPENRESPONSES_PORT \
-  CODESEEQ_OPENRESPONSES_URL \
-  CODESEEQ_OPENRESPONSES_CMD \
-  CODESEEQ_CODEX_HOME \
-  CODESEEQ_LOG_DIR \
-  CODESEEQ_RUNTIME_DIR \
-  CODESEEQ_CONTEXT_WINDOW \
-  CODESEEQ_MAX_OUTPUT_TOKENS; do
-  if [[ -n "${!name:-}" ]]; then
-    run_args+=(-e "$name")
+toml_quote_file() {
+  local path="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -Rs . < "$path"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' < "$path"
+  else
+    die "jq or python3 is required to quote system prompt text for Codex config"
   fi
-done
+}
 
-exec "$CONTAINER" "${run_args[@]}" "$IMAGE" "$@"
+system_prompt_present() {
+  [[ -f "$SYSTEM_PROMPT_PATH" && -s "$SYSTEM_PROMPT_PATH" ]]
+}
+
+system_prompt_bytes() {
+  if [[ -f "$SYSTEM_PROMPT_PATH" ]]; then
+    wc -c < "$SYSTEM_PROMPT_PATH" | tr -d '[:space:]'
+  else
+    printf '0'
+  fi
+}
+
+system_prompt_lines() {
+  if [[ -f "$SYSTEM_PROMPT_PATH" ]]; then
+    awk 'END { print NR }' "$SYSTEM_PROMPT_PATH"
+  else
+    printf '0'
+  fi
+}
+
+system_add() {
+  local file=""
+  local inline=()
+  while (( $# > 0 )); do
+    case "$1" in
+      -f|--file)
+        [[ $# -ge 2 ]] || die "system add: $1 requires a file path"
+        [[ -z "$file" ]] || die "system add: only one --file value is allowed"
+        file="$2"
+        shift 2
+        ;;
+      --file=*)
+        [[ -z "$file" ]] || die "system add: only one --file value is allowed"
+        file="${1#--file=}"
+        shift
+        ;;
+      --help|-h)
+        print_system_help
+        return 0
+        ;;
+      *)
+        inline+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -n "$file" && ${#inline[@]} -gt 0 ]]; then
+    die "system add: provide inline text or -f/--file, not both"
+  fi
+  if [[ -z "$file" && ${#inline[@]} -eq 0 ]]; then
+    print_system_help >&2
+    die "system add: missing inline text or -f/--file"
+  fi
+
+  mkdir -p "$(dirname "$SYSTEM_PROMPT_PATH")"
+  if [[ -n "$file" ]]; then
+    [[ -f "$file" ]] || die "system add: file not found: $file"
+    [[ -r "$file" ]] || die "system add: file is not readable: $file"
+    cp -- "$file" "$SYSTEM_PROMPT_PATH"
+  else
+    printf '%s' "${inline[*]}" > "$SYSTEM_PROMPT_PATH"
+  fi
+  chmod 600 "$SYSTEM_PROMPT_PATH" 2>/dev/null || true
+  printf 'Stored CodeSeeq system prompt at %s\n' "$SYSTEM_PROMPT_PATH"
+}
+
+system_view() {
+  if [[ ! -f "$SYSTEM_PROMPT_PATH" ]]; then
+    printf 'No CodeSeeq system prompt configured.\n'
+    printf 'Path: %s\n' "$SYSTEM_PROMPT_PATH"
+    return 0
+  fi
+  printf 'CodeSeeq system prompt\n'
+  printf 'Path: %s\n' "$SYSTEM_PROMPT_PATH"
+  printf 'Bytes: %s\n' "$(system_prompt_bytes)"
+  printf 'Lines: %s\n' "$(system_prompt_lines)"
+  printf '%s\n' '---'
+  cat "$SYSTEM_PROMPT_PATH"
+  printf '\n'
+}
+
+system_remove() {
+  if [[ -f "$SYSTEM_PROMPT_PATH" ]]; then
+    rm -f -- "$SYSTEM_PROMPT_PATH"
+    printf 'Removed CodeSeeq system prompt at %s\n' "$SYSTEM_PROMPT_PATH"
+  else
+    printf 'No CodeSeeq system prompt configured; nothing to remove.\n'
+    printf 'Path: %s\n' "$SYSTEM_PROMPT_PATH"
+  fi
+  if [[ -f "$HOST_CODEX_HOME/config.toml" ]]; then
+    local tmp
+    tmp="$(mktemp "${HOST_CODEX_HOME}/config.XXXXXX")"
+    awk '
+      /^# CodeSeeq-managed persistent system prompt\.$/ { next }
+      /^developer_instructions = / { next }
+      { print }
+    ' "$HOST_CODEX_HOME/config.toml" > "$tmp"
+    mv "$tmp" "$HOST_CODEX_HOME/config.toml"
+    chmod 600 "$HOST_CODEX_HOME/config.toml" 2>/dev/null || true
+  fi
+}
+
+system_cmd() {
+  local sub="${1:-}"
+  [[ -z "$sub" ]] || shift
+  case "$sub" in
+    add) system_add "$@" ;;
+    view|show|cat) system_view ;;
+    remove|rm|clear) system_remove ;;
+    --help|-h|"") print_system_help ;;
+    *) die "unknown system subcommand: $sub" ;;
+  esac
+}
+
+normalize_model() {
+  local model="$1"
+  local thinking_override="${2:-}"
+  local alias_thinking="false"
+
+  if [[ "$model" == deepseek/deepseek-v4-* ]]; then
+    model="${model/deepseek\//deepseek@}"
+  fi
+
+  case "$model" in
+    deepseek-v4-flash)
+      PROVIDER_MODEL="deepseek@deepseek-v4-flash"
+      alias_thinking="false"
+      ;;
+    deepseek-v4-flash-thinking)
+      PROVIDER_MODEL="deepseek@deepseek-v4-flash"
+      alias_thinking="true"
+      ;;
+    deepseek-v4-pro)
+      PROVIDER_MODEL="deepseek@deepseek-v4-pro"
+      alias_thinking="false"
+      ;;
+    deepseek-v4-pro-thinking)
+      PROVIDER_MODEL="deepseek@deepseek-v4-pro"
+      alias_thinking="true"
+      ;;
+    deepseek@deepseek-v4-flash)
+      PROVIDER_MODEL="deepseek@deepseek-v4-flash"
+      alias_thinking="false"
+      ;;
+    deepseek@deepseek-v4-flash-thinking)
+      PROVIDER_MODEL="deepseek@deepseek-v4-flash"
+      alias_thinking="true"
+      ;;
+    deepseek@deepseek-v4-pro)
+      PROVIDER_MODEL="deepseek@deepseek-v4-pro"
+      alias_thinking="false"
+      ;;
+    deepseek@deepseek-v4-pro-thinking)
+      PROVIDER_MODEL="deepseek@deepseek-v4-pro"
+      alias_thinking="true"
+      ;;
+    *)
+      die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro"
+      ;;
+  esac
+
+  if [[ -n "$thinking_override" ]]; then
+    THINKING_EFFECTIVE="$(bool_normalize "$thinking_override")"
+  else
+    THINKING_EFFECTIVE="$alias_thinking"
+  fi
+  [[ "$THINKING_EFFECTIVE" == "true" || "$THINKING_EFFECTIVE" == "false" ]] || die "invalid thinking value: ${THINKING_EFFECTIVE}"
+  CODESEEQ_MODEL="$model"
+  CODESEEQ_THINKING="$THINKING_EFFECTIVE"
+}
+
+arg_requests_danger() {
+  if is_truthy "${CODESEEQ_YOLO:-false}"; then
+    return 0
+  fi
+  if [[ "${CODESEEQ_SANDBOX_MODE:-}" == "danger-full-access" ]]; then
+    return 0
+  fi
+
+  local arg next
+  while (( $# > 0 )); do
+    arg="$1"
+    next="${2:-}"
+    case "$arg" in
+      -y|--yolo|--dangerously-bypass-approvals-and-sandbox)
+        return 0
+        ;;
+      --sandbox|--sanbox|-s)
+        if [[ "$next" == "danger-full-access" ]]; then
+          return 0
+        fi
+        shift 2 || true
+        continue
+        ;;
+      --sandbox=danger-full-access|--sanbox=danger-full-access)
+        return 0
+        ;;
+    esac
+    shift
+  done
+  return 1
+}
+
+first_command_arg() {
+  local arg
+  while (( $# > 0 )); do
+    arg="$1"
+    case "$arg" in
+      --model|-m|--sandbox|--sanbox|-s|--prompt|-p|--cd|-C|--ask-for-approval|-a|--config|-c|--profile|--output-last-message|-o|--output-schema|--color|--image|-i|--add-dir|--enable|--disable)
+        shift 2 || true
+        ;;
+      --model=*|--sandbox=*|--sanbox=*|--prompt=*|--cd=*|--ask-for-approval=*|--config=*|--profile=*|--output-last-message=*|--output-schema=*|--color=*|--image=*|--add-dir=*|--enable=*|--disable=*)
+        shift
+        ;;
+      --thinking|--no-thinking|-y|--yolo|--dangerously-bypass-approvals-and-sandbox|--search|--no-alt-screen|--help|-h|--version|-V)
+        printf '%s\n' "$arg"
+        return 0
+        ;;
+      --)
+        shift
+        [[ $# -gt 0 ]] && printf '%s\n' "$1"
+        return 0
+        ;;
+      -*)
+        shift
+        ;;
+      *)
+        printf '%s\n' "$arg"
+        return 0
+        ;;
+    esac
+  done
+}
+
+is_codeseeq_diagnostic_command() {
+  case "$1" in
+    models|doctor|config|ping|ping-stream|ping-web|ping-docs|shell) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_codex_subcommand() {
+  case "$1" in
+    exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|app|completion|update|sandbox|debug|apply|a|resume|fork|cloud|exec-server|features|help|version)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+codex_option_takes_value() {
+  case "$1" in
+    --model|-m|--sandbox|--sanbox|-s|-p|--profile|--prompt|--cd|-C|--ask-for-approval|-a|--config|-c|--output-last-message|-o|--output-schema|--color|--image|-i|--add-dir|--enable|--disable|--remote|--remote-auth-token-env|--local-provider)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+split_direct_prompt_args() {
+  DIRECT_CODEX_ARGS=()
+  DIRECT_PROMPT_PARTS=()
+
+  local arg
+  while (( $# > 0 )); do
+    arg="$1"
+    case "$arg" in
+      --)
+        shift
+        [[ $# -gt 0 ]] || return 1
+        DIRECT_PROMPT_PARTS=("$@")
+        return 0
+        ;;
+      --*=*)
+        DIRECT_CODEX_ARGS+=("$arg")
+        shift
+        ;;
+      -*)
+        if codex_option_takes_value "$arg"; then
+          [[ $# -ge 2 ]] || die "$arg requires a value"
+          DIRECT_CODEX_ARGS+=("$arg" "$2")
+          shift 2
+        else
+          DIRECT_CODEX_ARGS+=("$arg")
+          shift
+        fi
+        ;;
+      *)
+        if is_codex_subcommand "$arg"; then
+          return 1
+        fi
+        DIRECT_PROMPT_PARTS=("$@")
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
+require_deepseek_key() {
+  [[ -n "${DEEPSEEK_API_KEY:-}" ]] || die "DEEPSEEK_API_KEY is required"
+  export OPENAI_API_KEY="${OPENAI_API_KEY:-$DEEPSEEK_API_KEY}"
+}
+
+write_host_config() {
+  mkdir -p "$HOST_CODEX_HOME"
+  export CODEX_HOME="$HOST_CODEX_HOME"
+  cat > "$HOST_CODEX_HOME/config.toml" <<EOF
+model = "${PROVIDER_MODEL}"
+model_provider = "codeseeq"
+model_catalog_json = "${CODESEEQ_HOST_MODEL_CATALOG_JSON:-${CODESEEQ_INSTALL_ROOT}/config/codex-model-catalog.json}"
+
+approval_policy = "${CODESEEQ_APPROVAL_POLICY}"
+sandbox_mode = "${CODESEEQ_SANDBOX_MODE}"
+
+model_context_window = ${CODESEEQ_CONTEXT_WINDOW}
+model_supports_reasoning_summaries = false
+model_reasoning_summary = "none"
+EOF
+
+  if system_prompt_present; then
+    {
+      printf '\n# CodeSeeq-managed persistent system prompt.\n'
+      printf 'developer_instructions = '
+      toml_quote_file "$SYSTEM_PROMPT_PATH"
+      printf '\n'
+    } >> "$HOST_CODEX_HOME/config.toml"
+  fi
+  cat >> "$HOST_CODEX_HOME/config.toml" <<EOF
+
+[model_providers.codeseeq]
+name = "CodeSeeq OpenResponses Bridge"
+base_url = "${CODESEEQ_OPENRESPONSES_URL}"
+env_key = "DEEPSEEK_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+request_max_retries = ${CODESEEQ_REQUEST_MAX_RETRIES}
+stream_max_retries = 2
+stream_idle_timeout_ms = ${CODESEEQ_STREAM_IDLE_TIMEOUT_MS}
+supports_websockets = false
+EOF
+  chmod 600 "$HOST_CODEX_HOME/config.toml" 2>/dev/null || true
+}
+
+container_exists_by_name() {
+  local name="$1"
+  "$CONTAINER" ps -a --format '{{.Names}}' 2>/dev/null | grep -Fxq "$name"
+}
+
+bridge_health_host() {
+  curl --silent --show-error --fail --max-time 2 --connect-timeout 1 \
+    "${CODESEEQ_OPENRESPONSES_URL%/v1}/health" >/dev/null 2>&1
+}
+
+start_bridge_container() {
+  ensure_image
+  if bridge_health_host; then
+    return 0
+  fi
+
+  local name="${CODESEEQ_BRIDGE_CONTAINER_NAME:-codeseeq-bridge-${CODESEEQ_OPENRESPONSES_PORT}}"
+  if container_exists_by_name "$name"; then
+    warn "removing stale bridge container: $name"
+    "$CONTAINER" rm -f "$name" >/dev/null 2>&1 || true
+  fi
+
+  local run_args=(run -d --rm --name "$name")
+  if [[ "$CONTAINER" == "podman" && -n "${CODESEEQ_PODMAN_USERNS:-}" ]]; then
+    run_args+=(--userns="$CODESEEQ_PODMAN_USERNS")
+  fi
+  run_args+=(
+    -p "127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT}:${CODESEEQ_OPENRESPONSES_PORT}"
+    -e CODESEEQ_OPENRESPONSES_HOST=0.0.0.0
+    -e "CODESEEQ_OPENRESPONSES_PORT=${CODESEEQ_OPENRESPONSES_PORT}"
+  )
+  local env_name
+  for env_name in DEEPSEEK_API_KEY BRAVE_API_KEY UNSTRUCTURED_API_KEY DEEPSEEK_CHAT_URL CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL CODESEEQ_BRIDGE_TIMEOUT_SECONDS CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING; do
+    if [[ -n "${!env_name:-}" ]]; then
+      run_args+=(-e "$env_name")
+    fi
+  done
+  run_args+=(--entrypoint /usr/local/bin/codeseeq-bridge.py "$IMAGE")
+
+  log "starting bridge container with ${CONTAINER} on ${CODESEEQ_OPENRESPONSES_URL}"
+  "$CONTAINER" "${run_args[@]}" >/dev/null
+  BRIDGE_CONTAINER_STARTED="$name"
+
+  local deadline=$((SECONDS + 45))
+  while (( SECONDS < deadline )); do
+    if bridge_health_host; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  warn "bridge container failed to become healthy; recent logs:"
+  "$CONTAINER" logs "$name" 2>&1 | tail -n 80 >&2 || true
+  die "failed to start bridge container on ${CODESEEQ_OPENRESPONSES_URL}"
+}
+
+prepare_prompt_temp_from_text() {
+  mkdir -p "$HOST_CODEX_HOME/tmp"
+  local tmp tmp_base
+  tmp_base="$(mktemp "${HOST_CODEX_HOME}/tmp/run-prompt-XXXXXX")"
+  mv "$tmp_base" "${tmp_base}.md"
+  tmp="${tmp_base}.md"
+  printf '%s' "$1" > "$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  TMP_FILES+=("$tmp")
+  printf '%s\n' "$tmp"
+}
+
+parse_run_prompt() {
+  RUN_PROMPT_FILE=""
+  RUN_PROMPT_TEXT=""
+  RUN_EXTRA_ARGS=()
+  local inline=()
+  local arg
+  while (( $# > 0 )); do
+    arg="$1"
+    case "$arg" in
+      -f|--file)
+        [[ $# -ge 2 ]] || die "run: $arg requires a file path"
+        [[ -z "$RUN_PROMPT_FILE" ]] || die "run: only one prompt file may be provided"
+        RUN_PROMPT_FILE="$2"
+        shift 2
+        ;;
+      --file=*)
+        [[ -z "$RUN_PROMPT_FILE" ]] || die "run: only one prompt file may be provided"
+        RUN_PROMPT_FILE="${arg#--file=}"
+        shift
+        ;;
+      --model|-m)
+        [[ $# -ge 2 ]] || die "run: $arg requires a value"
+        CODESEEQ_MODEL="$2"
+        shift 2
+        ;;
+      --thinking)
+        CODESEEQ_THINKING="true"
+        shift
+        ;;
+      --no-thinking)
+        CODESEEQ_THINKING="false"
+        shift
+        ;;
+      -y|--yolo|--dangerously-bypass-approvals-and-sandbox)
+        shift
+        ;;
+      --sandbox|--sanbox|-s)
+        [[ $# -ge 2 ]] || die "run: $arg requires a value"
+        shift 2
+        ;;
+      --sandbox=*|--sanbox=*)
+        shift
+        ;;
+      -p|--profile|--prompt|--cd|-C|--ask-for-approval|-a|--config|-c|--output-last-message|-o|--output-schema|--color|--image|-i|--add-dir|--enable|--disable)
+        [[ $# -ge 2 ]] || die "run: $arg requires a value"
+        RUN_EXTRA_ARGS+=("$arg" "$2")
+        shift 2
+        ;;
+      --profile=*|--prompt=*|--cd=*|--ask-for-approval=*|--config=*|--output-last-message=*|--output-schema=*|--color=*|--image=*|--add-dir=*|--enable=*|--disable=*)
+        RUN_EXTRA_ARGS+=("$arg")
+        shift
+        ;;
+      --)
+        shift
+        while (( $# > 0 )); do
+          inline+=("$1")
+          shift
+        done
+        ;;
+      -*)
+        RUN_EXTRA_ARGS+=("$1")
+        shift
+        ;;
+      *)
+        inline+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -n "$RUN_PROMPT_FILE" && ${#inline[@]} -gt 0 ]]; then
+    die "run: provide either -f/--file or inline prompt text, not both"
+  fi
+  if [[ -z "$RUN_PROMPT_FILE" && ${#inline[@]} -eq 0 ]]; then
+    die "run requires a prompt or -f/--file"
+  fi
+  if [[ -n "$RUN_PROMPT_FILE" ]]; then
+    [[ -f "$RUN_PROMPT_FILE" ]] || die "run: prompt file not found: $RUN_PROMPT_FILE"
+    [[ -r "$RUN_PROMPT_FILE" ]] || die "run: prompt file is not readable: $RUN_PROMPT_FILE"
+  else
+    RUN_PROMPT_TEXT="${inline[*]}"
+  fi
+}
+
+rewrite_safe_run_file_args() {
+  PREPARED_ARGS=("$@")
+  [[ "${1:-}" == "run" ]] || return 0
+  shift
+
+  local prompt_file=""
+  local inline=()
+  local out=(run)
+  local arg
+  while (( $# > 0 )); do
+    arg="$1"
+    case "$arg" in
+      -f|--file)
+        [[ $# -ge 2 ]] || die "run: $arg requires a file path"
+        [[ -z "$prompt_file" ]] || die "run: only one prompt file may be provided"
+        prompt_file="$2"
+        shift 2
+        ;;
+      --file=*)
+        [[ -z "$prompt_file" ]] || die "run: only one prompt file may be provided"
+        prompt_file="${arg#--file=}"
+        shift
+        ;;
+      --model|-m|--sandbox|--sanbox|-s|-p|--profile|--prompt|--output-last-message|-o|--output-schema|--color|--config|-c|--enable|--disable|--image|-i|--cd|-C|--add-dir|--ask-for-approval|-a)
+        [[ $# -ge 2 ]] || die "run: $arg requires a value"
+        out+=("$arg" "$2")
+        shift 2
+        ;;
+      --model=*|--sandbox=*|--sanbox=*|--profile=*|--prompt=*|--output-last-message=*|--output-schema=*|--color=*|--config=*|--enable=*|--disable=*|--image=*|--cd=*|--add-dir=*|--ask-for-approval=*)
+        out+=("$arg")
+        shift
+        ;;
+      --thinking|--no-thinking|--json|--search|--no-alt-screen)
+        out+=("$arg")
+        shift
+        ;;
+      -*)
+        out+=("$arg")
+        shift
+        ;;
+      *)
+        inline+=("$arg")
+        out+=("$arg")
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -n "$prompt_file" && ${#inline[@]} -gt 0 ]]; then
+    die "run: provide either -f/--file or inline prompt text, not both"
+  fi
+  if [[ -z "$prompt_file" && ${#inline[@]} -eq 0 ]]; then
+    die "run requires a prompt or -f/--file"
+  fi
+  [[ -n "$prompt_file" ]] || return 0
+  [[ -f "$prompt_file" ]] || die "run: prompt file not found: $prompt_file"
+  [[ -r "$prompt_file" ]] || die "run: prompt file is not readable: $prompt_file"
+
+  mkdir -p "${HOST_CODEX_HOME}/tmp"
+  local tmp tmp_base basename container_prompt
+  tmp_base="$(mktemp "${HOST_CODEX_HOME}/tmp/run-prompt-XXXXXX")"
+  mv "$tmp_base" "${tmp_base}.md"
+  tmp="${tmp_base}.md"
+  cp -- "$prompt_file" "$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  TMP_FILES+=("$tmp")
+  basename="$(basename "$tmp")"
+  container_prompt="${WORKDIR_CONTAINER}/.codeseeq/tmp/${basename}"
+  CODESEEQ_RUN_PROMPT_FILE="$container_prompt"
+
+  PREPARED_ARGS=(run --file "$container_prompt" "${out[@]:1}")
+}
+
+collect_env() {
+  CONTAINER_ENV_ARGS=()
+
+  local name
+  for name in \
+    DEEPSEEK_API_KEY \
+    BRAVE_API_KEY \
+    UNSTRUCTURED_API_KEY \
+    RESPONSES_API_KEY \
+    DEEPSEEK_CHAT_URL \
+    CODESEEQ_BRAVE_WEB_URL \
+    UNSTRUCTURED_API_URL; do
+    if [[ -n "${!name:-}" ]]; then
+      CONTAINER_ENV_ARGS+=(-e "$name")
+    fi
+  done
+
+  CONTAINER_ENV_ARGS+=(
+    -e "CODESEEQ_MODEL=${CODESEEQ_MODEL}"
+    -e "CODESEEQ_THINKING=${CODESEEQ_THINKING}"
+    -e "CODESEEQ_APPROVAL_POLICY=${CODESEEQ_APPROVAL_POLICY}"
+    -e "CODESEEQ_SANDBOX_MODE=${CODESEEQ_SANDBOX_MODE}"
+    -e "CODESEEQ_YOLO=${CODESEEQ_YOLO:-false}"
+    -e "CODESEEQ_HOST_WORKDIR=${WORKDIR_HOST}"
+    -e "CODESEEQ_WORKDIR=${WORKDIR_CONTAINER}"
+    -e "CODESEEQ_SYSTEM_PROMPT_FILE=${WORKDIR_CONTAINER}/.codeseeq/system-prompt.md"
+    -e "CODESEEQ_OPENRESPONSES_PORT=${CODESEEQ_OPENRESPONSES_PORT}"
+    -e "CODESEEQ_OPENRESPONSES_URL=${CODESEEQ_OPENRESPONSES_URL}"
+    -e "CODESEEQ_CONTEXT_WINDOW=${CODESEEQ_CONTEXT_WINDOW}"
+    -e "CODESEEQ_MAX_OUTPUT_TOKENS=${CODESEEQ_MAX_OUTPUT_TOKENS}"
+    -e "CODESEEQ_REQUEST_MAX_RETRIES=${CODESEEQ_REQUEST_MAX_RETRIES}"
+    -e "CODESEEQ_STREAM_IDLE_TIMEOUT_MS=${CODESEEQ_STREAM_IDLE_TIMEOUT_MS}"
+  )
+
+  for name in \
+    CODESEEQ_STREAM \
+    CODESEEQ_OPENRESPONSES_HOST \
+    CODESEEQ_OPENRESPONSES_CMD \
+    CODESEEQ_CODEX_HOME \
+    CODESEEQ_LOG_DIR \
+    CODESEEQ_RUNTIME_DIR \
+    CODESEEQ_WORKSPACE_BANNER \
+    CODESEEQ_BRIDGE_TOOL_STEERING \
+    CODESEEQ_RUN_PROMPT_FILE; do
+    if [[ -n "${!name:-}" ]]; then
+      CONTAINER_ENV_ARGS+=(-e "${name}=${!name}")
+    fi
+  done
+
+  return 0
+}
+
+run_safe_container() {
+  rewrite_safe_run_file_args "$@"
+  ensure_image
+
+  local suffix volume_spec
+  suffix="$(volume_suffix_for_runtime)"
+  volume_spec="${WORKDIR_HOST}:${WORKDIR_CONTAINER}${suffix}"
+
+  local run_args=(run --rm)
+  if [[ "$CONTAINER" == "podman" && -n "${CODESEEQ_PODMAN_USERNS:-}" ]]; then
+    run_args+=(--userns="$CODESEEQ_PODMAN_USERNS")
+  fi
+  if [[ -t 0 && -t 1 ]]; then
+    run_args+=(-it)
+  fi
+  run_args+=(-v "$volume_spec" -w "$WORKDIR_CONTAINER")
+  collect_env
+  run_args+=("${CONTAINER_ENV_ARGS[@]}")
+
+  if ((${#TMP_FILES[@]} > 0)); then
+    "$CONTAINER" "${run_args[@]}" "$IMAGE" "${PREPARED_ARGS[@]}"
+    exit $?
+  fi
+  exec "$CONTAINER" "${run_args[@]}" "$IMAGE" "$@"
+}
+
+run_host_codex() {
+  require_deepseek_key
+  command -v codex >/dev/null 2>&1 || die "danger/full-access mode requires local Codex CLI. Install it with: npm install -g @openai/codex"
+
+  local raw=("$@")
+  local mode="interactive"
+  local prompt_file=""
+  local prompt_text=""
+  local codex_args=()
+  local exec_args=()
+  local passthrough=()
+  local arg
+
+  if [[ "${1:-}" == "run" ]]; then
+    shift
+    parse_run_prompt "$@"
+    mode="exec"
+    prompt_file="$RUN_PROMPT_FILE"
+    prompt_text="$RUN_PROMPT_TEXT"
+    if ((${#RUN_EXTRA_ARGS[@]} > 0)); then
+      exec_args=("${RUN_EXTRA_ARGS[@]}")
+    fi
+  elif [[ "${1:-}" == "codex" ]]; then
+    shift
+    mode="passthrough"
+    passthrough=("$@")
+  else
+    while (( $# > 0 )); do
+      arg="$1"
+      case "$arg" in
+        --model|-m)
+          [[ $# -ge 2 ]] || die "$arg requires a value"
+          CODESEEQ_MODEL="$2"
+          shift 2
+          ;;
+        --thinking)
+          CODESEEQ_THINKING="true"
+          shift
+          ;;
+        --no-thinking)
+          CODESEEQ_THINKING="false"
+          shift
+          ;;
+        -y|--yolo|--dangerously-bypass-approvals-and-sandbox)
+          shift
+          ;;
+        --sandbox|--sanbox|-s)
+          [[ $# -ge 2 ]] || die "$arg requires a value"
+          shift 2
+          ;;
+        --sandbox=*|--sanbox=*)
+          shift
+          ;;
+        *)
+          codex_args+=("$arg")
+          shift
+          ;;
+      esac
+    done
+    if [[ "$mode" == "interactive" ]]; then
+      if split_direct_prompt_args "${codex_args[@]+"${codex_args[@]}"}"; then
+        mode="exec"
+        exec_args=()
+        if ((${#DIRECT_CODEX_ARGS[@]} > 0)); then
+          exec_args=("${DIRECT_CODEX_ARGS[@]}")
+        fi
+        prompt_text="${DIRECT_PROMPT_PARTS[*]}"
+      else
+        passthrough=("${codex_args[@]+"${codex_args[@]}"}")
+      fi
+    fi
+  fi
+
+	normalize_model "$CODESEEQ_MODEL" "$CODESEEQ_THINKING"
+	CODESEEQ_OPENRESPONSES_URL="http://127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT}/v1"
+	write_host_config
+	start_bridge_container
+
+  export CODEX_HOME="$HOST_CODEX_HOME"
+  export CODESEEQ_HOST_MODE=true
+
+  local cmd=(codex --model "$PROVIDER_MODEL" --dangerously-bypass-approvals-and-sandbox)
+  if [[ "$mode" == "exec" ]]; then
+    if [[ -z "$prompt_file" ]]; then
+      prompt_file="$(prepare_prompt_temp_from_text "$prompt_text")"
+    fi
+    cmd+=(exec --skip-git-repo-check)
+    if ((${#exec_args[@]} > 0)); then
+      cmd+=("${exec_args[@]}")
+    fi
+    cmd+=(-)
+    log "danger mode: running local Codex with bridge at ${CODESEEQ_OPENRESPONSES_URL}"
+    local status
+    set +e
+    "${cmd[@]}" < "$prompt_file"
+    status=$?
+    set -e
+    cleanup_tmp_files
+    trap - EXIT
+    exit $status
+  fi
+
+  log "danger mode: running local Codex with bridge at ${CODESEEQ_OPENRESPONSES_URL}"
+  local status
+  set +e
+  if ((${#passthrough[@]} > 0)); then
+    "${cmd[@]}" "${passthrough[@]}"
+  else
+    "${cmd[@]}"
+  fi
+  status=$?
+  set -e
+  cleanup_tmp_files
+  trap - EXIT
+  exit $status
+}
+
+case "${1:-}" in
+  install)
+    installer="${CODESEEQ_INSTALL_ROOT}/scripts/install.sh"
+    [[ -x "$installer" ]] || die "installer not found or not executable: $installer"
+    shift
+    exec "$installer" "$@"
+    ;;
+  build)
+    shift
+    CONTAINER="$(detect_container)"
+    "$CONTAINER" build -t "$IMAGE" "$@" "$BUILD_CONTEXT"
+    exit $?
+    ;;
+  smoke)
+    shift
+    CONTAINER="$(detect_container)"
+    CONTAINER="$CONTAINER" IMAGE="$IMAGE" exec "${CODESEEQ_INSTALL_ROOT}/scripts/smoke-all.sh" "$@"
+    ;;
+  package)
+    shift
+    exec "${CODESEEQ_INSTALL_ROOT}/scripts/package.sh" "$@"
+    ;;
+  system)
+    shift
+    system_cmd "$@"
+    exit $?
+    ;;
+  --help|-h)
+    print_help
+    exit 0
+    ;;
+esac
+
+CONTAINER="$(detect_container)"
+cmd_arg="$(first_command_arg "$@" || true)"
+if arg_requests_danger "$@" && ! is_codeseeq_diagnostic_command "$cmd_arg"; then
+  run_host_codex "$@"
+fi
+
+run_safe_container "$@"

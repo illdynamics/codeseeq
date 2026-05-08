@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-CONTAINER="${CONTAINER:-podman}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/runtime.sh
+source "${script_dir}/runtime.sh"
+CONTAINER="$(codeseeq_detect_container)"
 IMAGE="${IMAGE:-codeseeq:dev}"
 MODEL="${MODEL:-deepseek-v4-flash}"
 

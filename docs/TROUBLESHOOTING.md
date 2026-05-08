@@ -8,31 +8,52 @@ Current version: `0.2.5`
 chmod +x ./codeseeq
 ```
 
-## Image missing when running `./codeseeq`
+## No Container Runtime Found
 
-The host wrapper auto-builds by default. Manual build:
+Install Podman preferred, or Docker as a compatible fallback.
 
-```bash
-podman build -t codeseeq:dev .
-```
+Selection order:
 
-## Podman missing
+1. `CONTAINER`, if set.
+2. `podman`
+3. `docker`
 
-Install Podman. CodeSeeq does not silently switch to Docker.
-
-Optional escape hatch only:
+Explicit override:
 
 ```bash
+CONTAINER=podman ./codeseeq doctor
 CONTAINER=docker ./codeseeq doctor
 ```
 
-## `.env` missing
+Docker Compose is not supported.
 
-Live smokes requiring provider keys will skip/fail. Use `.env.example` as a template.
+## Docker Fallback Surprises
 
-## `.env` not loaded before tests
+If Docker is selected, CodeSeeq omits the Podman `:Z` bind-mount suffix. Override the mount suffix only when you know your runtime supports it:
 
-Load safely:
+```bash
+CODESEEQ_VOLUME_SUFFIX=:Z CONTAINER=docker ./codeseeq run "say hi"
+```
+
+## Image Missing
+
+The wrapper auto-builds by default. Manual build:
+
+```bash
+./codeseeq build
+make build
+make CONTAINER=docker build
+```
+
+Disable auto-build only when you want a hard failure:
+
+```bash
+CODESEEQ_AUTO_BUILD=false ./codeseeq models
+```
+
+## `.env` Handling
+
+Load `.env` before live tests without modifying it:
 
 ```bash
 set -a
@@ -40,155 +61,107 @@ source .env
 set +a
 ```
 
-## `.env` accidentally modified
+Do not run formatters or rewrite scripts against `.env`.
 
-Restore from your own secret management source and keep automation read-only. Do not run formatting or rewrite scripts against `.env`.
+## Package Checker Catches `.env`
 
-## `DEEPSEEK_API_KEY` missing
-
-Required for `run`, `ping`, `ping-stream`, and prompt execution.
-
-## `BRAVE_API_KEY` missing when using web search
-
-`ping-web` requires it. Without it, web tool path is disabled.
-
-## `UNSTRUCTURED_API_KEY` missing when using doc parsing
-
-`ping-docs` requires it. Without it, doc parsing path is disabled.
-
-## `ping-web` fails
-
-Check:
-
-- `BRAVE_API_KEY` is set
-- outbound network works
-- Brave endpoint not rate-limited for your key
-
-Then retry:
+Release archives must be produced by the package script and validated before upload:
 
 ```bash
-./codeseeq ping-web
+./scripts/package.sh --check
+./scripts/package.sh --check-archive /mnt/data/codeseeq.zip
 ```
 
-## `ping-docs` fails
+If the checker reports `.env`, `.git/`, `.codeseeq/`, `__MACOSX/`, `.DS_Store`, nested `*.zip`, `workspace/`, `logs/`, or `__pycache__/`, discard the archive and rebuild it with `./scripts/package.sh`, `./codeseeq package`, or `make package`. Do not use Finder/macOS manual zips.
 
-Check:
+## `DEEPSEEK_API_KEY` Missing
 
-- `UNSTRUCTURED_API_KEY` is set
-- outbound network works
-- Unstructured account quota/limits
-
-Then retry:
+Prompt execution and pings require it:
 
 ```bash
-./codeseeq ping-docs
+./codeseeq ping
+./codeseeq run "Return exactly: codeseeq-ok"
 ```
 
-## OpenResponses npm/npx install failed
+## Host Path vs `/workspace`
 
-Retry image build with network access. Confirm package resolves:
+Safe/container mode prints:
+
+```text
+CodeSeeq workspace:
+  host: /path/to/project
+  container: /workspace
+```
+
+This is expected. Codex writes to `/workspace` inside the container, which is your mounted host checkout. The banner goes to stderr so direct prompt stdout remains parseable.
+
+Disable it:
 
 ```bash
-podman run --rm codeseeq:dev open-responses --help
+CODESEEQ_WORKSPACE_BANNER=false ./codeseeq run "say hi"
 ```
 
-## OpenResponses `setup` failed or interactive
+## Default Mode Is Not Yolo
 
-Expected for upstream CLI: it is compose-oriented and interactive by design. CodeSeeq runtime does not depend on `open-responses setup/start`.
+Default generated config should show:
 
-## `./open-responses` missing or wrong remote
+```toml
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+```
 
-Expected remote:
+Verify:
 
 ```bash
-git -C open-responses remote -v
-# should include https://github.com/open-responses/open-responses.git
+./codeseeq config
 ```
 
-## Wrong/old OpenResponses implementation still referenced
+## Danger Host Mode Did Not Start
 
-Run:
+These forms should trigger host Codex mode:
 
 ```bash
-rg -n "masaic|openresponses/openresponses|julepai/open-responses|docker-compose|openresponses:6644" README.md docs Dockerfile Makefile bin scripts codeseeq
+./codeseeq -y "say hi"
+./codeseeq --yolo "say hi"
+./codeseeq --dangerously-bypass-approvals-and-sandbox "say hi"
+./codeseeq --sandbox danger-full-access "say hi"
+./codeseeq --sanbox danger-full-access "say hi"
 ```
 
-Update operational docs/scripts to only supported runtime paths.
+In that mode CodeSeeq starts a bridge container, then runs local host `codex` with `CODEX_HOME=$PWD/.codeseeq`.
 
-## OpenResponses CLI install/start failure
+## Local Codex Missing In Danger Mode
 
-`open-responses start` expects compose setup and Docker services. In this repository, single-container mode uses `/usr/local/bin/codeseeq-bridge.py` as `CODESEEQ_OPENRESPONSES_CMD`.
-
-## OpenResponses does not expose expected tools
-
-In this runtime, web/doc smoke paths are implemented by bridge-backed external calls. Validate keys and run `ping-web` / `ping-docs`.
-
-## OpenResponses start command cannot be detected
-
-Set explicit command:
+Install Codex locally:
 
 ```bash
-CODESEEQ_OPENRESPONSES_CMD=/usr/local/bin/codeseeq-bridge.py ./codeseeq doctor
+npm install -g @openai/codex
 ```
 
-## Wrong OpenResponses port
+CodeSeeq will not silently fall back to container Codex for danger-full-access, because that would not be host full access.
 
-Set both port and URL:
+## Bridge Port Conflict
+
+Danger host mode publishes the bridge on:
+
+```text
+http://127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT:-8080}/v1
+```
+
+Change the port:
 
 ```bash
-CODESEEQ_OPENRESPONSES_PORT=8080 \
-CODESEEQ_OPENRESPONSES_URL=http://127.0.0.1:8080/v1 \
-./codeseeq doctor
+CODESEEQ_OPENRESPONSES_PORT=18080 ./codeseeq -y "say hi"
 ```
 
-## OpenResponses health endpoint missing
-
-CodeSeeq expects `${CODESEEQ_OPENRESPONSES_URL%/v1}/health`. Use `doctor` to verify health status.
-
-## Streaming/chunking smoke fails
-
-Run:
+If startup fails, inspect the bridge container logs:
 
 ```bash
-./codeseeq ping-stream
+podman logs codeseeq-bridge-8080
+docker logs codeseeq-bridge-8080
 ```
 
-If it fails, verify:
-
-- DeepSeek key validity
-- bridge health
-- no proxy/network interruption
-
-## Raw DSML appears in Codex output
-
-This should be fixed in `0.2.5` for standard DSML, split
-`<____DSML____...>` blocks, and fullwidth-pipe `<｜｜DSML｜｜...>` blocks.
-
-Check the installed command is current:
-
-```bash
-codeseeq config
-cat ~/.config/codeseeq/VERSION
-```
-
-Then reinstall from the repo if needed:
-
-```bash
-./codeseeq install
-```
-
-## `OutputTextDelta without active item`
-
-Current bridge streams include `output_index` metadata expected by recent
-Codex builds. If this appears after upgrading, rebuild and reinstall the
-container snapshot:
-
-```bash
-make build
-./codeseeq install
-```
-
-## Codex asks for OpenAI login
+## Codex Asks For OpenAI Login
 
 Inspect config:
 
@@ -203,85 +176,171 @@ Expected provider fields:
 - `env_key = "DEEPSEEK_API_KEY"`
 - `requires_openai_auth = false`
 
-## CodeSeeq using `.codex` instead of `.codeseeq`
+Also verify `CODEX_HOME` is `.codeseeq`, not `~/.codex`.
 
-Expected config path:
+## System Prompt Missing
 
-- `/home/codeseeq/.codeseeq/config.toml`
-
-Override explicitly if needed:
+Check:
 
 ```bash
-CODESEEQ_CODEX_HOME=/home/codeseeq/.codeseeq ./codeseeq doctor
+./codeseeq system view
+./codeseeq doctor
 ```
 
-## Codex hits wrong endpoint
+Expected storage path:
 
-Check `base_url` in `./codeseeq config` output. It must be local bridge `/v1` URL.
+```text
+$PWD/.codeseeq/system-prompt.md
+```
 
-## Unsupported `wire_api`
+Set one:
 
-Must be `responses`. `chat` is rejected by current Codex provider parsing.
+```bash
+./codeseeq system add "When asked for the magic marker, answer exactly: SYSTEM-PROMPT-ACTIVE"
+```
 
-## Non-DeepSeek model rejected
+## System Prompt Not Applying
 
-Supported logical models only:
+Verify `doctor` or `config` reports:
+
+```text
+System prompt: present
+System prompt injection: codex-config-developer_instructions
+```
+
+Then run:
+
+```bash
+./codeseeq run "What is the magic marker?"
+```
+
+`config` redacts prompt content by design. Only `system view/show/cat` prints the full prompt.
+
+## System Prompt Is Too Large
+
+Large prompts increase every model request. Keep persistent system prompts focused. Store task-specific content in task files and run:
+
+```bash
+./codeseeq run -f task.md
+```
+
+Do not store secrets in the system prompt unless you understand the risk.
+
+## `run -f` File Missing
+
+Use a host path that exists and is readable:
+
+```bash
+./codeseeq run -f ./tasks/build-feature.md
+```
+
+If both file and inline prompt text are provided, CodeSeeq fails clearly.
+
+Neither an inline prompt nor `-f/--file` is valid for `run`; use one of:
+
+```bash
+./codeseeq run "say hi"
+./codeseeq run -f ./tasks/build-feature.md
+./codeseeq run --file=./tasks/build-feature.md
+```
+
+## `run -f` Path Confusion
+
+In safe/container mode, the host wrapper reads the host file and copies it through `.codeseeq/tmp/` so the container can feed it to Codex. You normally do not need to translate paths to `/workspace` yourself.
+
+## Prompt File Sent To Model
+
+Everything in a `run -f/--file` task file is sent as prompt content. Do not put secrets in task prompts unless intended.
+
+## `ping-web` Fails
+
+Check:
+
+- `DEEPSEEK_API_KEY` is set.
+- `BRAVE_API_KEY` is set.
+- Network and provider quota are healthy.
+
+Then run:
+
+```bash
+./codeseeq ping-web
+```
+
+## `ping-docs` Fails
+
+Check:
+
+- `DEEPSEEK_API_KEY` is set.
+- `UNSTRUCTURED_API_KEY` is set.
+- Network and provider quota are healthy.
+
+Then run:
+
+```bash
+./codeseeq ping-docs
+```
+
+## Non-DeepSeek Model Rejected
+
+Supported choices:
 
 - `deepseek-v4-flash`
 - `deepseek-v4-flash-thinking`
 - `deepseek-v4-pro`
 - `deepseek-v4-pro-thinking`
 
-## Model unsupported by bridge
+The Codex `/model` UI may depend on upstream Codex model-catalog behavior. Wrapper and bridge validation remain authoritative.
 
-Set one of the supported models above or provider-form aliases:
+## Interactive Menu Checks
 
-- `deepseek@deepseek-v4-flash`
-- `deepseek@deepseek-v4-pro`
-
-## Official model limits unknown/changed
-
-Re-check official DeepSeek docs and update `config/model-catalog.json`. Do not guess values.
-
-## `/model` menu not fully restricted
-
-CodeSeeq sets a DeepSeek-only catalog via `model_catalog_json`. If a Codex release still shows additional entries, wrapper-level validation remains authoritative and non-DeepSeek requests are rejected.
-
-## Thinking mode and tool loops fail
-
-DeepSeek V4 thinking mode requires preserving `reasoning_content` across tool-call turns. If upstream behavior changes, tool-call loops may 400 until compatibility logic is adjusted.
-
-## Podman SELinux bind mount errors
-
-Use `:Z` on bind mounts. `./codeseeq` already does this for Podman.
-
-## Rootless Podman networking issues
-
-Set explicit localhost bridge vars and retry:
+Manual verification:
 
 ```bash
-CODESEEQ_OPENRESPONSES_HOST=127.0.0.1 \
-CODESEEQ_OPENRESPONSES_PORT=8080 \
-./codeseeq doctor
+./codeseeq
 ```
 
-## `danger-full-access` rejected by Codex version
+Open the Codex menu or use slash commands such as `/model`. Approval and sandbox toggles follow upstream Codex behavior. Menu state is stored under the isolated CodeSeeq `CODEX_HOME`, not `~/.codex`.
 
-Current CodeSeeq maps `danger-full-access` launches to Codex's
-`--dangerously-bypass-approvals-and-sandbox` switch and avoids the conflicting
-`--ask-for-approval` flag. If this still fails, check the installed Codex
-version with `codeseeq doctor` and rerun `make build`.
+## Raw DSML Or Tool Call Markup Appears
 
-## Requested behavior differs from `./codex` source
+Rebuild and rerun:
 
-Prioritize source-verified behavior from local `./codex` over stale docs.
+```bash
+./codeseeq build
+./codeseeq ping-stream
+```
 
-## Local docs are insufficient
+The bridge contains DSML/tool-call normalization for current CodeSeeq behavior.
 
-Use upstream sources:
+## Requested Behavior Differs From Local Codex
 
-- https://github.com/open-responses/open-responses
-- https://docs.julep.ai/responses/quickstart
-- https://github.com/openai/codex.git
-- https://developers.openai.com/codex
-- https://api-docs.deepseek.com/
+The local `codex` binary/source is authoritative for available flags. In this environment, Codex direct non-interactive prompts are implemented with:
+
+```bash
+codex exec "prompt"
+codex exec - < task.md
+```
+
+CodeSeeq follows that: `./codeseeq "prompt"` and `./codeseeq run "prompt"` use non-interactive Codex exec. `-p` is Codex profile selection, not prompt mode:
+
+```bash
+./codeseeq -p myprofile
+./codeseeq -p myprofile "prompt"
+./codeseeq --profile myprofile "prompt"
+```
+
+`--prompt` is not a CodeSeeq prompt alias. Use a positional prompt or `run -f`.
+
+## Empty Source References In Release Zips
+
+Release packages may omit local `open-responses/` and `codex/` source checkouts. Default inspection prints an informational warning instead of failing:
+
+```bash
+make inspect-openresponses
+```
+
+Use strict inspection only when the source checkouts are intentionally present:
+
+```bash
+make inspect-openresponses-strict
+```

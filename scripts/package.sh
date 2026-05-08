@@ -15,6 +15,7 @@ usage() {
 Usage:
   scripts/package.sh [output.zip]
   scripts/package.sh --check
+  scripts/package.sh --check-archive path/to/archive.zip
 
 Creates a clean source zip from repo root.
 
@@ -32,6 +33,8 @@ repo_root="$(cd "${script_dir}/.." && pwd)"
 zip_excludes=(
   ".git/*"
   "*/.git/*"
+  ".codeseeq/*"
+  "*/.codeseeq/*"
   "__MACOSX/*"
   "*/__MACOSX/*"
   ".DS_Store"
@@ -43,14 +46,18 @@ zip_excludes=(
   "prod.env"
   "production.env"
   "dist/*"
+  "*/dist/*"
   "build/*"
+  "*/build/*"
   "node_modules/*"
+  "*/node_modules/*"
   "workspace/*"
+  "*/workspace/*"
   "__pycache__/*"
   "*/__pycache__/*"
   "*.pyc"
-  ".codeseeq/*"
   "logs/*"
+  "*/logs/*"
   "*.log"
   "*.zip"
 )
@@ -124,6 +131,8 @@ out_rel = os.environ.get("CODESEEQ_OUTPUT_REL", "")
 patterns = [
     ".git/*",
     "*/.git/*",
+    ".codeseeq/*",
+    "*/.codeseeq/*",
     "__MACOSX/*",
     "*/__MACOSX/*",
     ".DS_Store",
@@ -135,14 +144,18 @@ patterns = [
     "prod.env",
     "production.env",
     "dist/*",
+    "*/dist/*",
     "build/*",
+    "*/build/*",
     "node_modules/*",
+    "*/node_modules/*",
     "workspace/*",
+    "*/workspace/*",
     "__pycache__/*",
     "*/__pycache__/*",
     "*.pyc",
-    ".codeseeq/*",
     "logs/*",
+    "*/logs/*",
     "*.log",
     "*.zip",
 ]
@@ -226,6 +239,65 @@ PY
   fi
 }
 
+validate_archive() {
+  local archive="$1"
+  [[ -f "$archive" ]] || die "archive not found: $archive"
+
+  local tmpdir entries_file
+  tmpdir="$(mktemp -d)"
+  entries_file="$tmpdir/entries.txt"
+  if ! archive_entries "$archive" > "$entries_file"; then
+    rm -rf "$tmpdir"
+    die "cannot inspect archive: $archive"
+  fi
+
+  local failures=0
+  local entry normalized base segment_path
+  local has_env_example=0
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    normalized="${entry%/}"
+    base="${normalized##*/}"
+    segment_path="/${normalized}/"
+
+    if [[ "$base" == ".env.example" ]]; then
+      has_env_example=1
+      continue
+    fi
+
+    case "$segment_path" in
+      */.git/*|*/.codeseeq/*|*/dist/*|*/workspace/*|*/__MACOSX/*|*/node_modules/*|*/__pycache__/*|*/logs/*)
+        printf '[package:check:error] forbidden path in archive: %s\n' "$entry" >&2
+        failures=$((failures + 1))
+        continue
+        ;;
+    esac
+
+    case "$base" in
+      .DS_Store|*.pyc|*.zip|*.log)
+        printf '[package:check:error] forbidden file in archive: %s\n' "$entry" >&2
+        failures=$((failures + 1))
+        continue
+        ;;
+      .env|.env.*|*.env|*.env.*|prod.env|production.env)
+        printf '[package:check:error] env-like file in archive: %s\n' "$entry" >&2
+        failures=$((failures + 1))
+        continue
+        ;;
+    esac
+  done < "$entries_file"
+
+  if (( has_env_example == 0 )); then
+    printf '[package:check:error] .env.example is missing from archive\n' >&2
+    failures=$((failures + 1))
+  fi
+
+  rm -rf "$tmpdir"
+  if (( failures > 0 )); then
+    die "archive check failed with ${failures} issue(s): $archive"
+  fi
+}
+
 static_package_check() {
   local failures=0
   local required_patterns=(
@@ -237,17 +309,23 @@ static_package_check() {
     '"production.env"'
     '".git/*"'
     '"*/.git/*"'
+    '".codeseeq/*"'
+    '"*/.codeseeq/*"'
     '"__MACOSX/*"'
     '"*/.DS_Store"'
     '"dist/*"'
+    '"*/dist/*"'
     '"build/*"'
+    '"*/build/*"'
     '"node_modules/*"'
+    '"*/node_modules/*"'
     '"workspace/*"'
+    '"*/workspace/*"'
     '"__pycache__/*"'
     '"*/__pycache__/*"'
     '"*.pyc"'
-    '".codeseeq/*"'
     '"logs/*"'
+    '"*/logs/*"'
     '"*.log"'
     '"*.zip"'
   )
@@ -273,7 +351,7 @@ static_package_check() {
 }
 
 package_check() {
-  local archive tmpdir entries_file
+  local archive tmpdir
 
   if ! have_zip_cli && ! have_python3; then
     static_package_check
@@ -288,55 +366,10 @@ package_check() {
   tmpdir="$(mktemp -d)"
   trap 'rm -rf "${tmpdir:-}"' EXIT
   archive="$tmpdir/codeseeq-package-check.zip"
-  entries_file="$tmpdir/entries.txt"
 
   create_package "$archive" >/dev/null
 
-  if ! archive_entries "$archive" > "$entries_file"; then
-    static_package_check
-    return 0
-  fi
-
-  local failures=0
-  local entry base
-  while IFS= read -r entry; do
-    base="${entry##*/}"
-
-    case "$entry" in
-      .git/*|*/.git/*|__MACOSX/*|*/__MACOSX/*|dist/*|build/*|node_modules/*|workspace/*|__pycache__/*|*/__pycache__/*|.codeseeq/*|logs/*)
-        printf '[package:check:error] forbidden path in archive: %s\n' "$entry" >&2
-        failures=$((failures + 1))
-        continue
-        ;;
-    esac
-
-    case "$base" in
-      .DS_Store|prod.env|production.env|*.pyc)
-        printf '[package:check:error] forbidden file in archive: %s\n' "$entry" >&2
-        failures=$((failures + 1))
-        continue
-        ;;
-      .env.example)
-        continue
-        ;;
-      .env|.env.*|*.env|*.env.*)
-        printf '[package:check:error] env-like file in archive: %s\n' "$entry" >&2
-        failures=$((failures + 1))
-        continue
-        ;;
-    esac
-  done < "$entries_file"
-
-  if [[ -f "$repo_root/.env.example" ]]; then
-    if ! grep -Fxq '.env.example' "$entries_file"; then
-      printf '[package:check:error] .env.example is missing from archive\n' >&2
-      failures=$((failures + 1))
-    fi
-  fi
-
-  if (( failures > 0 )); then
-    die "package check failed with ${failures} issue(s)"
-  fi
+  validate_archive "$archive"
 
   note "package check passed"
   rm -rf "$tmpdir"
@@ -352,6 +385,12 @@ main() {
       shift
       [[ $# -eq 0 ]] || die "--check does not accept output path"
       package_check
+      ;;
+    --check-archive)
+      shift
+      [[ $# -eq 1 ]] || die "--check-archive requires exactly one archive path"
+      validate_archive "$1"
+      note "archive check passed: $1"
       ;;
     *)
       [[ $# -le 1 ]] || die "too many arguments"

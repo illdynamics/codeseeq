@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-CONTAINER="${CONTAINER:-podman}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/runtime.sh
+source "${script_dir}/runtime.sh"
+CONTAINER="$(codeseeq_detect_container)"
 IMAGE="${IMAGE:-codeseeq:dev}"
 MODEL="${MODEL:-deepseek-v4-flash}"
 PROMPT="${PROMPT:-Return exactly: codeseeq-ok}"
@@ -37,23 +40,23 @@ echo "[smoke-all] step: inspect-openresponses"
 make inspect-openresponses
 
 echo "[smoke-all] step: build"
-make build
+make build CONTAINER="$CONTAINER" IMAGE="$IMAGE"
 
 echo "[smoke-all] step: models"
-make models
+make models CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
 
 echo "[smoke-all] step: container config/doctor checks"
 ./scripts/smoke-openresponses-container.sh
 
 if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
   echo "[smoke-all] step: ping"
-  make ping
+  make ping CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
 
   echo "[smoke-all] step: ping-stream"
-  make ping-stream
+  make ping-stream CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
 
   echo "[smoke-all] step: prompt"
-  "${ENV_CLEAN[@]}" make prompt PROMPT="$PROMPT"
+  "${ENV_CLEAN[@]}" make prompt CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL" PROMPT="$PROMPT"
 
   echo "[smoke-all] step: codex container smoke"
   ./scripts/smoke-codex-container.sh
@@ -65,11 +68,11 @@ else
 fi
 
 echo "[smoke-all] step: doctor"
-"${ENV_CLEAN[@]}" make doctor
+"${ENV_CLEAN[@]}" make doctor CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
 
 if [[ -n "${BRAVE_API_KEY:-}" && -n "${DEEPSEEK_API_KEY:-}" ]]; then
   echo "[smoke-all] step: ping-web"
-  make ping-web
+  make ping-web CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
   CONTAINER="$CONTAINER" IMAGE="$IMAGE" CODESEEQ_MODEL="$MODEL" ./codeseeq ping-web >/dev/null
   ./scripts/smoke-openresponses-web-search.sh
 else
@@ -78,7 +81,7 @@ fi
 
 if [[ -n "${UNSTRUCTURED_API_KEY:-}" && -n "${DEEPSEEK_API_KEY:-}" ]]; then
   echo "[smoke-all] step: ping-docs"
-  make ping-docs
+  make ping-docs CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
   CONTAINER="$CONTAINER" IMAGE="$IMAGE" CODESEEQ_MODEL="$MODEL" ./codeseeq ping-docs >/dev/null
   ./scripts/smoke-openresponses-doc-input.sh
 else

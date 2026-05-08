@@ -41,11 +41,28 @@ inspect-openresponses:
 	@echo "OpenResponses repo: $(OPENRESPONSES_REPO)"
 	@echo "OpenResponses docs: $(OPENRESPONSES_DOCS)"
 	@echo "OpenResponses ref: $(OPENRESPONSES_REF)"
-	@test -d open-responses || (echo "open-responses directory missing" >&2; exit 1)
-	@git -C open-responses remote -v | sed -n '1,2p'
-	@git -C open-responses rev-parse --short HEAD
-	@git -C open-responses remote -v | rg -q 'open-responses/open-responses' || (echo "open-responses remote mismatch" >&2; exit 1)
+	@if test -d open-responses/.git; then \
+		git -C open-responses remote -v | sed -n '1,2p'; \
+		git -C open-responses rev-parse --short HEAD; \
+		git -C open-responses remote -v | rg -q 'open-responses/open-responses' || (echo "open-responses remote mismatch" >&2; exit 1); \
+	else \
+		echo "local open-responses source not included in this package; CodeSeeq uses npm/local bridge runtime; see docs."; \
+	fi
+	@if test -d codex/.git; then \
+		echo "Codex source dir: ./codex"; \
+		git -C codex remote -v | sed -n '1,2p'; \
+		git -C codex rev-parse --short HEAD; \
+	else \
+		echo "local codex source not included in this package; CodeSeeq uses the installed Codex CLI in the image/host; see docs."; \
+	fi
 	@echo "Note: upstream open-responses CLI is Docker/Compose-oriented; CodeSeeq keeps single-container runtime by running an in-container local bridge process."
+
+.PHONY: inspect-openresponses-strict
+inspect-openresponses-strict:
+	@test -d open-responses/.git || (echo "open-responses source checkout missing" >&2; exit 1)
+	@git -C open-responses remote -v | rg -q 'open-responses/open-responses' || (echo "open-responses remote mismatch" >&2; exit 1)
+	@test -d codex/.git || (echo "codex source checkout missing" >&2; exit 1)
+	@git -C codex remote -v | rg -q 'openai/codex' || (echo "codex remote mismatch" >&2; exit 1)
 
 .PHONY: models
 models:
@@ -95,6 +112,14 @@ shell:
 .PHONY: smoke
 smoke:
 	IMAGE=$(IMAGE) CONTAINER=$(CONTAINER) ./scripts/smoke-all.sh
+
+.PHONY: package
+package:
+	./scripts/package.sh
+
+.PHONY: package-check
+package-check:
+	./scripts/package.sh --check
 
 .PHONY: clean
 clean:

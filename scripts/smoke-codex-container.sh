@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-CONTAINER="${CONTAINER:-podman}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/runtime.sh
+source "${script_dir}/runtime.sh"
+CONTAINER="$(codeseeq_detect_container)"
 IMAGE="${IMAGE:-codeseeq:dev}"
 
 models=(
@@ -45,7 +48,7 @@ echo "[smoke-codex-container] run direct Codex prompt"
 prompt_out="$($CONTAINER run --rm \
   -e DEEPSEEK_API_KEY \
   "$IMAGE" \
-  "Return exactly: codeseeq-ok")"
+  run "Return exactly: codeseeq-ok")"
 
 grep -qi 'codeseeq-ok' <<<"$prompt_out"
 

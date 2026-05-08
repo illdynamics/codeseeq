@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-CONTAINER="${CONTAINER:-podman}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/runtime.sh
+source "${script_dir}/runtime.sh"
+CONTAINER="$(codeseeq_detect_container)"
 IMAGE="${IMAGE:-codeseeq:dev}"
 
 if ! command -v "$CONTAINER" >/dev/null 2>&1; then
@@ -29,8 +32,8 @@ grep -q '^model_provider = "codeseeq"$' <<<"$config_out"
 grep -q '^wire_api = "responses"$' <<<"$config_out"
 grep -q '^env_key = "DEEPSEEK_API_KEY"$' <<<"$config_out"
 grep -q '^base_url = "http://127.0.0.1:8080/v1"$' <<<"$config_out"
-grep -q '^approval_policy = "never"$' <<<"$config_out"
-grep -q '^sandbox_mode = "danger-full-access"$' <<<"$config_out"
+grep -q '^approval_policy = "on-request"$' <<<"$config_out"
+grep -q '^sandbox_mode = "workspace-write"$' <<<"$config_out"
 
 echo "[smoke-openresponses-container] verify doctor output"
 doctor_out="$($CONTAINER run --rm "$IMAGE" doctor)"
@@ -38,5 +41,6 @@ grep -q '^CodeSeeq Doctor' <<<"$doctor_out"
 grep -q '^OpenResponses URL: http://127.0.0.1:8080/v1$' <<<"$doctor_out"
 grep -q '^OpenResponses startup command: /usr/local/bin/codeseeq-bridge.py$' <<<"$doctor_out"
 grep -Eq '^DeepSeek provider key: (present|missing)$' <<<"$doctor_out"
+grep -q '^System prompt injection: codex-config-developer_instructions$' <<<"$doctor_out"
 
 echo "[smoke-openresponses-container] PASS"
