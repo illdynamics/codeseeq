@@ -327,7 +327,7 @@ def maybe_json_value(raw_value: str) -> Any:
 
 def normalize_xml_param_name(name: str, tool_name: str) -> str:
     lower = name.strip().lower().replace("-", "_")
-    if lower in {"cmd", "shell_command", "terminal_command"}:
+    if lower in {"shell_command", "terminal_command"}:
         return "command"
     if lower in {"file", "file_path", "filename", "filepath"}:
         return "path"
@@ -380,7 +380,7 @@ def parse_tool_xml_body(raw_name: str, body: str) -> Dict[str, Any]:
         return decoded
 
     if tool_lower in SHELL_TOOL_NAMES:
-        return {"command": decoded}
+        return {"cmd": decoded}
     if tool_lower in {"read", "read_file", "view", "cat", "open"}:
         return {"path": decoded}
     if tool_lower in {"write", "write_file", "create_file"}:
