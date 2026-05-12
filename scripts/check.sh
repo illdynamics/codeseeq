@@ -479,7 +479,7 @@ if ./scripts/package.sh --check-archive "$dirty_prompt_zip" >"${tmp_check_dir}/d
 elif ! grep -Fq 'system-prompt.md' "${tmp_check_dir}/dirty-system-prompt-package.err"; then
   fail "dirty system-prompt archive failure did not mention system-prompt.md"
 fi
-if ! _rg -n "system-prompt.md" scripts/install.sh >/dev/null 2>&1; then
+if ! _rg -n "system-prompt.md" scripts/install-local.sh >/dev/null 2>&1; then
   fail "installer does not preserve user-config system-prompt.md"
 fi
 

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `0.2.9`
+Current version: `v0.2.9`
 
 ## `./codeseeq` is not executable
 

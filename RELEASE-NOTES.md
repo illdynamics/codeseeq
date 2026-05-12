@@ -1,4 +1,4 @@
-## 0.2.9 - 2026-05-12
+## v0.2.9 - 2026-05-12
 
 ### Fixed
 - **Flags after `run` now parsed before runtime dispatch.**  
@@ -120,7 +120,7 @@
 
 ### Changed
 - **Launcher becomes dual-purpose.** `./codeseeq` now detects the `install`
-  subcommand automatically and delegates to `scripts/install.sh`. Running
+  subcommand automatically and delegates to `scripts/install-local.sh`. Running
   without subcommand starts the container with all configuration variables
   forwarded.
 - **`CODESEEQ_WORKDIR_HOST` now resolves symlinks.** Uses `pwd -P` instead of
@@ -130,7 +130,7 @@
   up-to-date configuration references, container-runtime instructions, and
   security/architecture guidance.
 - **Scripts polished.** `scripts/check.sh` extended with bridge-extraction
-  regression tests; `scripts/package.sh` streamlined; `scripts/install.sh`
+  regression tests; `scripts/package.sh` streamlined; `scripts/install-local.sh`
   updated for the new launcher layout.
 
 ### Fixed

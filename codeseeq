@@ -1423,12 +1423,513 @@ cmd_nuke() {
   esac
 }
 
+# ─────────────────────────────────────────────────────────────
+# cmd_install — local install (inlined from install-local.sh)
+# ─────────────────────────────────────────────────────────────
+cmd_install() {
+  local log_prefix="[codeseeq-install]"
+
+  local CODESEEQ_INSTALL_DIR="${CODESEEQ_INSTALL_DIR:-${HOME}/.config/codeseeq}"
+  local CODESEEQ_BIN_DIR="${CODESEEQ_BIN_DIR:-${HOME}/bin}"
+
+  case "${CODESEEQ_INSTALL_DIR}/" in
+    "${CODESEEQ_INSTALL_ROOT}/"*)
+      die "CODESEEQ_INSTALL_DIR cannot be inside source repo: ${CODESEEQ_INSTALL_DIR}"
+      ;;
+  esac
+
+  case "${CODESEEQ_BIN_DIR}/" in
+    "${CODESEEQ_INSTALL_ROOT}/"*)
+      die "CODESEEQ_BIN_DIR cannot be inside source repo: ${CODESEEQ_BIN_DIR}"
+      ;;
+  esac
+
+  mkdir -p "$CODESEEQ_INSTALL_DIR" "$CODESEEQ_BIN_DIR"
+
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete \
+      --exclude '.git/' \
+      --exclude '.codeseeq/' \
+      --exclude 'system-prompt.md' \
+      --exclude '.env' \
+      --exclude '.env.*' \
+      --exclude '.tmp-*/' \
+      --exclude '.DS_Store' \
+      --exclude '__pycache__/' \
+      --exclude '.pytest_cache/' \
+      --exclude 'node_modules/' \
+      "$CODESEEQ_INSTALL_ROOT/" "$CODESEEQ_INSTALL_DIR/"
+  else
+    tar -C "$CODESEEQ_INSTALL_ROOT" \
+      --exclude '.git' \
+      --exclude '.codeseeq' \
+      --exclude 'system-prompt.md' \
+      --exclude '.env' \
+      --exclude '.env.*' \
+      --exclude '.tmp-*' \
+      --exclude '.DS_Store' \
+      --exclude '__pycache__' \
+      --exclude '.pytest_cache' \
+      --exclude 'node_modules' \
+      -cf - . | tar -C "$CODESEEQ_INSTALL_DIR" -xf -
+  fi
+
+  chmod +x "$CODESEEQ_INSTALL_DIR/codeseeq" 2>/dev/null || true
+
+  local launcher="${CODESEEQ_BIN_DIR}/codeseeq"
+  cat > "$launcher" <<-LEOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+exec "${CODESEEQ_INSTALL_DIR}/codeseeq" "\$@"
+LEOF
+  chmod +x "$launcher"
+
+  # Install upstream Codex CLI if missing
+  if command -v codex >/dev/null 2>&1; then
+    log "codex CLI found: $(command -v codex)"
+  elif command -v npm >/dev/null 2>&1; then
+    log "installing @openai/codex globally via npm ..."
+    npm install -g @openai/codex || log "WARN: npm install failed; install manually: npm install -g @openai/codex"
+  else
+    log "WARN: npm not found; install Codex CLI manually: npm install -g @openai/codex"
+  fi
+
+  # Install Python bridge deps if python3 available
+  if [[ -f "${CODESEEQ_INSTALL_DIR}/requirements-bridge.txt" ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+      if python3 -c 'import fastapi, uvicorn, httpx' >/dev/null 2>&1; then
+        log "Python bridge deps: OK"
+      else
+        log "installing Python bridge deps ..."
+        python3 -m pip install --quiet -r "${CODESEEQ_INSTALL_DIR}/requirements-bridge.txt" || \
+          log "WARN: pip install failed; install manually: python3 -m pip install -r ${CODESEEQ_INSTALL_DIR}/requirements-bridge.txt"
+      fi
+    else
+      log "WARN: python3 not found; install manually for host/process mode: python3 -m pip install -r requirements-bridge.txt"
+    fi
+  fi
+
+  log "installed repo snapshot to ${CODESEEQ_INSTALL_DIR}"
+  log "installed launcher to ${launcher}"
+
+  case ":${PATH}:" in
+    *":${CODESEEQ_BIN_DIR}:"*) ;;
+    *)
+      log "add ${CODESEEQ_BIN_DIR} to PATH if needed"
+      ;;
+  esac
+}
+
+# ─────────────────────────────────────────────────────────────
+# cmd_smoke — run smoke tests (inlined from scripts/smoke-all.sh)
+# ─────────────────────────────────────────────────────────────
+cmd_smoke() {
+  local CONTAINER IMAGE MODEL PROMPT ENV_CLEAN
+  CONTAINER="$(detect_container)"
+  IMAGE="${IMAGE:-codeseeq:dev}"
+  MODEL="${MODEL:-deepseek-v4-flash}"
+  PROMPT="${PROMPT:-Return exactly: codeseeq-ok}"
+  ENV_CLEAN=(env -u CODESEEQ_CODEX_HOME -u CODESEEQ_APPROVAL_POLICY -u CODESEEQ_SANDBOX_MODE -u CODESEEQ_OPENRESPONSES_HOST -u CODESEEQ_OPENRESPONSES_PORT -u CODESEEQ_OPENRESPONSES_URL)
+
+  echo "[smoke-all] container runtime: $CONTAINER"
+  if ! command -v "$CONTAINER" >/dev/null 2>&1; then
+    echo "[smoke-all] FAIL: $CONTAINER not found" >&2
+    exit 1
+  fi
+
+  if [[ -f .env ]]; then
+    echo "[smoke-all] loading .env (read-only)"
+    set -a
+    source .env
+    set +a
+  else
+    echo "[smoke-all] .env not found; live tests may be skipped"
+  fi
+
+  key_state() {
+    if [[ -n "${1:-}" ]]; then
+      printf 'present'
+    else
+      printf 'missing'
+    fi
+  }
+
+  echo "[smoke-all] key presence: DEEPSEEK_API_KEY=$(key_state "${DEEPSEEK_API_KEY:-}") BRAVE_API_KEY=$(key_state "${BRAVE_API_KEY:-}") UNSTRUCTURED_API_KEY=$(key_state "${UNSTRUCTURED_API_KEY:-}")"
+
+  echo "[smoke-all] step: inspect-openresponses"
+  make inspect-openresponses
+
+  echo "[smoke-all] step: build"
+  make build CONTAINER="$CONTAINER" IMAGE="$IMAGE"
+
+  echo "[smoke-all] step: models"
+  make models CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
+
+  echo "[smoke-all] step: container config/doctor checks"
+  "${CODESEEQ_INSTALL_ROOT}/scripts/smoke-bridge-container.sh"
+
+  if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
+    echo "[smoke-all] step: ping"
+    make ping CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
+
+    echo "[smoke-all] step: ping-stream"
+    make ping-stream CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
+
+    echo "[smoke-all] step: prompt"
+    "${ENV_CLEAN[@]}" make prompt CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL" PROMPT="$PROMPT"
+
+    echo "[smoke-all] step: codex container smoke"
+    "${CODESEEQ_INSTALL_ROOT}/scripts/smoke-codex-container.sh"
+
+    echo "[smoke-all] step: host cli smoke"
+    "${CODESEEQ_INSTALL_ROOT}/scripts/smoke-host-cli.sh"
+  else
+    echo "[smoke-all] SKIP live deepseek/codex checks: DEEPSEEK_API_KEY missing"
+  fi
+
+  echo "[smoke-all] step: doctor"
+  "${ENV_CLEAN[@]}" make doctor CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
+
+  if [[ -n "${BRAVE_API_KEY:-}" && -n "${DEEPSEEK_API_KEY:-}" ]]; then
+    echo "[smoke-all] step: ping-web"
+    make ping-web CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
+    CONTAINER="$CONTAINER" IMAGE="$IMAGE" CODESEEQ_MODEL="$MODEL" ./codeseeq ping-web >/dev/null
+    "${CODESEEQ_INSTALL_ROOT}/scripts/smoke-openresponses-web-search.sh"
+  else
+    echo "[smoke-all] SKIP web search smoke"
+  fi
+
+  if [[ -n "${UNSTRUCTURED_API_KEY:-}" && -n "${DEEPSEEK_API_KEY:-}" ]]; then
+    echo "[smoke-all] step: ping-docs"
+    make ping-docs CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
+    CONTAINER="$CONTAINER" IMAGE="$IMAGE" CODESEEQ_MODEL="$MODEL" ./codeseeq ping-docs >/dev/null
+    "${CODESEEQ_INSTALL_ROOT}/scripts/smoke-openresponses-doc-input.sh"
+  else
+    echo "[smoke-all] SKIP doc parsing smoke"
+  fi
+
+  if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
+    echo "[smoke-all] step: stream sanity"
+    "${CODESEEQ_INSTALL_ROOT}/scripts/smoke-openresponses-stream.sh"
+  fi
+
+  echo "[smoke-all] step: model alias normalization"
+  for m in deepseek-v4-flash deepseek-v4-flash-thinking deepseek-v4-pro deepseek-v4-pro-thinking; do
+    out="$("$CONTAINER" run --rm -e CODESEEQ_MODEL="$m" "$IMAGE" doctor)"
+    grep -q "^Model (logical): $m$" <<<"$out"
+  done
+
+  echo "[smoke-all] step: grep wrong openresponses references in operational files"
+  if rg -n "masaic|openresponses/openresponses|docker.io/masaicai/open-responses" \
+    README.md docs/ARCHITECTURE.md docs/SECURITY.md Dockerfile Makefile bin codeseeq config >/dev/null; then
+    echo "[smoke-all] FAIL: found old/wrong OpenResponses references" >&2
+    exit 1
+  fi
+
+  if [[ -f docker-compose.yml ]]; then
+    echo "[smoke-all] FAIL: docker-compose.yml exists" >&2
+    exit 1
+  fi
+
+  if rg -n "docker compose up|docker-compose up|compose-first|fallback compose|two-container fallback" \
+    README.md docs/ARCHITECTURE.md docs/SECURITY.md Makefile codeseeq >/dev/null; then
+    echo "[smoke-all] FAIL: found compose/two-container operational guidance" >&2
+    exit 1
+  fi
+
+  echo "[smoke-all] step: grep .codex operational usage"
+  if rg -n "/home/codeseeq/\.codex|CODESEEQ_CODEX_HOME=.*/\.codex" \
+    README.md docs/ARCHITECTURE.md docs/SECURITY.md Dockerfile Makefile bin codeseeq config >/dev/null; then
+    echo "[smoke-all] FAIL: found .codex in supported operational paths" >&2
+    exit 1
+  fi
+
+  echo "[smoke-all] PASS"
+}
+
+# ─────────────────────────────────────────────────────────────
+# cmd_package — create release zip (inlined from scripts/package.sh)
+# ─────────────────────────────────────────────────────────────
+cmd_package() {
+  local repo_root="${CODESEEQ_INSTALL_ROOT}"
+
+  local zip_excludes=(
+    ".git/*"
+    "*/.git/*"
+    ".codeseeq/*"
+    "*/.codeseeq/*"
+    "system-prompt.md"
+    "*/system-prompt.md"
+    "__MACOSX/*"
+    "*/__MACOSX/*"
+    ".DS_Store"
+    "*/.DS_Store"
+    ".env"
+    ".env.*"
+    "*.env"
+    "*.env.*"
+    "prod.env"
+    "production.env"
+    "dist/*"
+    "*/dist/*"
+    "build/*"
+    "*/build/*"
+    "node_modules/*"
+    "*/node_modules/*"
+    "workspace/*"
+    "*/workspace/*"
+    "__pycache__/*"
+    "*/__pycache__/*"
+    "*.pyc"
+    "logs/*"
+    "*/logs/*"
+    "*.log"
+    "*.zip"
+  )
+
+  have_zip_cli() { command -v zip >/dev/null 2>&1; }
+  have_unzip_cli() { command -v unzip >/dev/null 2>&1; }
+  have_python3() { command -v python3 >/dev/null 2>&1; }
+
+  resolve_abs_path() {
+    local path="$1" dir base
+    dir="$(cd "$(dirname "$path")" && pwd)"
+    base="$(basename "$path")"
+    printf '%s/%s' "$dir" "$base"
+  }
+
+  create_package_with_zip() {
+    local output_abs="$1" output_rel=""
+    if [[ "$output_abs" == "$repo_root/"* ]]; then
+      output_rel="${output_abs#"$repo_root/"}"
+    fi
+
+    local -a cmd=(zip -rq "$output_abs" .)
+    local pattern
+    for pattern in "${zip_excludes[@]}"; do
+      cmd+=(-x "$pattern")
+    done
+    if [[ -n "$output_rel" ]]; then
+      cmd+=(-x "$output_rel")
+    fi
+
+    (
+      cd "$repo_root"
+      "${cmd[@]}"
+      if [[ -f .env.example ]]; then
+        zip -q "$output_abs" .env.example
+      fi
+    )
+  }
+
+  create_package_with_python() {
+    local output_abs="$1" output_rel=""
+    if [[ "$output_abs" == "$repo_root/"* ]]; then
+      output_rel="${output_abs#"$repo_root/"}"
+    fi
+
+    CODESEEQ_REPO_ROOT="$repo_root" \
+    CODESEEQ_OUTPUT_ZIP="$output_abs" \
+    CODESEEQ_OUTPUT_REL="$output_rel" \
+    python3 - <<-'PY'
+import fnmatch, os, zipfile
+from pathlib import Path
+repo = Path(os.environ["CODESEEQ_REPO_ROOT"]).resolve()
+out = Path(os.environ["CODESEEQ_OUTPUT_ZIP"]).resolve()
+out_rel = os.environ.get("CODESEEQ_OUTPUT_REL", "")
+patterns = [".git/*","*/.git/*",".codeseeq/*","*/.codeseeq/*","system-prompt.md","*/system-prompt.md","__MACOSX/*","*/__MACOSX/*",".DS_Store","*/.DS_Store",".env",".env.*","*.env","*.env.*","prod.env","production.env","dist/*","*/dist/*","build/*","*/build/*","node_modules/*","*/node_modules/*","workspace/*","*/workspace/*","__pycache__/*","*/__pycache__/*","*.pyc","logs/*","*/logs/*","*.log","*.zip"]
+if out_rel: patterns.append(out_rel)
+def excluded(rel):
+    if rel == ".env.example": return False
+    for p in patterns:
+        if fnmatch.fnmatch(rel, p): return True
+        if p.endswith("/*"):
+            r = p[:-2]
+            if rel == r or rel.startswith(r + "/") or fnmatch.fnmatch(rel, r + "/*"): return True
+    return False
+out.parent.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    for root, dirs, files in os.walk(repo):
+        rp = Path(root)
+        rr = rp.relative_to(repo).as_posix()
+        if rr == ".": rr = ""
+        kept = []
+        for d in dirs:
+            rd = f"{rr}/{d}" if rr else d
+            if excluded(rd) or excluded(rd + "/dummy"): continue
+            kept.append(d)
+        dirs[:] = kept
+        for name in files:
+            rel = f"{rr}/{name}" if rr else name
+            if excluded(rel): continue
+            zf.write(rp / name, rel)
+PY
+  }
+
+  create_package() {
+    local output_zip="$1"
+    mkdir -p "$(dirname "$output_zip")"
+    rm -f "$output_zip"
+    local output_abs
+    output_abs="$(resolve_abs_path "$output_zip")"
+    if have_zip_cli; then
+      create_package_with_zip "$output_abs"
+    elif have_python3; then
+      echo "[package] zip not found; using Python 3 zipfile fallback" >&2
+      create_package_with_python "$output_abs"
+    else
+      die "cannot create zip: install zip or python3"
+    fi
+    printf '%s\n' "$output_abs"
+  }
+
+  archive_entries() {
+    local archive="$1"
+    if have_unzip_cli; then
+      unzip -Z -1 "$archive"
+    elif have_python3; then
+      python3 - "$archive" <<-'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as zf:
+    for name in zf.namelist(): print(name)
+PY
+    else
+      return 1
+    fi
+  }
+
+  validate_archive() {
+    local archive="$1"
+    [[ -f "$archive" ]] || die "archive not found: $archive"
+    local tmpdir entries_file
+    tmpdir="$(mktemp -d)"
+    entries_file="$tmpdir/entries.txt"
+    if ! archive_entries "$archive" > "$entries_file"; then
+      rm -rf "$tmpdir"
+      die "cannot inspect archive: $archive"
+    fi
+    local failures=0 entry normalized base segment_path has_env_example=0
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] || continue
+      normalized="${entry%/}"
+      base="${normalized##*/}"
+      segment_path="/${normalized}/"
+      if [[ "$base" == ".env.example" ]]; then has_env_example=1; continue; fi
+      case "$segment_path" in
+        */.git/*|*/.codeseeq/*|*/dist/*|*/workspace/*|*/__MACOSX/*|*/node_modules/*|*/__pycache__/*|*/logs/*)
+          echo "[package:check:error] forbidden path in archive: $entry" >&2
+          failures=$((failures + 1))
+          continue;;
+      esac
+      case "$base" in
+        .DS_Store|*.pyc|*.zip|*.log|system-prompt.md)
+          echo "[package:check:error] forbidden file in archive: $entry" >&2
+          failures=$((failures + 1))
+          continue;;
+        .env|.env.*|*.env|*.env.*|prod.env|production.env)
+          echo "[package:check:error] env-like file in archive: $entry" >&2
+          failures=$((failures + 1))
+          continue;;
+      esac
+    done < "$entries_file"
+    if (( has_env_example == 0 )); then
+      echo "[package:check:error] .env.example is missing from archive" >&2
+      failures=$((failures + 1))
+    fi
+    rm -rf "$tmpdir"
+    if (( failures > 0 )); then
+      die "archive check failed with ${failures} issue(s): $archive"
+    fi
+  }
+
+  static_package_check() {
+    local failures=0
+    local required_patterns=(
+      '".env"' '".env.*"' '"*.env"' '"*.env.*"' '"prod.env"' '"production.env"'
+      '".git/*"' '"*/.git/*"' '".codeseeq/*"' '"*/.codeseeq/*"'
+      '"system-prompt.md"' '"*/system-prompt.md"'
+      '"__MACOSX/*"' '"*/.DS_Store"'
+      '"dist/*"' '"*/dist/*"' '"build/*"' '"*/build/*"'
+      '"node_modules/*"' '"*/node_modules/*"'
+      '"workspace/*"' '"*/workspace/*"'
+      '"__pycache__/*"' '"*/__pycache__/*"'
+      '"*.pyc"' '"logs/*"' '"*/logs/*"' '"*.log"' '"*.zip"'
+    )
+    local pattern
+    for pattern in "${required_patterns[@]}"; do
+      if ! grep -Fq "$pattern" "$0" 2>/dev/null; then
+        # fallback: check the original codeseeq script
+        if ! grep -Fq "$pattern" "${CODESEEQ_INSTALL_ROOT}/codeseeq" 2>/dev/null; then
+          echo "[package:check:error] missing package exclusion pattern: $pattern" >&2
+          failures=$((failures + 1))
+        fi
+      fi
+    done
+    if [[ ! -f "${repo_root}/.env.example" ]]; then
+      echo "[package:check:error] .env.example is missing from repository root" >&2
+      failures=$((failures + 1))
+    fi
+    if (( failures > 0 )); then
+      die "static package check failed with ${failures} issue(s)"
+    fi
+    echo "[package] archive tooling unavailable; static package check passed"
+  }
+
+  package_check() {
+    local archive tmpdir
+    if ! have_zip_cli && ! have_python3; then
+      static_package_check
+      return 0
+    fi
+    if ! have_unzip_cli && ! have_python3; then
+      static_package_check
+      return 0
+    fi
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "${tmpdir:-}"' EXIT
+    archive="$tmpdir/codeseeq-package-check.zip"
+    create_package "$archive" >/dev/null
+    validate_archive "$archive"
+    echo "[package] package check passed"
+    rm -rf "$tmpdir"
+    trap - EXIT
+  }
+
+  # Main dispatch
+  case "${1:-}" in
+    -h|--help)
+      echo "Usage:"
+      echo "  codeseeq package [output.zip]"
+      echo "  codeseeq package --check"
+      echo "  codeseeq package --check-archive path/to/archive.zip"
+      echo ""
+      echo "Creates a clean source zip from repo root."
+      ;;
+    --check)
+      shift
+      [[ $# -eq 0 ]] || { echo "ERROR: --check does not accept output path" >&2; exit 1; }
+      package_check
+      ;;
+    --check-archive)
+      shift
+      [[ $# -eq 1 ]] || { echo "ERROR: --check-archive requires exactly one archive path" >&2; exit 1; }
+      validate_archive "$1"
+      echo "[package] archive check passed: $1"
+      ;;
+    *)
+      [[ $# -le 1 ]] || { echo "ERROR: too many arguments" >&2; exit 1; }
+      local pkg_version default_zip
+      pkg_version="$(cat "${repo_root}/VERSION" 2>/dev/null || echo dev)"
+      default_zip="${repo_root}/dist/codeseeq-${pkg_version}.zip"
+      create_package "${1:-$default_zip}"
+      ;;
+  esac
+}
+
 case "${1:-}" in
   install)
-    installer="${CODESEEQ_INSTALL_ROOT}/scripts/install.sh"
-    [[ -x "$installer" ]] || die "installer not found or not executable: $installer"
     shift
-    exec "$installer" "$@"
+    cmd_install "$@"
     ;;
   build)
     shift
@@ -1438,12 +1939,11 @@ case "${1:-}" in
     ;;
   smoke)
     shift
-    CONTAINER="$(detect_container)"
-    CONTAINER="$CONTAINER" IMAGE="$IMAGE" exec "${CODESEEQ_INSTALL_ROOT}/scripts/smoke-all.sh" "$@"
+    cmd_smoke "$@"
     ;;
   package)
     shift
-    exec "${CODESEEQ_INSTALL_ROOT}/scripts/package.sh" "$@"
+    cmd_package "$@"
     ;;
   system)
     shift

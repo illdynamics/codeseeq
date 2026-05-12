@@ -400,9 +400,9 @@ main() {
       ;;
     *)
       [[ $# -le 1 ]] || die "too many arguments"
-      local timestamp default_zip
-      timestamp="$(date +%Y%m%d-%H%M%S)"
-      default_zip="${repo_root}/dist/codeseeq-${timestamp}.zip"
+      local pkg_version default_zip
+      pkg_version="$(cat "${repo_root}/VERSION" 2>/dev/null || echo dev)"
+      default_zip="${repo_root}/dist/codeseeq-${pkg_version}.zip"
       create_package "${1:-$default_zip}"
       ;;
   esac

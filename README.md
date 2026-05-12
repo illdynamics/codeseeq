@@ -7,7 +7,7 @@ Run `codeseeq` instead of `codex`. Same flags, same interactive TUI, same tool c
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `0.2.9` (from [`VERSION`](./VERSION)).
+Current version: `v0.2.9` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -28,7 +28,7 @@ Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 **Option A — curl one-liner (recommended)**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/codeseeq/codeseeq/main/scripts/install-curl.sh | bash
+curl -fsSL https://raw.githubusercontent.com/codeseeq/codeseeq/main/scripts/install.sh | bash
 ```
 
 Downloads the latest release zip, extracts it, and installs the `codeseeq` command to `~/.config/codeseeq` with a launcher at `~/bin/codeseeq`.
@@ -43,11 +43,11 @@ cd codeseeq
 
 **Option C — download release zip manually**
 
-Download `codeseeq-v0.2.9.zip` from [GitHub Releases](https://github.com/codeseeq/codeseeq/releases), then:
+Download `codeseeq-$(cat VERSION).zip` from [GitHub Releases](https://github.com/codeseeq/codeseeq/releases), then:
 
 ```bash
-unzip codeseeq-v0.2.9.zip
-cd codeseeq-v0.2.9  # or wherever it extracted
+unzip codeseeq-$(cat VERSION).zip
+cd codeseeq-$(cat VERSION)  # or wherever it extracted
 ./codeseeq install
 ```
 
