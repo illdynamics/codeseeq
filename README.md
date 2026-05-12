@@ -1,7 +1,7 @@
 # CodeSeeq
 
-**Production-grade Codex CLI drop-in replacement routing to DeepSeek V4 models.**
-Run codeseeq instead of codex. Same flags, same interactive behavior, same tool calls. But your prompts go to DeepSeek V4 models via your DEEPSEEK_API_KEY — no OpenAI account/API key needed.
+**Production-grade Codex CLI drop-in launcher wired to DeepSeek V4 models.**
+Run `codeseeq` instead of `codex`. Same flags, same interactive TUI, same tool calls. But your prompts go to DeepSeek V4 via your `DEEPSEEK_API_KEY` — no OpenAI account or API key needed.
 
 <p align="center">
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
@@ -11,11 +11,15 @@ Current version: `0.2.9` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
+[![CI](https://github.com/codeseeq/codeseeq/actions/workflows/ci.yml/badge.svg)](https://github.com/codeseeq/codeseeq/actions/workflows/ci.yml)
+
 ## Quickstart
 
 ### Prerequisites
 
 - **DEEPSEEK_API_KEY** — set in your shell for model requests.
+- **BRAVE_API_KEY** (optional) — needed for web-search pings (`ping-web`).
+- **UNSTRUCTURED_API_KEY** (optional) — needed for doc-input pings (`ping-docs`).
 - Podman or Docker (optional — only needed for container mode).
 - Python 3 + `pip install -r requirements-bridge.txt` (optional — only needed for host/process mode).
 
@@ -55,9 +59,11 @@ Make sure `~/bin` is in your `PATH`:
 export PATH="$HOME/bin:$PATH"
 ```
 
-Set your API key:
+Set your API key and copy the env template:
 
 ```bash
+cp .env.example .env
+# edit .env with your keys
 export DEEPSEEK_API_KEY=sk-...
 ```
 
@@ -92,10 +98,10 @@ CodeSeeq separates **where Codex runs** from **how the bridge is started**.
 
 Set via `CODESEEQ_RUNTIME_MODE`.
 
-| Mode | Behavior |
-|------|----------|
-| `container` | Run Codex inside a Docker/Podman container. Safe/isolated default. |
-| `host` | Run Codex directly on the host. No container isolation. |
+| Mode      | Behavior                                                                 |
+|-----------|--------------------------------------------------------------------------|
+| `container` | Run Codex inside a Docker/Podman container. Safe/isolated default.     |
+| `host`      | Run Codex directly on the host. No container isolation.                |
 | `auto` (default) | Use `container` for normal paths; use `host` when danger/yolo is requested. |
 
 ### Container Runtime (Safe Default)
@@ -115,11 +121,7 @@ Default Codex settings:
 
 ### Host Runtime
 
-Host runtime runs Codex directly on your host checkout. It does **not** provide
-container isolation. Codex uses the normal approval and sandbox settings from
-its generated config. The danger/yolo bypass is only applied when you explicitly
-request it with `-y`, `--yolo`, `--dangerously-bypass-approvals-and-sandbox`, or
-`--sandbox danger-full-access`.
+Host runtime runs Codex directly on your host checkout. It does **not** provide container isolation.
 
 ```bash
 # Host runtime with process bridge (no containers at all)
@@ -130,10 +132,7 @@ CODESEEQ_RUNTIME_MODE=host CODESEEQ_BRIDGE_MODE=process ./codeseeq run "hello"
 ./codeseeq --yolo "fix the tests"
 ```
 
-In host runtime with danger/yolo, CodeSeeq starts the bridge (process or container),
-runs local host `codex` directly on the current checkout with
-`--dangerously-bypass-approvals-and-sandbox`, and uses isolated repo-local
-`CODEX_HOME=$PWD/.codeseeq` — never the user's real `~/.codex`.
+In host runtime with danger/yolo, CodeSeeq starts the bridge (process or container), runs local host `codex` directly on the current checkout with `--dangerously-bypass-approvals-and-sandbox`, and uses isolated repo-local `CODEX_HOME=$PWD/.codeseeq` — never the user's real `~/.codex`.
 
 If local `codex` is missing, install it:
 
@@ -143,20 +142,17 @@ npm install -g @openai/codex
 
 ## How It Works
 
-CodeSeeq does not fork or patch Codex. It launches the upstream Codex CLI with an
-isolated generated `config.toml`. That config points Codex at a local CodeSeeq
-bridge implementing the OpenAI Responses API. The bridge translates requests to
-DeepSeek Chat Completions and converts responses back to the format Codex expects.
+CodeSeeq does not fork or patch Codex. It launches the upstream Codex CLI with an isolated generated `config.toml`. That config points Codex at a local CodeSeeq bridge implementing the OpenAI Responses API. The bridge translates requests to DeepSeek Chat Completions and converts responses back to the format Codex expects.
 
 ## Bridge Modes
 
 CodeSeeq controls how the translation bridge is started via `CODESEEQ_BRIDGE_MODE`.
 
-| Mode | Behavior |
-|------|----------|
-| `process` | Start `bin/codeseeq-bridge.py` as a direct child process on the host. No Docker/Podman required. |
-| `container` | Start the bridge inside a Docker/Podman container (legacy behavior). |
-| `external` | Assume the bridge is already running. Use `CODESEEQ_BRIDGE_BASE_URL`. |
+| Mode        | Behavior                                                                 |
+|-------------|--------------------------------------------------------------------------|
+| `process`   | Start `bin/codeseeq-bridge.py` as a direct child process on the host. No Docker/Podman required. |
+| `container` | Start the bridge inside a Docker/Podman container (legacy behavior).     |
+| `external`  | Assume the bridge is already running. Use `CODESEEQ_BRIDGE_BASE_URL`.    |
 | `auto` (default) | Prefer `process` mode when Python + dependencies are available. Fall back to `container`. |
 
 ### Process Mode (Recommended for Host Runtime)
@@ -191,15 +187,15 @@ CODESEEQ_BRIDGE_MODE=external CODESEEQ_BRIDGE_BASE_URL=http://127.0.0.1:8080/v1 
 
 ### Bridge Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CODESEEQ_BRIDGE_MODE` | `auto` | `auto`, `process`, `container`, or `external` |
-| `CODESEEQ_BRIDGE_HOST` | `127.0.0.1` | Bridge listen address |
-| `CODESEEQ_BRIDGE_PORT` | auto-select | Fixed bridge port (omit for auto) |
-| `CODESEEQ_BRIDGE_BASE_URL` | — | Full bridge URL override (external mode) |
-| `CODESEEQ_BRIDGE_LOG` | `~/.config/codeseeq/log/bridge.log` | Bridge log file |
-| `CODESEEQ_BRIDGE_STARTUP_TIMEOUT` | `10` | Seconds to wait for health check |
-| `CODESEEQ_BRIDGE_REUSE` | `0` | Reuse existing healthy bridge |
+| Variable                        | Default                    | Description                                        |
+|----------------------------------|----------------------------|----------------------------------------------------|
+| `CODESEEQ_BRIDGE_MODE`          | `auto`                     | `auto`, `process`, `container`, or `external`      |
+| `CODESEEQ_BRIDGE_HOST`          | `127.0.0.1`                | Bridge listen address                              |
+| `CODESEEQ_BRIDGE_PORT`          | auto-select                | Fixed bridge port (omit for auto)                  |
+| `CODESEEQ_BRIDGE_BASE_URL`      | —                          | Full bridge URL override (external mode)           |
+| `CODESEEQ_BRIDGE_LOG`           | `~/.config/codeseeq/log/bridge.log` | Bridge log file                                |
+| `CODESEEQ_BRIDGE_STARTUP_TIMEOUT` | `10`                     | Seconds to wait for health check                   |
+| `CODESEEQ_BRIDGE_REUSE`         | `0`                        | Reuse existing healthy bridge                      |
 
 ## Container Runtime
 
@@ -320,6 +316,26 @@ Explicit passthrough:
 
 Unknown non-CodeSeeq arguments are passed to Codex as much as possible. CodeSeeq does not use `-p` or `--prompt` as prompt aliases. `-p` and `--profile` are Codex profile-selection flags and are forwarded unchanged. Direct prompt execution is `./codeseeq "prompt"` or `./codeseeq run "prompt"`.
 
+## Environment Variables
+
+All supported variables are documented in [`.env.example`](./.env.example). Key ones:
+
+| Variable                      | Default              | Description                                      |
+|-------------------------------|----------------------|--------------------------------------------------|
+| `DEEPSEEK_API_KEY`            | — (required)         | Model API key                                    |
+| `BRAVE_API_KEY`               | —                    | Web search API key (for `ping-web`)              |
+| `UNSTRUCTURED_API_KEY`        | —                    | Doc input API key (for `ping-docs`)              |
+| `RESPONSES_API_KEY`           | —                    | Responses API key (advanced)                     |
+| `CODESEEQ_MODEL`              | `deepseek-v4-flash`  | Default model                                    |
+| `CODESEEQ_THINKING`           | `false`              | Enable thinking mode                             |
+| `CODESEEQ_APPROVAL_POLICY`    | `on-request`         | Codex approval policy                            |
+| `CODESEEQ_SANDBOX_MODE`       | `workspace-write`    | Codex sandbox mode                               |
+| `CODESEEQ_YOLO`               | `false`              | Bypass approvals and sandbox (equivalent to `-y`)|
+| `CODESEEQ_RUNTIME_MODE`       | `auto`               | `auto`, `container`, or `host`                   |
+| `CODESEEQ_BRIDGE_MODE`        | `auto`               | `auto`, `process`, `container`, or `external`    |
+| `CONTAINER`                   | `podman`             | Container runtime (`podman` or `docker`)         |
+| `IMAGE`                       | `codeseeq:dev`       | Container image tag                              |
+
 ## Clean Packages
 
 Release zips must be produced by the official package command only:
@@ -388,6 +404,40 @@ Manual check:
 ```
 
 Open the Codex menu or use slash commands such as `/model` where supported by your Codex version. Approval and sandbox toggles use upstream Codex behavior. The model menu is backed by CodeSeeq's DeepSeek catalog where Codex honors `model_catalog_json`; wrapper and bridge validation remain authoritative if upstream Codex shows additional models.
+
+## CI / Release Pipeline
+
+CodeSeeq uses a single GitHub Actions workflow ([`ci.yml`](.github/workflows/ci.yml)) that runs on every push and pull request:
+
+1. **`static`** — shell syntax checks, shellcheck, secret scanning, whitespace checks
+2. **`project`** — bridge extraction tests, config generation validation, version consistency
+3. **`bridge-smoke`** — bridge process smoke tests, package build & validation
+4. **`docker`** — Docker image build and all container smoke tests
+5. **`🚀 Release`** — runs only on tag pushes (`v*`) and only after all four checks pass. Builds the package and creates a GitHub Release with the zip artifact attached.
+
+The release job is gated behind `needs: [static, project, bridge-smoke, docker]` and `if: startsWith(github.ref, 'refs/tags/v')`.
+
+## Makefile Targets
+
+| Target                    | Description                                      |
+|---------------------------|--------------------------------------------------|
+| `install`                 | Run `./codeseeq install`                         |
+| `build`                   | Build container image (`podman build`)           |
+| `models`                  | List available models                            |
+| `doctor`                  | Run diagnostics                                  |
+| `ping` / `ping-stream`    | Test model connectivity                          |
+| `ping-web` / `ping-docs`  | Test web search / doc input connectivity         |
+| `prompt`                  | Run a one-shot prompt (`PROMPT=...`)             |
+| `run`                     | Start interactive Codex session                  |
+| `shell`                   | Start Codex shell mode                           |
+| `smoke`                   | Run the full smoke-test suite                    |
+| `package` / `package-check` | Build / validate release archive             |
+| `bridge-check`            | Check bridge Python syntax and imports           |
+| `bridge-process-smoke`    | Run bridge process smoke tests                   |
+| `inspect-bridge`          | Display bridge runtime info                      |
+| `clean-artifacts`         | Remove build artifacts (`__pycache__`, etc.)     |
+| `clean`                   | Remove container image                           |
+| `check`                   | Run all project checks                           |
 
 ## Architecture and Security
 

@@ -37,7 +37,9 @@ Check any generated or uploaded archive before release:
 ./scripts/package.sh --check-archive /mnt/data/codeseeq.zip
 ```
 
-Manual Finder/macOS zips are forbidden for releases because they can include `__MACOSX`, `.DS_Store`, `.git/`, `.codeseeq/`, nested zips, and `.env` secrets. `.env.example` is allowed.
+Manual Finder/macOS zips are forbidden for releases because they can include
+`__MACOSX`, `.DS_Store`, `.git/`, `.codeseeq/`, nested zips, and `.env`
+secrets. `.env.example` is allowed.
 
 ## Default Safety Posture
 
@@ -49,7 +51,8 @@ Default CodeSeeq mode is safe/containerized:
 - `approval_policy = "on-request"`
 - `sandbox_mode = "workspace-write"`
 
-This is not a hard security boundary for all threat models, but it is no longer the old yolo/default-danger behavior.
+This is not a hard security boundary for all threat models, but it is no longer
+the old yolo/default-danger behavior.
 
 ## Explicit Danger Mode
 
@@ -60,23 +63,35 @@ These forms opt into Codex's dangerous bypass:
 ./codeseeq --yolo ...
 ./codeseeq --dangerously-bypass-approvals-and-sandbox ...
 ./codeseeq --sandbox danger-full-access ...
-./codeseeq --sandbox danger-full-access ...
 ```
 
 In danger mode:
 
 - Codex runs locally on the host checkout.
-- The bridge still runs in a Podman/Docker container.
+- The bridge still runs in a Podman/Docker container (or as a process).
 - Local Codex uses isolated `CODEX_HOME=$PWD/.codeseeq`.
 - CodeSeeq does not use the user's real `~/.codex`.
 
-Danger mode can run commands and modify files directly on the host. Use it only when you intend that.
+Danger mode can run commands and modify files directly on the host. Use it only
+when you intend that.
+
+## YOLO Environment Variable
+
+Setting `CODESEEQ_YOLO=true` in `.env` or your shell is equivalent to passing
+`-y` on every invocation:
+
+```bash
+export CODESEEQ_YOLO=true
+./codeseeq run "fix the tests"    # runs in danger mode automatically
+```
 
 ## Container Runtime
 
-Podman is preferred. Docker is supported as a compatible fallback. Docker Compose is not supported.
+Podman is preferred. Docker is supported as a compatible fallback. Docker
+Compose is not supported.
 
-Podman safe-mode bind mounts default to `:Z` for SELinux. Docker safe-mode bind mounts default to no suffix. `CODESEEQ_VOLUME_SUFFIX` can override this.
+Podman safe-mode bind mounts default to `:Z` for SELinux. Docker safe-mode
+bind mounts default to no suffix. `CODESEEQ_VOLUME_SUFFIX` can override this.
 
 ## Config Isolation
 
@@ -102,17 +117,23 @@ System prompts are stored in user-level CodeSeeq config:
 ~/.config/codeseeq/system-prompt.md
 ```
 
-System prompts are not treated as secrets by default. They are sent to the model as `developer_instructions` on normal CodeSeeq/Codex requests. Do not place secrets in a system prompt unless you understand that risk.
+System prompts are not treated as secrets by default. They are sent to the
+model as `developer_instructions` on normal CodeSeeq/Codex requests. Do not
+place secrets in a system prompt unless you understand that risk.
 
-`doctor` and `config` report prompt status/path/size/mechanism without printing content. Only `system view/show/cat` prints the full prompt.
+`doctor` and `config` report prompt status/path/size/mechanism without printing
+content. Only `system view/show/cat` prints the full prompt.
 
 ## Prompt Files
 
-`run -f/--file` sends the full file content to the model as task prompt text. Review task files before sending if they may contain secrets.
+`run -f/--file` sends the full file content to the model as task prompt text.
+Review task files before sending if they may contain secrets.
 
 ## Codex Profile Flags
 
-`-p` and `--profile` are Codex profile-selection flags. They are not CodeSeeq prompt shortcuts. Use `./codeseeq "prompt"`, `./codeseeq run "prompt"`, or `./codeseeq run -f task.md` for direct prompt execution.
+`-p` and `--profile` are Codex profile-selection flags. They are not CodeSeeq
+prompt shortcuts. Use `./codeseeq "prompt"`, `./codeseeq run "prompt"`, or
+`./codeseeq run -f task.md` for direct prompt execution.
 
 ## Workspace Path Display
 
@@ -124,17 +145,29 @@ CodeSeeq workspace:
   container: /workspace
 ```
 
-This does not grant the container extra paths. It only explains where the `/workspace` bind mount lands on the host.
+This does not grant the container extra paths. It only explains where the
+`/workspace` bind mount lands on the host.
 
 ## Authentication Model
 
 - No `codex login` flow is required for CodeSeeq model requests.
 - Generated provider config uses `env_key = "DEEPSEEK_API_KEY"`.
 - Generated provider config uses `requires_openai_auth = false`.
-- `OPENAI_API_KEY` may be exported as a compatibility alias to `DEEPSEEK_API_KEY` for OpenAI-shaped tooling.
+- `OPENAI_API_KEY` may be exported as a compatibility alias to `DEEPSEEK_API_KEY`
+  for OpenAI-shaped tooling.
 
 ## Network Scope
 
 - Safe-mode bridge binds to `127.0.0.1` inside the container.
-- Danger host-mode bridge is published to the first free host port starting at `CODESEEQ_OPENRESPONSES_PORT`.
+- Danger host-mode bridge is published to the first free host port starting at
+  `CODESEEQ_BRIDGE_PORT` or auto-selected.
 - Examples mount only the current project path into `/workspace`.
+
+## CI / Release Security
+
+- Release artifacts are built by the GitHub Actions CI pipeline, not manually.
+- The release job only runs on version tag pushes (`v*`) and only after all
+  CI checks pass (`static`, `project`, `bridge-smoke`, `docker`).
+- Release archives are validated by `scripts/package.sh --check-archive` inside
+  the pipeline before upload.
+- Manual release zips created outside the CI pipeline are not permitted.

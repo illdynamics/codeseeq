@@ -125,10 +125,9 @@ These forms should trigger host Codex mode:
 ./codeseeq --yolo "say hi"
 ./codeseeq --dangerously-bypass-approvals-and-sandbox "say hi"
 ./codeseeq --sandbox danger-full-access "say hi"
-./codeseeq --sandbox danger-full-access "say hi"
 ```
 
-In that mode CodeSeeq starts a bridge container, then runs local host `codex` with `CODEX_HOME=$PWD/.codeseeq`.
+In that mode CodeSeeq starts a bridge (process or container), then runs local host `codex` with `CODEX_HOME=$PWD/.codeseeq`.
 
 ## Local Codex Missing In Danger Mode
 
@@ -142,23 +141,27 @@ CodeSeeq will not silently fall back to container Codex for danger-full-access, 
 
 ## Bridge Port Conflict
 
-Danger host mode starts a bridge for each CodeSeeq invocation. It picks the first free localhost port starting at:
-
-```text
-http://127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT:-8080}/v1
-```
+Host mode starts a bridge for each CodeSeeq invocation. It picks the first free
+localhost port starting at `CODESEEQ_BRIDGE_PORT` or `8080`.
 
 Change the starting port:
 
 ```bash
-CODESEEQ_OPENRESPONSES_PORT=18080 ./codeseeq -y "say hi"
+CODESEEQ_BRIDGE_PORT=18080 ./codeseeq -y "say hi"
 ```
 
-If startup fails, inspect the bridge container name printed in the startup log, or list bridge containers:
+If startup fails, inspect the bridge container name printed in the startup log,
+or list bridge containers:
 
 ```bash
 podman ps --filter name=codeseeq-bridge
 docker ps --filter name=codeseeq-bridge
+```
+
+For process mode, check the bridge log:
+
+```bash
+cat ~/.config/codeseeq/log/bridge.log
 ```
 
 ## Codex Asks For OpenAI Login
@@ -336,11 +339,28 @@ CodeSeeq follows that: `./codeseeq "prompt"` and `./codeseeq run "prompt"` use n
 Release packages may omit local `open-responses/` and `codex/` source checkouts. Default inspection prints an informational warning instead of failing:
 
 ```bash
-make inspect-openresponses
+make inspect-bridge
 ```
 
 Use strict inspection only when the source checkouts are intentionally present:
 
 ```bash
-make inspect-openresponses-strict
+make inspect-bridge-strict
 ```
+
+## CI Release Job Did Not Run
+
+The release job only triggers on version tag pushes matching `v*`. If you pushed
+a tag and don't see the release step:
+
+1. Verify the tag matches `v*`: `git tag --list 'v*'`
+2. Check the Actions tab for the workflow run — the release job shows as
+   **skipped** on non-tag pushes.
+3. Make sure all four prerequisite jobs (`static`, `project`, `bridge-smoke`,
+   `docker`) passed — the release job waits on `needs: [static, project,
+   bridge-smoke, docker]`.
+4. If the release job ran but failed, check the job logs for package build or
+   `gh-release` action errors.
+
+The workflow also needs `contents: write` permission for the release job, which
+is set in the CI config.

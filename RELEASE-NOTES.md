@@ -15,9 +15,7 @@
 - **Package hygiene strengthened** — `make clean-artifacts`, `make package-check`, docs warn against manual zips.
 - **No Codex source modified.** No upstream `open-responses` runtime dependency.
 
-
 ### Added
-
 - **Host-native bridge process mode.** `CODESEEQ_BRIDGE_MODE=process` starts
   `bin/codeseeq-bridge.py` as a direct child process on the host with no
   Docker or Podman required. All four bridge modes are supported: `process`,
@@ -36,9 +34,10 @@
   and `--bridge-port` are now accepted on the `codeseeq` launcher and the
   `run` subcommand so bridge mode can be set per-invocation without
   environment variables.
+- **Unified CI release pipeline.** Release step merged into `ci.yml` — runs
+  only on tag pushes (`v*`) after all checks pass.
 
 ### Changed
-
 - **Dockerfile no longer pulls `open-responses` npm dependency.** The
   upstream `open-responses` package was removed from the container image
   build. The actual runtime bridge is entirely `bin/codeseeq-bridge.py`.
@@ -48,7 +47,6 @@
   behavior. Process-mode owned bridges are stopped on launcher exit.
 
 ### Notes
-
 - No Codex source was modified. The bridge remains a drop-in
   Responses-compatible API that Codex talks to exactly as it would talk to
   any OpenAI-compatible provider.
@@ -60,17 +58,20 @@
 
 ## 0.2.8 - 2026-05-12
 
+### Fixed
+- Version bump and release process improvements.
+
+---
+
 ## 0.2.7 - 2026-05-08
 
 ### Added
-
 - **`codeseeq nuke` subcommand.** Uninstalls all CodeSeeq user artifacts — the
   installed snapshot at `~/.config/codeseeq`, the launcher at `~/bin/codeseeq`,
   and any leftover `~/.codeseeq` state — with a confirmation prompt before
   removal. The local repo checkout and container images are left untouched.
 
 ### Changed
-
 - **README.md description rewritten.** The first paragraph now describes
   CodeSeeq as a "drop-in launcher and CLI wrapper" rather than a "command
   switch", better reflecting its role as a full launcher/substitute that
@@ -83,7 +84,6 @@
   `docs/TROUBLESHOOTING.md`.
 
 ### Fixed
-
 - **Typo `--sanbox` in README.md and doc examples.** The documented alias
   examples in `README.md`, `docs/TROUBLESHOOTING.md`, and `docs/SECURITY.md`
   were using `--sanbox` instead of the correct `--sandbox`. Fixed to show the
@@ -91,12 +91,9 @@
 
 ---
 
-# Release Notes
-
 ## 0.2.6 - 2026-05-08
 
 ### Added
-
 - **Container-launcher rewrite.** The `./codeseeq` launcher was substantially
   rewritten with robust configuration defaults, helper functions (`warn`,
   `bool_normalize`), and expanded environment-variable plumbing for
@@ -122,7 +119,6 @@
   Codex rather than being embedded.
 
 ### Changed
-
 - **Launcher becomes dual-purpose.** `./codeseeq` now detects the `install`
   subcommand automatically and delegates to `scripts/install.sh`. Running
   without subcommand starts the container with all configuration variables
@@ -138,47 +134,46 @@
   updated for the new launcher layout.
 
 ### Fixed
-
 - **`codeseeq` binary made executable in-repo.** The root `codeseeq` file now
   has the executable bit set so it runs directly without `bash codeseeq`.
 
 ---
 
-0.2.5 - 2026-05-07
+## 0.2.5 - 2026-05-07
 
 ### Fixed
-
-- Fixed split display-mangled DSML such as
-  `<____DSML____tool_calls>...` leaking into the Codex UI after a successful
-  tool call. The streaming buffer now normalizes obfuscated DSML after chunk
-  reassembly, so the block is either converted into a tool call or suppressed
-  instead of being shown as assistant text.
+- Fixed split display-mangled DSML such as `<____DSML____tool_calls>...`
+  leaking into the Codex UI after a successful tool call. The streaming buffer
+  now normalizes obfuscated DSML after chunk reassembly, so the block is either
+  converted into a tool call or suppressed instead of being shown as assistant
+  text.
 - Added missing `output_index` metadata to streamed message/tool lifecycle
   events so current Codex builds keep output deltas attached to their active
   items instead of logging orphaned `OutputTextDelta` diagnostics.
-- Fixed Responses top-level function tools being collected for steering but
-  not forwarded to DeepSeek's nested Chat Completions `tools` shape. This keeps
+- Fixed Responses top-level function tools being collected for steering but not
+  forwarded to DeepSeek's nested Chat Completions `tools` shape. This keeps
   DeepSeek able to emit actual structured tool calls instead of plain bash
   snippets.
-- Updated README, quickstart, state docs, bridge docs, and CI build metadata
-  to reflect the current single-container local-bridge runtime.
+- Updated README, quickstart, state docs, bridge docs, and CI build metadata to
+  reflect the current single-container local-bridge runtime.
 - Added `workspace/` to `.gitignore` so the local repro clone does not break
   `git add .`.
+
+---
 
 ## 0.2.4 - 2026-05-07
 
 ### Fixed
+- Fixed regular `danger-full-access` launches emitting both `--ask-for-approval
+  ...` and `--dangerously-bypass-approvals-and-sandbox`. Codex rejects that
+  combination. The launcher now omits `--ask-for-approval` whenever it emits the
+  bypass flag.
 
-- Fixed regular `danger-full-access` launches emitting both
-  `--ask-for-approval ...` and
-  `--dangerously-bypass-approvals-and-sandbox`. Codex rejects that
-  combination. The launcher now omits `--ask-for-approval` whenever it emits
-  the bypass flag.
+---
 
 ## 0.2.3 - 2026-05-07
 
 ### Changed
-
 - `codeseeq --yolo` and `codeseeq -y` now only add Codex launch switches
   `--dangerously-bypass-approvals-and-sandbox` and, for `codex exec` paths,
   `--skip-git-repo-check`.
@@ -186,26 +181,26 @@
   `--sandbox danger-full-access`, and no longer rewrites
   `CODESEEQ_APPROVAL_POLICY` / `CODESEEQ_SANDBOX_MODE` config values.
 
+---
+
 ## 0.2.2 - 2026-05-07
 
 ### Added
-
 - `codeseeq --yolo` and `codeseeq -y` wrapper flags. They force
-  `CODESEEQ_APPROVAL_POLICY=never` and
-  `CODESEEQ_SANDBOX_MODE=danger-full-access`, and launch Codex with
-  `--ask-for-approval never` plus
-  `--sandbox danger-full-access` and
-  `--dangerously-bypass-approvals-and-sandbox`.
+  `CODESEEQ_APPROVAL_POLICY=never` and `CODESEEQ_SANDBOX_MODE=danger-full-access`,
+  and launch Codex with `--ask-for-approval never` plus `--sandbox danger-full-access`
+  and `--dangerously-bypass-approvals-and-sandbox`.
 - Direct `run`/prompt shortcuts keep using `codex exec --skip-git-repo-check`.
-  `codeseeq --yolo codex exec ...` also injects `--skip-git-repo-check` when
-  it is not already present.
+  `codeseeq --yolo codex exec ...` also injects `--skip-git-repo-check` when it is
+  not already present.
+
+---
 
 ## 0.2.1 - 2026-05-07
 
 Malformed XML compatibility patch for DeepSeek tool-use output.
 
 ### Fixed
-
 - Recognizes model-invented outer tool tags such as
   `<exec_command><command>...</command></exec_command>`, `<bash>...</bash>`,
   and `<tool_call name="...">...</tool_call>` as real Codex function calls
@@ -217,6 +212,8 @@ Malformed XML compatibility patch for DeepSeek tool-use output.
 - Adds focused bridge extraction regression coverage and wires it into
   `scripts/check.sh`.
 
+---
+
 ## 0.2.0 - 2026-05-07
 
 DSML/tool-calling correctness pass for `bin/codeseeq-bridge.py`. The bridge now
@@ -226,60 +223,58 @@ registered. Drop-in replacement; no changes required to Codex, Dockerfile,
 entrypoint, or scripts.
 
 ### Fixed
-
 - **DSML leakage during streaming.** Raw `<function_calls>...</function_calls>`
   XML was being streamed verbatim to the Codex TUI before the post-stream
   extractor ran. Replaced with `StreamingDsmlBuffer` that detects DSML inline,
   emits only safe text deltas, and surfaces tool-call blocks as soon as their
-  closing tag is seen. Buffer uses depth tracking so a nested `</invoke>`
-  inside an outer `<function_calls>` wrapper does not terminate prematurely.
-- **`call_id: None` on `response.output_item.added`.** The added event was
-  fired before the tool name and call id were known, then back-filled. Now
-  deferred until the call has a real name and id, so Codex never sees a
-  partial item.
+  closing tag is seen. Buffer uses depth tracking so a nested `</invoke>` inside
+  an outer `<function_calls>` wrapper does not terminate prematurely.
+- **`call_id: None` on `response.output_item.added`.** The added event was fired
+  before the tool name and call id were known, then back-filled. Now deferred
+  until the call has a real name and id, so Codex never sees a partial item.
 - **Wrong delta event for function tools.** Used
-  `response.custom_tool_call_input.delta` for function-typed tools; modern
-  Codex listens on `response.function_call_arguments.delta`. Both are now
-  emitted (modern + legacy) so older Codex builds keep working.
-- **Missing `response.function_call_arguments.done`.** Now emitted, in the
-  proper place in the lifecycle.
-- **Broken DSML extraction lifecycle.** Post-stream DSML extraction emitted
-  only `output_item.done`. Now emits the full sequence: `output_item.added`
-  -> `function_call_arguments.delta` -> `function_call_arguments.done` ->
+  `response.custom_tool_call_input.delta` for function-typed tools; modern Codex
+  listens on `response.function_call_arguments.delta`. Both are now emitted
+  (modern + legacy) so older Codex builds keep working.
+- **Missing `response.function_call_arguments.done`.** Now emitted, in the proper
+  place in the lifecycle.
+- **Broken DSML extraction lifecycle.** Post-stream DSML extraction emitted only
+  `output_item.done`. Now emits the full sequence: `output_item.added` ->
+  `function_call_arguments.delta` -> `function_call_arguments.done` ->
   `output_item.done` (plus legacy `custom_tool_call_input.delta`).
 - **Duplicate `response.completed`.** Deduplicated to a single emission.
 - **Display-mangled DSML in history.** Codex's TUI obfuscates `<` to
-  `<____DSML____` for safe display. When that text fed back as history,
-  DeepSeek imitated the malformed format. Added `normalize_dsml_display()`
-  applied to ALL inbound message content so the model only ever sees clean
-  XML or, ideally, structured `tool_calls`.
+  `<____DSML____` for safe display. When that text fed back as history, DeepSeek
+  imitated the malformed format. Added `normalize_dsml_display()` applied to ALL
+  inbound message content so the model only ever sees clean XML or, ideally,
+  structured `tool_calls`.
 
 ### Added
-
-- **Tool-name aliasing.** Flat `TOOL_NAME_ALIASES` map -- emitted name ->
-  ordered tuple of preferred replacements. `resolve_tool_name()` does
-  exact -> case-insensitive -> alias-prefs (only those actually registered)
-  -> fuzzy (`difflib`, cutoff 0.7) -> first preference fallback. Common
-  variants covered: `bash`/`sh`/`execute_command`/`exec_command`/`run_command`
-  -> `shell`; `write`/`write_file`/`create_file` -> `apply_patch`/`write_file`;
+- **Tool-name aliasing.** Flat `TOOL_NAME_ALIASES` map — emitted name -> ordered
+  tuple of preferred replacements. `resolve_tool_name()` does exact ->
+  case-insensitive -> alias-prefs (only those actually registered) -> fuzzy
+  (`difflib`, cutoff 0.7) -> first preference fallback. Common variants covered:
+  `bash`/`sh`/`execute_command`/`exec_command`/`run_command` -> `shell`;
+  `write`/`write_file`/`create_file` -> `apply_patch`/`write_file`;
   `edit`/`patch`/`str_replace_editor` -> `str_replace`/`apply_patch`;
   `read_file`/`view_file`/`cat` -> `view`; etc. Toggle with env
   `CODESEEQ_BRIDGE_TOOL_ALIAS_FUZZY` (default on).
-- **Tool-use steering system message.** When tools are present in the
-  request, a small system message is injected telling the model to emit
-  structured `tool_calls` rather than XML. Toggle via env
-  `CODESEEQ_BRIDGE_TOOL_STEERING` (default on).
+- **Tool-use steering system message.** When tools are present in the request, a
+  small system message is injected telling the model to emit structured
+  `tool_calls` rather than XML. Toggle via env `CODESEEQ_BRIDGE_TOOL_STEERING`
+  (default on).
 - **Stricter error handling for upstream stream.** `httpx.RemoteProtocolError`,
-  `httpx.ReadError`, and `asyncio.CancelledError` are caught separately so
-  the bridge logs and surfaces the right SSE error type rather than 500ing.
+  `httpx.ReadError`, and `asyncio.CancelledError` are caught separately so the
+  bridge logs and surfaces the right SSE error type rather than 500ing.
 
 ### Notes
-
 - No schema changes to `/v1/responses`, `/v1/models`, or `/health`.
-- No changes to Codex configuration, Dockerfile, container entrypoint, or
-  smoke scripts; behavior is fully on the bridge side.
-- `CODESEEQ_BRIDGE_DEBUG_LOG=1` continues to dump full request/response
-  payloads to `/tmp/codeseeq-bridge.log` for diagnostics.
+- No changes to Codex configuration, Dockerfile, container entrypoint, or smoke
+  scripts; behavior is fully on the bridge side.
+- `CODESEEQ_BRIDGE_DEBUG_LOG=1` continues to dump full request/response payloads
+  to `/tmp/codeseeq-bridge.log` for diagnostics.
+
+---
 
 ## 0.1.0 - 2026-05-07
 
@@ -287,5 +282,5 @@ entrypoint, or scripts.
 - Added root `./codeseeq` launcher and container entrypoint path.
 - Added DeepSeek/OpenResponses bridge runtime wiring and smoke scripts.
 - Added `VERSION` file with starting semantic version.
-- Switched license from AGPL-3.0 to Apache 2.0 (updated `LICENSE`, `COPYRIGHT`, `README.md`).
-
+- Switched license from AGPL-3.0 to Apache 2.0 (updated `LICENSE`, `COPYRIGHT`,
+  `README.md`).

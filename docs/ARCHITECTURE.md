@@ -138,7 +138,7 @@ Host runtime mode:
   only added when the operator explicitly requests danger/yolo bypass.
 - bridge runs as process or container sidecar, bound to `127.0.0.1`.
 - each invocation starts its own bridge on the first free port starting at
-  `CODESEEQ_BRIDGE_PORT` or `CODESEEQ_OPENRESPONSES_PORT` (default `8080`).
+  `CODESEEQ_BRIDGE_PORT` or falls back to auto-selection.
 
 No supported path uses the user's real `~/.codex`.
 
@@ -189,62 +189,92 @@ This avoids large shell arguments and preserves markdown/code fences/newlines.
 
 ## Codex-Compatible CLI
 
-CodeSeeq adds subcommands such as `run`, `system`, `build`, `install`, `doctor`, `models`, `config`, `ping`, `shell`, `smoke`, and `package`, but it does not claim Codex-owned flags.
+CodeSeeq adds subcommands such as `run`, `system`, `build`, `install`, `doctor`,
+`models`, `config`, `ping`, `shell`, `smoke`, and `package`, but it does not
+claim Codex-owned flags.
 
 - `./codeseeq "prompt"` maps to non-interactive `codex exec`.
 - `./codeseeq run "prompt"` maps to non-interactive `codex exec`.
 - `./codeseeq run -f task.md` feeds task-file contents on stdin.
 - `-p PROFILE`, `--profile PROFILE`, and `--profile=PROFILE` are Codex profile flags.
-- `--model`, `--sandbox`, `--ask-for-approval`, `--cd`, `--help`, `--version`, and other Codex flags are preserved or translated only where CodeSeeq must normalize DeepSeek model aliases or choose safe vs host runtime mode.
+- `--model`, `--sandbox`, `--ask-for-approval`, `--cd`, `--help`, `--version`,
+  and other Codex flags are preserved or translated only where CodeSeeq must
+  normalize DeepSeek model aliases or choose safe vs host runtime mode.
 - `--prompt` is not a CodeSeeq direct-prompt flag.
 
-Direct non-interactive prompt execution uses the Codex CLI's `exec` command. The installed Codex CLI reports `codex exec [PROMPT]` and `codex exec -` for stdin prompts.
+Direct non-interactive prompt execution uses the Codex CLI's `exec` command.
+The installed Codex CLI reports `codex exec [PROMPT]` and `codex exec -` for
+stdin prompts.
 
 ## Components
 
-1. `./codeseeq`
-- Host wrapper.
-- Detects Podman/Docker.
-- Handles install/build/smoke/system/package commands.
-- Chooses container vs host runtime mode.
-- Manages bridge lifecycle (process, container, or external mode).
-- Rewrites safe-mode `run -f` prompt files into `.codeseeq/tmp/`.
+1. **`./codeseeq`** — Host wrapper. Detects Podman/Docker. Handles
+   install/build/smoke/system/package commands. Chooses container vs host
+   runtime mode. Manages bridge lifecycle (process, container, or external
+   mode). Rewrites safe-mode `run -f` prompt files into `.codeseeq/tmp/`.
 
-2. `bin/codeseeq-entrypoint`
-- In-container dispatcher.
-- Generates Codex config.
-- Starts the local bridge.
-- Runs Codex interactive, prompt, run-file, diagnostics, and passthrough paths.
+2. **`bin/codeseeq-entrypoint`** — In-container dispatcher. Generates Codex
+   config. Starts the local bridge. Runs Codex interactive, prompt, run-file,
+   diagnostics, and passthrough paths.
 
-3. `bin/codeseeq-bridge.py`
-- FastAPI bridge implementing `/v1/responses` (the OpenAI Responses API wire format).
-- Converts Codex Responses requests to DeepSeek Chat Completions.
-- Normalizes model aliases, streaming events, function/tool calls, and diagnostic web/doc paths.
+3. **`bin/codeseeq-bridge.py`** — FastAPI bridge implementing `/v1/responses`
+   (the OpenAI Responses API wire format). Converts Codex Responses requests
+   to DeepSeek Chat Completions. Normalizes model aliases, streaming events,
+   function/tool calls, and diagnostic web/doc paths.
 
-4. `@openai/codex`
-- Installed in the image for safe mode.
-- Used from the host in host runtime mode if local `codex` exists.
+4. **`@openai/codex`** — Installed in the image for safe mode. Used from the
+   host in host runtime mode if local `codex` exists.
 
-5. `requirements-bridge.txt`
-- Python dependencies for the bridge (FastAPI, Uvicorn, httpx).
-- Install with: `python3 -m pip install -r requirements-bridge.txt`
+5. **`requirements-bridge.txt`** — Python dependencies for the bridge (FastAPI,
+   Uvicorn, httpx). Install with: `python3 -m pip install -r requirements-bridge.txt`
+
+6. **`config/model-catalog.json`** — DeepSeek model definitions used by the
+   wrapper and bridge for model validation and catalog injection.
+
+7. **`config/codex-model-catalog.json`** — Codex-compatible model catalog
+   injected into Codex config via `model_catalog_json` for TUI model selection.
 
 ## Interactive Menu Compatibility
 
-CodeSeeq does not fork Codex's interactive menu. Model, sandbox, approval, and settings toggles use upstream Codex behavior against the generated CodeSeeq config and isolated `CODEX_HOME`.
+CodeSeeq does not fork Codex's interactive menu. Model, sandbox, approval, and
+settings toggles use upstream Codex behavior against the generated CodeSeeq
+config and isolated `CODEX_HOME`.
 
-`model_catalog_json` points Codex at the CodeSeeq DeepSeek catalog. If a Codex release still surfaces extra model choices, wrapper/bridge validation remains authoritative and non-DeepSeek models fail clearly.
+`model_catalog_json` points Codex at the CodeSeeq DeepSeek catalog. If a Codex
+release still surfaces extra model choices, wrapper/bridge validation remains
+authoritative and non-DeepSeek models fail clearly.
 
 ## Bridge API Format
 
-The CodeSeeq bridge implements the OpenAI Responses API wire format (`/v1/responses`).
-Codex is configured with `wire_api = "responses"` in its generated `config.toml`,
-which tells Codex to speak the Responses protocol. The bridge translates between
-that protocol and DeepSeek's Chat Completions API.
+The CodeSeeq bridge implements the OpenAI Responses API wire format
+(`/v1/responses`). Codex is configured with `wire_api = "responses"` in its
+generated `config.toml`, which tells Codex to speak the Responses protocol.
+The bridge translates between that protocol and DeepSeek's Chat Completions API.
 
 The upstream `open-responses` npm package is **not** used or required.
 CodeSeeq's `Dockerfile` does not install it. The actual runtime bridge is
 entirely `bin/codeseeq-bridge.py`.
+
+## CI / Release Pipeline
+
+CodeSeeq uses a single GitHub Actions workflow (`.github/workflows/ci.yml`)
+that runs on every push and pull request. On version tag pushes (`v*`) it also
+creates a GitHub Release.
+
+Jobs:
+
+1. **static** — Shell syntax checks, shellcheck, executable permissions,
+   secret scanning, git whitespace, bridge Python syntax.
+2. **project** — Bridge extraction tests, project checks, config generation
+   validation, version consistency.
+3. **bridge-smoke** — Bridge process smoke tests, package build, package
+   validation, package hygiene.
+4. **docker** — Docker image build, all container smoke tests (help, models,
+   doctor, config, bridge server, version).
+5. **🚀 Release** (tag pushes only) — Gated behind `needs: [static, project,
+   bridge-smoke, docker]` and `if: startsWith(github.ref, 'refs/tags/v')`.
+   Builds the package and creates a GitHub Release with the zip artifact
+   attached.
 
 ## Packaging Model
 
@@ -255,4 +285,7 @@ Official release archives are created by `scripts/package.sh`, `./codeseeq packa
 ./scripts/package.sh --check-archive /mnt/data/codeseeq.zip
 ```
 
-Archives fail validation if they include local secrets/state such as `.env`, `.git/`, `.codeseeq/`, `dist/`, nested zips, `workspace/`, `__MACOSX/`, `.DS_Store`, `node_modules/`, `__pycache__/`, `*.pyc`, `logs/`, or `*.log`. `.env.example` is intentionally included.
+Archives fail validation if they include local secrets/state such as `.env`,
+`.git/`, `.codeseeq/`, `dist/`, nested zips, `workspace/`, `__MACOSX/`,
+`.DS_Store`, `node_modules/`, `__pycache__/`, `*.pyc`, `logs/`, or `*.log`.
+`.env.example` is intentionally included.
