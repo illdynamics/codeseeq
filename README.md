@@ -1,6 +1,7 @@
 # CodeSeeq
 
-CodeSeeq is a drop-in launcher and CLI wrapper for OpenAI's Codex CLI, routing all model traffic through a local Responses-compatible bridge to DeepSeek. Where you would normally type `codex ...`, you type `codeseeq ...` instead — it manages the runtime, bridge lifecycle, configuration, and DeepSeek model wiring so you get a seamless Codex experience backed by DeepSeek.
+**Production-grade Codex CLI drop-in replacement routing to DeepSeek V4 models.**
+Run codeseeq instead of codex. Same flags, same interactive behavior, same tool calls. But your prompts go to DeepSeek V4 models via your DEEPSEEK_API_KEY — no OpenAI account/API key needed.
 
 <p align="center">
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
