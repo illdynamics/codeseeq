@@ -1,14 +1,10 @@
 name: CI
 
-on:
-  push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
+on: [push, pull_request]
 
 jobs:
   check:
-    name: Check
+    name: Static & Project Checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,8 +20,14 @@ jobs:
           echo "All shell syntax OK"
 
       - name: ShellCheck
+        run: shellcheck codeseeq bin/codeseeq-entrypoint scripts/*.sh || true
+
+      - name: Executable permissions
         run: |
-          shellcheck codeseeq bin/codeseeq-entrypoint scripts/*.sh || true
+          for f in codeseeq bin/codeseeq bin/codeseeq-bridge.py scripts/*.sh; do
+            test -x "$f" || { echo "FAIL: not executable — $f"; exit 1; }
+          done
+          echo "All executables OK"
 
       - name: Bridge Python syntax
         run: python3 -m py_compile bin/codeseeq-bridge.py
@@ -36,8 +38,25 @@ jobs:
       - name: Project checks
         run: ./scripts/check.sh
 
-      - name: Bridge import check
+      - name: Bridge import & execute check
         run: make bridge-check
+
+      - name: Config generation
+        run: |
+          tmpd=$(mktemp -d)
+          CODESEEQ_CODEX_HOME="$tmpd/.codeseeq" \
+            CODESEEQ_WORKDIR="$tmpd/ws" \
+            CODESEEQ_RUNTIME_DIR="$tmpd/run" \
+            CODESEEQ_LOG_DIR="$tmpd/log" \
+            DEEPSEEK_API_KEY=dummy-test-key \
+            ./bin/codeseeq-entrypoint config > "$tmpd/config.out"
+          grep -q 'model_provider = "codeseeq"' "$tmpd/config.out" || { echo "FAIL: missing model_provider"; exit 1; }
+          grep -q 'wire_api = "responses"' "$tmpd/config.out" || { echo "FAIL: missing wire_api"; exit 1; }
+          grep -q 'env_key = "DEEPSEEK_API_KEY"' "$tmpd/config.out" || { echo "FAIL: missing env_key"; exit 1; }
+          grep -q 'requires_openai_auth = false' "$tmpd/config.out" || { echo "FAIL: missing requires_openai_auth"; exit 1; }
+          grep -q 'base_url = "http://127.0.0.1:8080/v1"' "$tmpd/config.out" || { echo "FAIL: missing base_url"; exit 1; }
+          rm -rf "$tmpd"
+          echo "Config generation OK"
 
       - name: Git whitespace
         run: git diff --check
@@ -62,6 +81,77 @@ jobs:
           fi
           echo "No orphans"
 
+      - name: Bridge startup & health
+        run: |
+          port=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
+          CODESEEQ_BRIDGE_PORT="$port" CODESEEQ_BRIDGE_HOST=127.0.0.1 \
+            python3 bin/codeseeq-bridge.py > /tmp/bridge.log 2>&1 &
+          pid=$!
+          trap "kill $pid 2>/dev/null; wait $pid 2>/dev/null" EXIT
+          for i in $(seq 1 20); do
+            curl -sf "http://127.0.0.1:$port/health" >/dev/null 2>&1 && break
+            sleep 0.3
+          done
+          echo "--- /health ---"
+          curl -sf "http://127.0.0.1:$port/health"
+          echo ""
+          echo "--- /v1/models ---"
+          curl -sf "http://127.0.0.1:$port/v1/models" | python3 -m json.tool
+          echo ""
+          echo "Bridge startup & health OK"
+
+      - name: Bridge non-streaming translation
+        run: |
+          port=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
+          # Start a fake DeepSeek server
+          python3 -c "
+          import json, http.server, threading, sys
+          class FakeDS(http.server.BaseHTTPRequestHandler):
+              def do_POST(self):
+                  body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                  resp = {
+                      'id':'chatcmpl-fake','object':'chat.completion','created':123,
+                      'model':'deepseek-v4-flash',
+                      'choices':[{'index':0,'message':{'role':'assistant','content':'codeseeq-ok'},'finish_reason':'stop'}],
+                      'usage':{'prompt_tokens':1,'completion_tokens':1,'total_tokens':2}
+                  }
+                  self.send_response(200)
+                  self.send_header('Content-Type','application/json')
+                  self.end_headers()
+                  self.wfile.write(json.dumps(resp).encode())
+          server = http.server.HTTPServer(('127.0.0.1',0), FakeDS)
+          ds_port = server.server_address[1]
+          t = threading.Thread(target=server.serve_forever, daemon=True)
+          t.start()
+          print(f'FAKE_DS_PORT={ds_port}')
+          " > /tmp/fake_ds_port.txt 2>&1
+          ds_port=$(grep FAKE_DS_PORT /tmp/fake_ds_port.txt | cut -d= -f2)
+          # Start bridge pointed at fake DeepSeek
+          br_port=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
+          DEEPSEEK_CHAT_URL="http://127.0.0.1:$ds_port/chat/completions" \
+            CODESEEQ_BRIDGE_PORT="$br_port" CODESEEQ_BRIDGE_HOST=127.0.0.1 \
+            python3 bin/codeseeq-bridge.py > /tmp/bridge2.log 2>&1 &
+          br_pid=$!
+          trap "kill $br_pid 2>/dev/null; wait $br_pid 2>/dev/null" EXIT
+          for i in $(seq 1 20); do
+            curl -sf "http://127.0.0.1:$br_port/health" >/dev/null 2>&1 && break
+            sleep 0.3
+          done
+          # POST /v1/responses
+          resp=$(curl -sf -X POST "http://127.0.0.1:$br_port/v1/responses" \
+            -H 'Content-Type: application/json' \
+            -H 'Authorization: Bearer dummy' \
+            -d '{"model":"deepseek@deepseek-v4-flash","stream":false,"input":"Return exactly: codeseeq-ok"}')
+          echo "$resp" | python3 -m json.tool
+          echo "$resp" | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          assert d['object']=='response', f'expected response, got {d.get(\"object\")}'
+          assert d['status']=='completed', f'expected completed, got {d.get(\"status\")}'
+          assert 'codeseeq-ok' in d.get('output_text',''), 'missing expected output'
+          print('Non-streaming translation: PASS')
+          "
+
   package:
     name: Package
     runs-on: ubuntu-latest
@@ -73,3 +163,70 @@ jobs:
 
       - name: Validate package
         run: ./scripts/package.sh --check-archive /tmp/codeseeq-ci.zip
+
+      - name: Inspect package contents
+        run: |
+          echo "Package entries:"
+          python3 -c "
+          import zipfile
+          with zipfile.ZipFile('/tmp/codeseeq-ci.zip') as zf:
+              names = zf.namelist()
+              print(f'  Total: {len(names)} entries')
+              for n in sorted(names):
+                  print(f'  {n}')
+          "
+          echo "--- Forbidden checks ---"
+          python3 -c "
+          import zipfile, sys
+          forbidden = ['.git/', '.codeseeq/', '__pycache__/', '.env', 'node_modules/', '.sqlite', '.pyc', '.log']
+          with zipfile.ZipFile('/tmp/codeseeq-ci.zip') as zf:
+              for name in zf.namelist():
+                  for pat in forbidden:
+                      if pat in name:
+                          print(f'FAIL: forbidden path in package: {name}')
+                          sys.exit(1)
+          print('Package hygiene: PASS')
+          "
+
+  docker:
+    name: Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t codeseeq:ci .
+
+      - name: Smoke — help
+        run: docker run --rm codeseeq:ci --help
+
+      - name: Smoke — models
+        run: docker run --rm codeseeq:ci models
+
+      - name: Smoke — doctor
+        run: docker run --rm codeseeq:ci doctor
+
+      - name: Smoke — config
+        run: |
+          docker run --rm codeseeq:ci config | tee /tmp/docker-config.out
+          grep -q 'model_provider = "codeseeq"' /tmp/docker-config.out
+          grep -q 'wire_api = "responses"' /tmp/docker-config.out
+          grep -q 'env_key = "DEEPSEEK_API_KEY"' /tmp/docker-config.out
+          echo "Docker config OK"
+
+      - name: Smoke — bridge server starts in container
+        run: |
+          docker run --rm -d --name codeseeq-bridge-ci \
+            --entrypoint /usr/local/bin/codeseeq-bridge.py \
+            -e DEEPSEEK_API_KEY=sk-test-key \
+            -e CODESEEQ_BRIDGE_HOST=0.0.0.0 \
+            -e CODESEEQ_BRIDGE_PORT=8080 \
+            codeseeq:ci
+          sleep 3
+          docker exec codeseeq-bridge-ci curl -sf http://127.0.0.1:8080/health
+          echo ""
+          docker exec codeseeq-bridge-ci curl -sf http://127.0.0.1:8080/v1/models
+          docker stop codeseeq-bridge-ci
+
+      - name: Smoke — with API key env
+        run: docker run --rm -e DEEPSEEK_API_KEY=sk-test-key codeseeq:ci models
