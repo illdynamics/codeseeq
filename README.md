@@ -1,7 +1,9 @@
 # CodeSeeq
 
 **Production-grade Codex CLI drop-in launcher wired to DeepSeek V4 models.**
-Run `codeseeq` instead of `codex`. Same flags, same interactive TUI, same tool calls. But your prompts go to DeepSeek V4 via your `DEEPSEEK_API_KEY` — no OpenAI account or API key needed.
+
+Run `codeseeq` instead of `codex`. Same flags, same interactive TUI, same tool calls.
+But your prompts go to DeepSeek V4 via your `DEEPSEEK_API_KEY` — no OpenAI account or API key needed.
 
 <p align="center">
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
@@ -10,8 +12,6 @@ Run `codeseeq` instead of `codex`. Same flags, same interactive TUI, same tool c
 Current version: `v0.2.9` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
-
-[![CI](https://github.com/codeseeq/codeseeq/actions/workflows/ci.yml/badge.svg)](https://github.com/codeseeq/codeseeq/actions/workflows/ci.yml)
 
 ## Quickstart
 
