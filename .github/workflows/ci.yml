@@ -32,6 +32,9 @@ jobs:
       - name: Bridge Python syntax
         run: python3 -m py_compile bin/codeseeq-bridge.py
 
+      - name: Install Python deps for bridge tests
+        run: python3 -m pip install --quiet -r requirements-bridge.txt
+
       - name: Bridge extraction tests
         run: ./scripts/test-bridge-extraction.py
 
@@ -182,7 +185,7 @@ jobs:
           with zipfile.ZipFile('/tmp/codeseeq-ci.zip') as zf:
               for name in zf.namelist():
                   for pat in forbidden:
-                      if pat in name:
+                      if pat in name and name != '.env.example':
                           print(f'FAIL: forbidden path in package: {name}')
                           sys.exit(1)
           print('Package hygiene: PASS')

@@ -12,45 +12,75 @@ Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
 ## Quickstart
 
-Prerequisites:
+### Prerequisites
 
-- Podman preferred, or Docker as a compatible fallback.
-- `DEEPSEEK_API_KEY` in your shell for model requests.
-- Optional `BRAVE_API_KEY` for `ping-web`.
-- Optional `UNSTRUCTURED_API_KEY` for `ping-docs`.
+- **DEEPSEEK_API_KEY** — set in your shell for model requests.
+- Podman or Docker (optional — only needed for container mode).
+- Python 3 + `pip install -r requirements-bridge.txt` (optional — only needed for host/process mode).
 
-Build or auto-build the image:
+### Install
+
+**Option A — curl one-liner (recommended)**
 
 ```bash
-./codeseeq models
-# or
-./codeseeq build
+curl -fsSL https://raw.githubusercontent.com/codeseeq/codeseeq/main/scripts/install-curl.sh | bash
 ```
 
-Use it like Codex:
+Downloads the latest release zip, extracts it, and installs the `codeseeq` command to `~/.config/codeseeq` with a launcher at `~/bin/codeseeq`.
+
+**Option B — git clone**
 
 ```bash
-./codeseeq
-./codeseeq "say hi"
-./codeseeq run "say hi"
-./codeseeq run -f task.md
-./codeseeq run --file tasks/feature.md
-./codeseeq --model deepseek-v4-pro "review this repo"
-./codeseeq -p myprofile "say hi"
-```
-
-Install the user-local command:
-
-```bash
+git clone https://github.com/codeseeq/codeseeq.git
+cd codeseeq
 ./codeseeq install
 ```
 
-This installs a snapshot to `~/.config/codeseeq` and a launcher at `~/bin/codeseeq`.
+**Option C — download release zip manually**
 
-Uninstall with:
+Download `codeseeq-v0.2.9.zip` from [GitHub Releases](https://github.com/codeseeq/codeseeq/releases), then:
 
 ```bash
-./codeseeq nuke
+unzip codeseeq-v0.2.9.zip
+cd codeseeq-v0.2.9  # or wherever it extracted
+./codeseeq install
+```
+
+### Post-install
+
+Make sure `~/bin` is in your `PATH`:
+
+```bash
+export PATH="$HOME/bin:$PATH"
+```
+
+Set your API key:
+
+```bash
+export DEEPSEEK_API_KEY=sk-...
+```
+
+### Use it
+
+```bash
+codeseeq -y "say hi"
+codeseeq run "say hi"
+codeseeq run -f task.md
+codeseeq --model deepseek-v4-pro "review this repo"
+codeseeq -p myprofile "say hi"
+```
+
+### Host-native mode (no Docker/Podman needed)
+
+```bash
+pip3 install -r ~/.config/codeseeq/requirements-bridge.txt
+codeseeq --bridge-mode process -y "say hi"
+```
+
+### Uninstall
+
+```bash
+codeseeq nuke
 ```
 
 ## Runtime Model

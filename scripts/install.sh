@@ -80,6 +80,30 @@ exec "${CODESEEQ_INSTALL_DIR}/codeseeq" "\$@"
 EOF
 chmod +x "$launcher"
 
+# --- Install upstream Codex CLI if missing ---
+if command -v codex >/dev/null 2>&1; then
+  log "codex CLI found: $(command -v codex)"
+elif command -v npm >/dev/null 2>&1; then
+  log "installing @openai/codex globally via npm ..."
+  npm install -g @openai/codex || log "WARN: npm install failed; install manually: npm install -g @openai/codex"
+else
+  log "WARN: npm not found; install Codex CLI manually: npm install -g @openai/codex"
+fi
+
+# --- Install Python bridge deps if python3 available ---
+if [[ -f "${CODESEEQ_INSTALL_DIR}/requirements-bridge.txt" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 -c 'import fastapi, uvicorn, httpx' >/dev/null 2>&1; then
+      log "Python bridge deps: OK"
+    else
+      log "installing Python bridge deps ..."
+      python3 -m pip install --quiet -r "${CODESEEQ_INSTALL_DIR}/requirements-bridge.txt" ||         log "WARN: pip install failed; install manually: python3 -m pip install -r ${CODESEEQ_INSTALL_DIR}/requirements-bridge.txt"
+    fi
+  else
+    log "WARN: python3 not found; install manually for host/process mode: python3 -m pip install -r requirements-bridge.txt"
+  fi
+fi
+
 log "installed repo snapshot to ${CODESEEQ_INSTALL_DIR}"
 log "installed launcher to ${launcher}"
 
