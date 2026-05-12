@@ -1,12 +1,12 @@
 # CodeSeeq
 
-CodeSeeq is a drop-in launcher and CLI wrapper for OpenAI's Codex CLI, routing all model traffic through a local OpenResponses-compatible bridge to DeepSeek. Where you would normally type `codex ...`, you type `codeseeq ...` instead — it manages the container runtime, bridge lifecycle, configuration, and DeepSeek model wiring so you get a seamless Codex experience backed by DeepSeek.
+CodeSeeq is a drop-in launcher and CLI wrapper for OpenAI's Codex CLI, routing all model traffic through a local Responses-compatible bridge to DeepSeek. Where you would normally type `codex ...`, you type `codeseeq ...` instead — it manages the runtime, bridge lifecycle, configuration, and DeepSeek model wiring so you get a seamless Codex experience backed by DeepSeek.
 
 <p align="center">
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `0.2.7` (from [`VERSION`](./VERSION)).
+Current version: `0.2.9` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -55,7 +55,19 @@ Uninstall with:
 
 ## Runtime Model
 
-Default mode is safe/containerized:
+CodeSeeq separates **where Codex runs** from **how the bridge is started**.
+
+### Runtime Modes (where Codex runs)
+
+Set via `CODESEEQ_RUNTIME_MODE`.
+
+| Mode | Behavior |
+|------|----------|
+| `container` | Run Codex inside a Docker/Podman container. Safe/isolated default. |
+| `host` | Run Codex directly on the host. No container isolation. |
+| `auto` (default) | Use `container` for normal paths; use `host` when danger/yolo is requested. |
+
+### Container Runtime (Safe Default)
 
 ```text
 host ./codeseeq
@@ -70,23 +82,93 @@ Default Codex settings:
 - `approval_policy = "on-request"`
 - `sandbox_mode = "workspace-write"`
 
-Danger mode is explicit:
+### Host Runtime
+
+Host runtime runs Codex directly on your host checkout. It does **not** provide
+container isolation. Codex uses the normal approval and sandbox settings from
+its generated config. The danger/yolo bypass is only applied when you explicitly
+request it with `-y`, `--yolo`, `--dangerously-bypass-approvals-and-sandbox`, or
+`--sandbox danger-full-access`.
 
 ```bash
+# Host runtime with process bridge (no containers at all)
+CODESEEQ_RUNTIME_MODE=host CODESEEQ_BRIDGE_MODE=process ./codeseeq run "hello"
+
+# Danger/yolo mode: host Codex with bypass flag
 ./codeseeq -y "fix the tests"
 ./codeseeq --yolo "fix the tests"
-./codeseeq --dangerously-bypass-approvals-and-sandbox "fix the tests"
-./codeseeq --sandbox danger-full-access "fix the tests"
-./codeseeq --sanbox danger-full-access "fix the tests"
 ```
 
-In danger mode, CodeSeeq starts only the bridge in the selected container runtime and runs local host `codex` directly on the current checkout. It uses isolated repo-local `CODEX_HOME=$PWD/.codeseeq`, never the user's real `~/.codex`. Each danger-mode invocation gets its own bridge on the first free localhost port starting at `CODESEEQ_OPENRESPONSES_PORT` (default `8080`).
+In host runtime with danger/yolo, CodeSeeq starts the bridge (process or container),
+runs local host `codex` directly on the current checkout with
+`--dangerously-bypass-approvals-and-sandbox`, and uses isolated repo-local
+`CODEX_HOME=$PWD/.codeseeq` — never the user's real `~/.codex`.
 
 If local `codex` is missing, install it:
 
 ```bash
 npm install -g @openai/codex
 ```
+
+## How It Works
+
+CodeSeeq does not fork or patch Codex. It launches the upstream Codex CLI with an
+isolated generated `config.toml`. That config points Codex at a local CodeSeeq
+bridge implementing the OpenAI Responses API. The bridge translates requests to
+DeepSeek Chat Completions and converts responses back to the format Codex expects.
+
+## Bridge Modes
+
+CodeSeeq controls how the translation bridge is started via `CODESEEQ_BRIDGE_MODE`.
+
+| Mode | Behavior |
+|------|----------|
+| `process` | Start `bin/codeseeq-bridge.py` as a direct child process on the host. No Docker/Podman required. |
+| `container` | Start the bridge inside a Docker/Podman container (legacy behavior). |
+| `external` | Assume the bridge is already running. Use `CODESEEQ_BRIDGE_BASE_URL`. |
+| `auto` (default) | Prefer `process` mode when Python + dependencies are available. Fall back to `container`. |
+
+### Process Mode (Recommended for Host Runtime)
+
+```bash
+# No container needed for the bridge
+CODESEEQ_BRIDGE_MODE=process DEEPSEEK_API_KEY=sk-... ./codeseeq -y "inspect this repo"
+
+# Or just rely on auto-detection when deps are installed
+pip3 install -r requirements-bridge.txt
+DEEPSEEK_API_KEY=sk-... ./codeseeq -y "review the code"
+
+# Combined: host runtime + process bridge (zero containers)
+CODESEEQ_RUNTIME_MODE=host CODESEEQ_BRIDGE_MODE=process DEEPSEEK_API_KEY=sk-... ./codeseeq run "hello"
+```
+
+Process mode is **not** a sandbox boundary — it only removes the bridge sidecar container. Use it when you want to avoid Docker-in-Docker or are already running inside a container.
+
+### Container Mode (Legacy)
+
+```bash
+# Force old container-bridge behavior
+CODESEEQ_BRIDGE_MODE=container DEEPSEEK_API_KEY=sk-... ./codeseeq -y "hello"
+```
+
+### External Mode
+
+```bash
+# Point at an already-running bridge
+CODESEEQ_BRIDGE_MODE=external CODESEEQ_BRIDGE_BASE_URL=http://127.0.0.1:8080/v1 DEEPSEEK_API_KEY=sk-... ./codeseeq -y "hello"
+```
+
+### Bridge Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CODESEEQ_BRIDGE_MODE` | `auto` | `auto`, `process`, `container`, or `external` |
+| `CODESEEQ_BRIDGE_HOST` | `127.0.0.1` | Bridge listen address |
+| `CODESEEQ_BRIDGE_PORT` | auto-select | Fixed bridge port (omit for auto) |
+| `CODESEEQ_BRIDGE_BASE_URL` | — | Full bridge URL override (external mode) |
+| `CODESEEQ_BRIDGE_LOG` | `~/.config/codeseeq/log/bridge.log` | Bridge log file |
+| `CODESEEQ_BRIDGE_STARTUP_TIMEOUT` | `10` | Seconds to wait for health check |
+| `CODESEEQ_BRIDGE_REUSE` | `0` | Reuse existing healthy bridge |
 
 ## Container Runtime
 
@@ -115,7 +197,7 @@ CODESEEQ_VOLUME_SUFFIX= ./codeseeq run "say hi"
 
 ## Workspace Paths
 
-In safe/container mode, Codex works in `/workspace` inside the container. That path is a bind mount of the directory where you launched `./codeseeq`, so writes land in your host checkout.
+In container runtime, Codex works in `/workspace` inside the container. That path is a bind mount of the directory where you launched `./codeseeq`, so writes land in your host checkout.
 
 Before Codex starts, CodeSeeq prints a stderr banner:
 
@@ -156,7 +238,7 @@ Storage path:
 ~/.config/codeseeq/system-prompt.md
 ```
 
-The prompt is injected into Codex config as `developer_instructions`, which Codex sends as a developer instruction while preserving Codex's built-in base instructions. It applies to normal Codex request paths including interactive sessions, bare direct prompts, `run`, `run -f/--file`, explicit `codex` passthrough, safe container mode, and danger host mode.
+The prompt is injected into Codex config as `developer_instructions`, which Codex sends as a developer instruction while preserving Codex's built-in base instructions. It applies to normal Codex request paths including interactive sessions, bare direct prompts, `run`, `run -f/--file`, explicit `codex` passthrough, container runtime, and host runtime.
 
 Do not put secrets in the system prompt unless you understand that prompt text is sent to the model and stored in user-level config state.
 
@@ -282,7 +364,7 @@ Open the Codex menu or use slash commands such as `/model` where supported by yo
 - [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)
 - [`docs/SECURITY.md`](./docs/SECURITY.md)
 
-Local reference paths mentioned by older docs, such as `./codex` and `./open-responses`, may be absent from a minimal checkout. This repository's runtime does not depend on Docker Compose.
+Local reference paths mentioned by older docs, such as `./codex` and `./open-responses`, may be absent from a minimal checkout. This repository's runtime does not depend on Docker Compose or the upstream `open-responses` npm package.
 
 ## License
 

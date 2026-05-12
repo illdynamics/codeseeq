@@ -71,6 +71,22 @@ LEGACY_SYSTEM_PROMPT_PATH="${WORKDIR_HOST}/.codeseeq/system-prompt.md"
 : "${CODESEEQ_REQUEST_MAX_RETRIES:=2}"
 : "${CODESEEQ_STREAM_IDLE_TIMEOUT_MS:=600000}"
 
+# --- Bridge mode configuration ---
+: "${CODESEEQ_BRIDGE_MODE:=auto}"
+: "${CODESEEQ_BRIDGE_HOST:=127.0.0.1}"
+: "${CODESEEQ_BRIDGE_PORT:=}"
+: "${CODESEEQ_BRIDGE_BASE_URL:=}"
+: "${CODESEEQ_BRIDGE_LOG:=}"
+: "${CODESEEQ_BRIDGE_PID_FILE:=}"
+: "${CODESEEQ_BRIDGE_STARTUP_TIMEOUT:=10}"
+: "${CODESEEQ_BRIDGE_HEALTH_PATH:=/health}"
+: "${CODESEEQ_BRIDGE_REUSE:=0}"
+BRIDGE_OWNED=""
+BRIDGE_PID=""
+
+# --- Runtime mode ---
+: "${CODESEEQ_RUNTIME_MODE:=auto}"
+
 PROVIDER_MODEL=""
 THINKING_EFFECTIVE=""
 TMP_FILES=()
@@ -81,11 +97,22 @@ cleanup_tmp_files() {
   for f in "${TMP_FILES[@]:-}"; do
     [[ -n "$f" ]] && rm -f -- "$f" 2>/dev/null || true
   done
+  bridge_stop_owned_process
   if [[ -n "${BRIDGE_CONTAINER_STARTED:-}" ]] && ! is_truthy "${CODESEEQ_KEEP_BRIDGE_CONTAINER:-false}"; then
     "$CONTAINER" stop "$BRIDGE_CONTAINER_STARTED" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup_tmp_files EXIT
+
+host_cleanup() {
+  cleanup_tmp_files
+}
+
+_run_host_cleanup() {
+  local s="${1:-$?}"
+  host_cleanup
+  return "$s"
+}
 
 print_help() {
   cat <<'EOF'
@@ -125,6 +152,17 @@ System prompt:
   codeseeq system view
   codeseeq system remove
 
+Runtime modes:
+  --runtime-mode MODE   host, container, or auto (default: auto)
+  CODESEEQ_RUNTIME_MODE Set runtime mode via environment
+
+Bridge modes:
+  --bridge-mode MODE    process, container, external, or auto (default: auto)
+  --bridge-url URL      Full bridge base URL (e.g. http://127.0.0.1:8080/v1)
+  --bridge-port PORT    Fixed bridge port (omit for auto-select)
+  CODESEEQ_BRIDGE_MODE  Set bridge mode via environment
+  CODESEEQ_BRIDGE_BASE_URL  Set bridge URL via environment
+
 Runtime:
   Podman is preferred. Docker is used as a compatible fallback when Podman is
   unavailable, or explicitly with CONTAINER=docker. Docker Compose is not used.
@@ -132,7 +170,9 @@ Runtime:
 Safety:
   Default mode runs Codex safely inside the CodeSeeq container. Explicit
   -y, --yolo, --dangerously-bypass-approvals-and-sandbox, or
-  --sandbox danger-full-access runs local host Codex against a bridge container.
+  --sandbox danger-full-access runs local host Codex with the bypass flag.
+  Host runtime mode runs Codex without container isolation but still applies
+  the normal Codex approval and sandbox settings unless danger/yolo is requested.
 
 Codex compatibility:
   -p and --profile are Codex profile flags. They are passed through unchanged
@@ -182,6 +222,13 @@ detect_container() {
   fi
 
   die "no container runtime found. Install Podman (preferred) or Docker, or set CONTAINER=podman|docker."
+}
+
+ensure_container_runtime() {
+  if [[ -n "${CONTAINER:-}" ]]; then
+    return 0
+  fi
+  CONTAINER="$(detect_container)"
 }
 
 volume_suffix_for_runtime() {
@@ -582,7 +629,7 @@ EOF
   cat >> "$HOST_CODEX_HOME/config.toml" <<EOF
 
 [model_providers.codeseeq]
-name = "CodeSeeq OpenResponses Bridge"
+name = "CodeSeeq DeepSeek Bridge"
 base_url = "${CODESEEQ_OPENRESPONSES_URL}"
 env_key = "DEEPSEEK_API_KEY"
 wire_api = "responses"
@@ -618,7 +665,16 @@ host_port_listening() {
 
 set_bridge_port() {
   CODESEEQ_OPENRESPONSES_PORT="$1"
-  CODESEEQ_OPENRESPONSES_URL="http://127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT}/v1"
+  local host="${2:-127.0.0.1}"
+  CODESEEQ_OPENRESPONSES_URL="http://${host}:${CODESEEQ_OPENRESPONSES_PORT}/v1"
+  export CODESEEQ_OPENRESPONSES_PORT CODESEEQ_OPENRESPONSES_URL
+}
+
+set_bridge_endpoint() {
+  local host="${1:-${CODESEEQ_BRIDGE_HOST:-127.0.0.1}}"
+  local port="$2"
+  CODESEEQ_OPENRESPONSES_PORT="$port"
+  CODESEEQ_OPENRESPONSES_URL="http://${host}:${port}/v1"
   export CODESEEQ_OPENRESPONSES_PORT CODESEEQ_OPENRESPONSES_URL
 }
 
@@ -642,6 +698,7 @@ select_host_bridge_port() {
 }
 
 start_bridge_container() {
+  ensure_container_runtime
   ensure_image
   select_host_bridge_port
 
@@ -688,6 +745,201 @@ start_bridge_container() {
   die "failed to start bridge container on ${CODESEEQ_OPENRESPONSES_URL}"
 }
 
+# ---------------------------------------------------------------------------
+# Bridge mode abstraction (process / container / external / auto)
+# ---------------------------------------------------------------------------
+
+bridge_mode_resolve() {
+  local mode="${CODESEEQ_BRIDGE_MODE:-auto}"
+  case "$mode" in
+    auto|process|container|external) printf '%s' "$mode" ;;
+    *) die "invalid CODESEEQ_BRIDGE_MODE: $mode (use auto, process, container, or external)" ;;
+  esac
+}
+
+runtime_mode_resolve() {
+  local mode="${CODESEEQ_RUNTIME_MODE:-auto}"
+  case "$mode" in
+    auto|host|container) printf '%s' "$mode" ;;
+    *) die "invalid CODESEEQ_RUNTIME_MODE: $mode (use auto, host, or container)" ;;
+  esac
+}
+
+bridge_check_deps_process() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  [[ -f "${CODESEEQ_INSTALL_ROOT}/bin/codeseeq-bridge.py" ]] || return 1
+  python3 -c 'import fastapi, uvicorn, httpx' >/dev/null 2>&1 || return 1
+  return 0
+}
+
+bridge_resolve_log_pid_paths() {
+  if [[ -z "${CODESEEQ_BRIDGE_LOG:-}" ]]; then
+    CODESEEQ_BRIDGE_LOG="${HOST_CODEX_HOME}/log/bridge.log"
+  fi
+  if [[ -z "${CODESEEQ_BRIDGE_PID_FILE:-}" ]]; then
+    CODESEEQ_BRIDGE_PID_FILE="${HOST_CODEX_HOME}/run/bridge.pid"
+  fi
+  mkdir -p "$(dirname "$CODESEEQ_BRIDGE_LOG")" "$(dirname "$CODESEEQ_BRIDGE_PID_FILE")" 2>/dev/null || true
+}
+
+bridge_start_process() {
+  bridge_resolve_log_pid_paths
+
+  local host="${CODESEEQ_BRIDGE_HOST:-127.0.0.1}"
+
+  if [[ -n "${CODESEEQ_BRIDGE_PORT:-}" ]]; then
+    set_bridge_endpoint "$host" "$CODESEEQ_BRIDGE_PORT"
+  else
+    select_host_bridge_port
+    set_bridge_endpoint "$host" "$CODESEEQ_OPENRESPONSES_PORT"
+  fi
+
+  # Reuse existing healthy bridge if CODESEEQ_BRIDGE_REUSE=1
+  if is_truthy "${CODESEEQ_BRIDGE_REUSE:-0}"; then
+    if bridge_healthcheck_url "http://${host}:${CODESEEQ_OPENRESPONSES_PORT}${CODESEEQ_BRIDGE_HEALTH_PATH}"; then
+      log "reusing existing bridge at http://${host}:${CODESEEQ_OPENRESPONSES_PORT}"
+      BRIDGE_OWNED=""
+      return 0
+    fi
+    log "bridge reuse enabled but no healthy bridge found at http://${host}:${CODESEEQ_OPENRESPONSES_PORT}; starting new one"
+  fi
+
+  if [[ "$host" != "127.0.0.1" && "$host" != "localhost" ]]; then
+    warn "bridge binding to non-loopback address: ${host}"
+    if [[ "$host" == "0.0.0.0" ]]; then
+      warn "CODESEEQ_BRIDGE_HOST=0.0.0.0 exposes the bridge to the network"
+    fi
+  fi
+
+  # Client-facing URL: use 127.0.0.1 when bridge binds to 0.0.0.0 (unless explicit base URL)
+  if [[ "$host" == "0.0.0.0" && -z "${CODESEEQ_BRIDGE_BASE_URL:-}" ]]; then
+    CODESEEQ_OPENRESPONSES_URL="http://127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT}/v1"
+  fi
+  log "bridge mode=process starting python3 on http://${host}:${CODESEEQ_OPENRESPONSES_PORT}"
+  log "bridge log: ${CODESEEQ_BRIDGE_LOG}"
+
+  CODESEEQ_BRIDGE_HOST="$host"   CODESEEQ_BRIDGE_PORT="$CODESEEQ_OPENRESPONSES_PORT"   python3 "${CODESEEQ_INSTALL_ROOT}/bin/codeseeq-bridge.py"     >> "$CODESEEQ_BRIDGE_LOG" 2>&1 &
+
+  BRIDGE_PID=$!
+  echo "$BRIDGE_PID" > "$CODESEEQ_BRIDGE_PID_FILE"
+  BRIDGE_OWNED="process"
+
+  local deadline=$((SECONDS + CODESEEQ_BRIDGE_STARTUP_TIMEOUT))
+  while (( SECONDS < deadline )); do
+    if bridge_healthcheck_url "http://${host}:${CODESEEQ_OPENRESPONSES_PORT}${CODESEEQ_BRIDGE_HEALTH_PATH}"; then
+      log "bridge process healthy (pid=${BRIDGE_PID})"
+      return 0
+    fi
+    if ! kill -0 "$BRIDGE_PID" >/dev/null 2>&1; then
+      warn "bridge process exited early; last log lines:"
+      tail -n 40 "$CODESEEQ_BRIDGE_LOG" >&2 || true
+      die "bridge process exited before becoming healthy on http://${host}:${CODESEEQ_OPENRESPONSES_PORT}"
+    fi
+    sleep 1
+  done
+
+  warn "bridge process health check timed out after ${CODESEEQ_BRIDGE_STARTUP_TIMEOUT}s"
+  tail -n 40 "$CODESEEQ_BRIDGE_LOG" >&2 || true
+  die "bridge process health check timed out on http://${host}:${CODESEEQ_OPENRESPONSES_PORT}"
+}
+
+bridge_stop_owned_process() {
+  if [[ "$BRIDGE_OWNED" != "process" || -z "${BRIDGE_PID:-}" ]]; then
+    return 0
+  fi
+
+  log "stopping owned bridge process (pid=${BRIDGE_PID})"
+  kill "$BRIDGE_PID" 2>/dev/null || true
+
+  local waited=0
+  while (( waited < 5 )); do
+    if ! kill -0 "$BRIDGE_PID" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  if kill -0 "$BRIDGE_PID" >/dev/null 2>&1; then
+    kill -9 "$BRIDGE_PID" 2>/dev/null || true
+  fi
+
+  rm -f "$CODESEEQ_BRIDGE_PID_FILE" 2>/dev/null || true
+}
+
+bridge_healthcheck_url() {
+  local url="${1:-}"
+  [[ -n "$url" ]] || url="http://${CODESEEQ_BRIDGE_HOST:-127.0.0.1}:${CODESEEQ_OPENRESPONSES_PORT}${CODESEEQ_BRIDGE_HEALTH_PATH}"
+  curl --silent --show-error --fail --max-time 2 --connect-timeout 1 "$url" >/dev/null 2>&1
+}
+
+bridge_start() {
+  local mode
+  mode="$(bridge_mode_resolve)"
+
+  log "bridge mode: ${mode}"
+
+  case "$mode" in
+    external)
+      if [[ -n "${CODESEEQ_BRIDGE_BASE_URL:-}" ]]; then
+        CODESEEQ_OPENRESPONSES_URL="$CODESEEQ_BRIDGE_BASE_URL"
+        local ext_health_root
+        if [[ "$CODESEEQ_OPENRESPONSES_URL" == */v1/ ]]; then
+          ext_health_root="${CODESEEQ_OPENRESPONSES_URL%/v1/}"
+        elif [[ "$CODESEEQ_OPENRESPONSES_URL" == */v1 ]]; then
+          ext_health_root="${CODESEEQ_OPENRESPONSES_URL%/v1}"
+        else
+          ext_health_root="${CODESEEQ_OPENRESPONSES_URL%/}"
+        fi
+        log "bridge external mode: using ${CODESEEQ_OPENRESPONSES_URL}"
+        if bridge_healthcheck_url "${ext_health_root}${CODESEEQ_BRIDGE_HEALTH_PATH}" ||
+           bridge_healthcheck_url "${ext_health_root}/health"; then
+          return 0
+        fi
+        die "external bridge health check failed at ${CODESEEQ_OPENRESPONSES_URL}"
+      fi
+      die "CODESEEQ_BRIDGE_MODE=external requires CODESEEQ_BRIDGE_BASE_URL to be set"
+      ;;
+    process)
+      if ! bridge_check_deps_process; then
+        die "process bridge mode requires: python3, bin/codeseeq-bridge.py, and Python packages (fastapi, uvicorn, httpx). Install with: python3 -m pip install -r requirements-bridge.txt"
+      fi
+      bridge_start_process
+      ;;
+    container)
+      ensure_container_runtime
+      start_bridge_container
+      ;;
+    auto)
+      if bridge_check_deps_process; then
+        if bridge_start_process; then
+          return 0
+        fi
+        log "process bridge failed (check logs for details)"
+        if [[ "${CODESEEQ_BRIDGE_MODE:-auto}" == "auto" ]]; then
+          log "auto mode: falling back to container"
+          ensure_container_runtime
+          start_bridge_container
+          return 0
+        fi
+        die "process bridge failed and mode is not auto; refusing to fall back silently"
+      fi
+      log "auto mode: process deps not available; trying container"
+      ensure_container_runtime
+      start_bridge_container
+      ;;
+  esac
+}
+
+bridge_select_port() {
+  if [[ -n "${CODESEEQ_BRIDGE_PORT:-}" ]]; then
+    set_bridge_port "$CODESEEQ_BRIDGE_PORT"
+    return 0
+  fi
+  select_host_bridge_port
+}
+
+
 prepare_prompt_temp_from_text() {
   mkdir -p "$HOST_CODEX_HOME/tmp"
   local tmp tmp_base
@@ -727,6 +979,59 @@ parse_run_prompt() {
         ;;
       --model=*)
         CODESEEQ_MODEL="${arg#--model=}"
+        shift
+        ;;
+      --runtime-mode)
+        [[ $# -ge 2 ]] || die "run: $arg requires a value"
+        CODESEEQ_RUNTIME_MODE="$2"
+        shift 2
+        ;;
+      --runtime-mode=*)
+        CODESEEQ_RUNTIME_MODE="${arg#--runtime-mode=}"
+        shift
+        ;;
+      --bridge-mode)
+        [[ $# -ge 2 ]] || die "run: $arg requires a value"
+        CODESEEQ_BRIDGE_MODE="$2"
+        shift 2
+        ;;
+      --bridge-mode=*)
+        CODESEEQ_BRIDGE_MODE="${arg#--bridge-mode=}"
+        shift
+        ;;
+      --bridge-url)
+        [[ $# -ge 2 ]] || die "run: $arg requires a value"
+        CODESEEQ_BRIDGE_BASE_URL="$2"
+        shift 2
+        ;;
+      --bridge-url=*)
+        CODESEEQ_BRIDGE_BASE_URL="${arg#--bridge-url=}"
+        shift
+        ;;
+      --bridge-port)
+        [[ $# -ge 2 ]] || die "run: $arg requires a value"
+        CODESEEQ_BRIDGE_PORT="$2"
+        shift 2
+        ;;
+      --bridge-port=*)
+        CODESEEQ_BRIDGE_PORT="${arg#--bridge-port=}"
+        shift
+        ;;
+      --bridge-host)
+        [[ $# -ge 2 ]] || die "run: $arg requires a value"
+        CODESEEQ_BRIDGE_HOST="$2"
+        shift 2
+        ;;
+      --bridge-host=*)
+        CODESEEQ_BRIDGE_HOST="${arg#--bridge-host=}"
+        shift
+        ;;
+      --bridge-reuse)
+        CODESEEQ_BRIDGE_REUSE=1
+        shift
+        ;;
+      --no-bridge-reuse)
+        CODESEEQ_BRIDGE_REUSE=0
         shift
         ;;
       --thinking)
@@ -916,6 +1221,7 @@ collect_env() {
 
 run_safe_container() {
   rewrite_safe_run_file_args "$@"
+  ensure_container_runtime
   ensure_image
 
   local suffix volume_spec config_suffix config_volume_spec system_prompt_dir
@@ -953,7 +1259,21 @@ run_safe_container() {
 
 run_host_codex() {
   require_deepseek_key
-  command -v codex >/dev/null 2>&1 || die "danger/full-access mode requires local Codex CLI. Install it with: npm install -g @openai/codex"
+  command -v codex >/dev/null 2>&1 || die "host runtime requires local Codex CLI. Install it with: npm install -g @openai/codex"
+
+  local danger=false
+  if arg_requests_danger "$@"; then
+    danger=true
+  fi
+  if is_truthy "${CODESEEQ_YOLO:-false}"; then
+    danger=true
+  fi
+  if [[ "${CODESEEQ_SANDBOX_MODE:-}" == "danger-full-access" ]]; then
+    danger=true
+  fi
+
+  # Ensure cleanup on any exit or interrupt
+  trap '_run_host_cleanup "$?"; exit "$?"' EXIT INT TERM HUP
 
   local raw=("$@")
   local mode="interactive"
@@ -1029,34 +1349,39 @@ run_host_codex() {
   fi
 
   normalize_model "$CODESEEQ_MODEL" "$CODESEEQ_THINKING"
-  start_bridge_container
+  bridge_start
   write_host_config
 
   export CODEX_HOME="$HOST_CODEX_HOME"
   export CODESEEQ_HOST_MODE=true
 
-  local cmd=(codex --model "$PROVIDER_MODEL" --dangerously-bypass-approvals-and-sandbox)
+  local cmd=(codex --model "$PROVIDER_MODEL")
+  if [[ "$danger" == "true" ]]; then
+    cmd+=(--dangerously-bypass-approvals-and-sandbox)
+  else
+    cmd+=(--ask-for-approval "$CODESEEQ_APPROVAL_POLICY")
+    cmd+=(--sandbox "$CODESEEQ_SANDBOX_MODE")
+  fi
   if [[ "$mode" == "exec" ]]; then
     if [[ -z "$prompt_file" ]]; then
       prompt_file="$(prepare_prompt_temp_from_text "$prompt_text")"
+      TMP_FILES+=("$prompt_file")
     fi
     cmd+=(exec --skip-git-repo-check)
     if ((${#exec_args[@]} > 0)); then
       cmd+=("${exec_args[@]}")
     fi
     cmd+=(-)
-    log "danger mode: running local Codex with bridge at ${CODESEEQ_OPENRESPONSES_URL}"
+    log "host mode: running local Codex with bridge at ${CODESEEQ_OPENRESPONSES_URL}"
     local status
     set +e
     "${cmd[@]}" < "$prompt_file"
     status=$?
     set -e
-    cleanup_tmp_files
-    trap - EXIT
     exit $status
   fi
 
-  log "danger mode: running local Codex with bridge at ${CODESEEQ_OPENRESPONSES_URL}"
+  log "host mode: running local Codex with bridge at ${CODESEEQ_OPENRESPONSES_URL}"
   local status
   set +e
   if ((${#passthrough[@]} > 0)); then
@@ -1066,8 +1391,6 @@ run_host_codex() {
   fi
   status=$?
   set -e
-  cleanup_tmp_files
-  trap - EXIT
   exit $status
 }
 
@@ -1137,10 +1460,154 @@ case "${1:-}" in
     ;;
 esac
 
-CONTAINER="$(detect_container)"
+# Pre-parse CodeSeeq flags from ALL argv positions (before AND after subcommands)
+_CODESEEQ_KEPT_ARGS=()
+while (( $# > 0 )); do
+  case "$1" in
+    --bridge-mode)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      CODESEEQ_BRIDGE_MODE="$2"
+      shift 2
+      ;;
+    --bridge-mode=*)
+      CODESEEQ_BRIDGE_MODE="${1#--bridge-mode=}"
+      shift
+      ;;
+    --bridge-url)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      CODESEEQ_BRIDGE_BASE_URL="$2"
+      shift 2
+      ;;
+    --bridge-url=*)
+      CODESEEQ_BRIDGE_BASE_URL="${1#--bridge-url=}"
+      shift
+      ;;
+    --bridge-port)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      CODESEEQ_BRIDGE_PORT="$2"
+      shift 2
+      ;;
+    --bridge-port=*)
+      CODESEEQ_BRIDGE_PORT="${1#--bridge-port=}"
+      shift
+      ;;
+    --bridge-host)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      CODESEEQ_BRIDGE_HOST="$2"
+      shift 2
+      ;;
+    --bridge-host=*)
+      CODESEEQ_BRIDGE_HOST="${1#--bridge-host=}"
+      shift
+      ;;
+    --bridge-reuse)
+      CODESEEQ_BRIDGE_REUSE=1
+      shift
+      ;;
+    --no-bridge-reuse)
+      CODESEEQ_BRIDGE_REUSE=0
+      shift
+      ;;
+    --runtime-mode)
+      [[ $# -ge 2 ]] || die "$1 requires a value"
+      CODESEEQ_RUNTIME_MODE="$2"
+      shift 2
+      ;;
+    --runtime-mode=*)
+      CODESEEQ_RUNTIME_MODE="${1#--runtime-mode=}"
+      shift
+      ;;
+    *)
+      _CODESEEQ_KEPT_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+# Restore argv without consumed CodeSeeq flags
+set -- "${_CODESEEQ_KEPT_ARGS[@]}"
+unset _CODESEEQ_KEPT_ARGS
+
 cmd_arg="$(first_command_arg "$@" || true)"
-if arg_requests_danger "$@" && ! is_codeseeq_diagnostic_command "$cmd_arg"; then
+
+# Diagnostic / management commands always run via CodeSeeq, not passed to Codex
+if is_codeseeq_diagnostic_command "$cmd_arg"; then
+  # Host-runtime diagnostics run without container
+  if [[ "${CODESEEQ_RUNTIME_MODE:-auto}" == "host" ]]; then
+    case "$cmd_arg" in
+      models)
+        if [[ -f "${CODESEEQ_INSTALL_ROOT}/config/model-catalog.json" ]]; then
+          cat "${CODESEEQ_INSTALL_ROOT}/config/model-catalog.json"
+        else
+          echo '{"models":[]}'
+        fi
+        exit 0
+        ;;
+      config)
+        write_host_config
+        printf 'Runtime: host
+'
+        printf 'Bridge: %s
+' "${CODESEEQ_BRIDGE_MODE:-auto}"
+        printf 'Config: %s/config.toml
+' "$HOST_CODEX_HOME"
+        exit 0
+        ;;
+      doctor)
+        echo "CodeSeeq Doctor (host runtime)"
+        echo "=============================="
+        echo "Runtime mode: ${CODESEEQ_RUNTIME_MODE:-auto}"
+        echo "Bridge mode: ${CODESEEQ_BRIDGE_MODE:-auto}"
+        echo "Codex: $(command -v codex 2>/dev/null || echo 'not found')"
+        echo "Python3: $(command -v python3 2>/dev/null || echo 'not found')"
+        echo "Bridge deps: $(python3 -c 'import fastapi,uvicorn,httpx; print("OK")' 2>/dev/null || echo 'missing')"
+        echo "Container runtime: $(command -v podman 2>/dev/null || command -v docker 2>/dev/null || echo 'not found')"
+        echo "Host runtime runnable: $(command -v codex >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && python3 -c 'import fastapi' 2>/dev/null && echo yes || echo no)"
+        echo "DEEPSEEK_API_KEY: $( [[ -n "${DEEPSEEK_API_KEY:-}" ]] && echo set || echo missing)"
+        echo "Config home: ${CODESEEQ_CONFIG_HOME:-$HOME/.config/codeseeq}"
+        exit 0
+        ;;
+      ping*)
+        echo "ping commands require bridge; use container runtime or start bridge manually"
+        exit 1
+        ;;
+      shell)
+        echo "shell requires container runtime; host runtime has no container shell"
+        exit 1
+        ;;
+    esac
+  fi
+  ensure_container_runtime
+  run_safe_container "$@"
+  exit $?
+fi
+
+runtime_mode="$(runtime_mode_resolve)"
+
+use_host=false
+log "runtime_mode=$runtime_mode cmd_arg=$cmd_arg"
+if [[ "$runtime_mode" == "host" ]]; then
+  use_host=true
+  log "runtime: explicit host"
+elif [[ "$runtime_mode" == "auto" ]]; then
+  # Check danger first
+  arg_requests_danger "$@" && ! is_codeseeq_diagnostic_command "$cmd_arg" && use_host=true
+  # Auto-fallback: if no container runtime available but host deps present, use host
+  if [[ "$use_host" != "true" ]]; then
+    if ! command -v podman >/dev/null 2>&1 && ! command -v docker >/dev/null 2>&1 && [[ -z "${CONTAINER:-}" ]]; then
+      log "auto: no container runtime found, checking host deps"
+      if command -v codex >/dev/null 2>&1 && bridge_check_deps_process; then
+        use_host=true
+        log "auto: host deps available, using host runtime"
+      fi
+    else
+      log "auto: container runtime available, will use container"
+    fi
+  fi
+fi
+
+if [[ "$use_host" == "true" ]]; then
   run_host_codex "$@"
 fi
 
+ensure_container_runtime
 run_safe_container "$@"

@@ -114,6 +114,8 @@ fi
 : "${CODESEEQ_RUNTIME_DIR:=/run/codeseeq}"
 : "${CODESEEQ_LOG_DIR:=/var/log/codeseeq}"
 : "${CODESEEQ_OPENRESPONSES_START_TIMEOUT_SECONDS:=45}"
+: "${CODESEEQ_RUNTIME_MODE:=auto}"
+: "${CODESEEQ_BRIDGE_MODE:=auto}"
 : "${CODESEEQ_YOLO:=false}"
 : "${CODESEEQ_HOST_WORKDIR:=}"
 : "${CODESEEQ_WORKSPACE_BANNER:=true}"
@@ -318,7 +320,7 @@ EOF
   cat >> "$CODESEEQ_CODEX_HOME/config.toml" <<EOF
 
 [model_providers.codeseeq]
-name = "CodeSeeq OpenResponses Bridge"
+name = "CodeSeeq DeepSeek Bridge"
 base_url = "${CODESEEQ_OPENRESPONSES_URL}"
 env_key = "DEEPSEEK_API_KEY"
 wire_api = "responses"
@@ -507,6 +509,8 @@ doctor() {
   cat <<EOF
 CodeSeeq Doctor
 ==============
+Runtime mode: ${CODESEEQ_RUNTIME_MODE:-auto}
+Bridge mode: ${CODESEEQ_BRIDGE_MODE:-auto}
 Model (logical): ${CODESEEQ_MODEL}
 Model (provider): ${PROVIDER_MODEL}
 Thinking: ${CODESEEQ_THINKING}
@@ -522,15 +526,17 @@ System prompt path: ${CODESEEQ_SYSTEM_PROMPT_FILE}
 System prompt bytes: $(system_prompt_bytes)
 System prompt lines: $(system_prompt_lines)
 System prompt injection: ${CODESEEQ_SYSTEM_PROMPT_INJECTION}
-OpenResponses URL: ${CODESEEQ_OPENRESPONSES_URL}
-OpenResponses startup command: ${CODESEEQ_OPENRESPONSES_CMD}
-OpenResponses health: ${health_state}
+Bridge URL: ${CODESEEQ_OPENRESPONSES_URL}
+Bridge startup command: ${CODESEEQ_OPENRESPONSES_CMD}
+Bridge health: ${health_state}
 DeepSeek provider: ${deepseek_provider_state}
 DeepSeek provider key: ${deepseek_state}
 Brave web_search: ${brave_state}
 Unstructured doc parsing: ${unstructured_state}
 Streaming/chunked responses: ${stream_state}
-OpenResponses source reference: ./open-responses (official repo)
+Bridge implementation: bin/codeseeq-bridge.py
+Runtime mode: ${CODESEEQ_RUNTIME_MODE:-auto}
+Bridge mode: ${CODESEEQ_BRIDGE_MODE:-auto}
 EOF
 }
 

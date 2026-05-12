@@ -1980,9 +1980,22 @@ async def responses(request: Request) -> Any:
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-if __name__ == "__main__":
+def main():
     import uvicorn
-
-    host = os.environ.get("CODESEEQ_OPENRESPONSES_HOST", "127.0.0.1")
-    port = int(os.environ.get("CODESEEQ_OPENRESPONSES_PORT", "8080"))
+    host = os.environ.get(
+        "CODESEEQ_BRIDGE_HOST",
+        os.environ.get("CODESEEQ_OPENRESPONSES_HOST", "127.0.0.1"),
+    )
+    port = int(
+        os.environ.get(
+            "CODESEEQ_BRIDGE_PORT",
+            os.environ.get("CODESEEQ_OPENRESPONSES_PORT", "8080"),
+        )
+    )
+    if host != "127.0.0.1":
+        log(f"warning: bridge binding to non-localhost address: {host}")
     uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()

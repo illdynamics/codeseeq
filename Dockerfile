@@ -17,10 +17,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Official CLI installs.
-RUN npm install -g "@openai/codex@${CODEX_NPM_VERSION}" open-responses
+RUN npm install -g "@openai/codex@${CODEX_NPM_VERSION}"
 
 # Bridge runtime deps.
-RUN pip3 install --no-cache-dir --break-system-packages fastapi uvicorn httpx
+COPY requirements-bridge.txt /tmp/requirements-bridge.txt
+RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements-bridge.txt &&     rm /tmp/requirements-bridge.txt
 
 # Runtime files.
 COPY bin/codeseeq-entrypoint /usr/local/bin/codeseeq-entrypoint

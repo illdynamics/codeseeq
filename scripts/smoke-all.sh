@@ -46,7 +46,7 @@ echo "[smoke-all] step: models"
 make models CONTAINER="$CONTAINER" IMAGE="$IMAGE" MODEL="$MODEL"
 
 echo "[smoke-all] step: container config/doctor checks"
-./scripts/smoke-openresponses-container.sh
+./scripts/smoke-bridge-container.sh
 
 if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
   echo "[smoke-all] step: ping"

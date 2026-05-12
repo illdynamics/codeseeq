@@ -1,3 +1,65 @@
+## 0.2.9 - 2026-05-12
+
+### Fixed
+- **Flags after `run` now parsed before runtime dispatch.**  
+  `./codeseeq run --runtime-mode host --bridge-mode process "hello"` correctly routes to host runtime.
+- **Host diagnostics no longer require container.**  
+  `models`, `doctor`, and `config` work without Docker/Podman in host runtime mode.
+- **Process bridge cleanup verified.** Owned bridges stopped on all exit paths (EXIT/INT/TERM/HUP).
+- **Prompt temp files no longer leak.** `TMP_FILES` properly tracked after command substitution.
+- **External mode supports `/v1/` trailing slash.**
+- **0.0.0.0 bridge host now writes `127.0.0.1` in client config** (warning printed).
+- **`make bridge-process-smoke` no longer leaks processes.** POSIX-safe script with cleanup trap.
+- **Container bridge smoke updated** with correct model IDs and bridge host binding.
+- **Doctor output cleaned up** — "Bridge URL" instead of "OpenResponses", runtime/bridge mode fields.
+- **Package hygiene strengthened** — `make clean-artifacts`, `make package-check`, docs warn against manual zips.
+- **No Codex source modified.** No upstream `open-responses` runtime dependency.
+
+
+### Added
+
+- **Host-native bridge process mode.** `CODESEEQ_BRIDGE_MODE=process` starts
+  `bin/codeseeq-bridge.py` as a direct child process on the host with no
+  Docker or Podman required. All four bridge modes are supported: `process`,
+  `container`, `external`, and `auto` (default, prefers process when Python
+  dependencies are available, falling back to container).
+- **Host runtime mode.** `CODESEEQ_RUNTIME_MODE=host` launches Codex directly
+  on the host alongside a process bridge, without going through the container
+  runtime at all. `container` and `auto` (default) remain available.
+- **External bridge mode.** `CODESEEQ_BRIDGE_MODE=external` with
+  `CODESEEQ_BRIDGE_BASE_URL` lets CodeSeeq talk to a pre-existing bridge
+  without starting anything locally.
+- **Bridge reuse.** `CODESEEQ_BRIDGE_REUSE=1` causes CodeSeeq to check for a
+  healthy bridge at the configured port and reuse it instead of starting a
+  new one.
+- **CLI flags for bridge configuration.** `--bridge-mode`, `--bridge-url`,
+  and `--bridge-port` are now accepted on the `codeseeq` launcher and the
+  `run` subcommand so bridge mode can be set per-invocation without
+  environment variables.
+
+### Changed
+
+- **Dockerfile no longer pulls `open-responses` npm dependency.** The
+  upstream `open-responses` package was removed from the container image
+  build. The actual runtime bridge is entirely `bin/codeseeq-bridge.py`.
+- **Bridge mode architecture rewrite.** The launcher now has a unified
+  `bridge_start()` abstraction that selects between process, container,
+  external, and auto modes with consistent health-check and cleanup
+  behavior. Process-mode owned bridges are stopped on launcher exit.
+
+### Notes
+
+- No Codex source was modified. The bridge remains a drop-in
+  Responses-compatible API that Codex talks to exactly as it would talk to
+  any OpenAI-compatible provider.
+- `wire_api = "responses"` in the generated Codex config stays because Codex
+  expects that value; it does not mean the upstream `open-responses` package
+  is used.
+
+---
+
+## 0.2.8 - 2026-05-12
+
 ## 0.2.7 - 2026-05-08
 
 ### Added

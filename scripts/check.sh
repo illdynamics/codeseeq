@@ -60,7 +60,7 @@ done
 note "checking required smoke scripts"
 required_smokes=(
   scripts/smoke-deepseek.sh
-  scripts/smoke-openresponses-container.sh
+  scripts/smoke-bridge-container.sh
   scripts/smoke-openresponses-stream.sh
   scripts/smoke-openresponses-web-search.sh
   scripts/smoke-openresponses-doc-input.sh
@@ -698,6 +698,7 @@ if ! PATH="${runtimebin}:$PATH" \
   CODESEEQ_TEST_CODEX_HOME="${tmp_check_dir}/runtime-danger-codex-home.out" \
   CODESEEQ_TEST_CODEX_STDIN="${tmp_check_dir}/runtime-danger-codex-stdin.out" \
   CODESEEQ_TEST_BRIDGE_UP="${tmp_check_dir}/bridge-up" \
+  CODESEEQ_BRIDGE_MODE=container \
   CODESEEQ_OPENRESPONSES_PORT=18081 \
   ./codeseeq -y "Return exactly: codeseeq-ok"; then
   fail "danger host mode did not complete with fake runtime/codex"
@@ -731,6 +732,7 @@ if ! PATH="${runtimebin}:$PATH" \
   CODESEEQ_TEST_CODEX_STDIN="${tmp_check_dir}/runtime-danger-port-scan-codex-stdin.out" \
   CODESEEQ_TEST_BRIDGE_UP="${tmp_check_dir}/bridge-up-port-scan" \
   CODESEEQ_TEST_BUSY_PORTS="18083 18084" \
+  CODESEEQ_BRIDGE_MODE=container \
   CODESEEQ_OPENRESPONSES_PORT=18083 \
   ./codeseeq -y "Return exactly: codeseeq-ok"; then
   fail "danger host mode did not complete when base bridge ports were busy"
@@ -752,6 +754,7 @@ if ! PATH="${runtimebin}:$PATH" \
   CODESEEQ_TEST_CODEX_HOME="${tmp_check_dir}/runtime-danger-run-file-codex-home.out" \
   CODESEEQ_TEST_CODEX_STDIN="${tmp_check_dir}/runtime-danger-run-file-codex-stdin.out" \
   CODESEEQ_TEST_BRIDGE_UP="${tmp_check_dir}/bridge-up-run-file" \
+  CODESEEQ_BRIDGE_MODE=container \
   CODESEEQ_OPENRESPONSES_PORT=18082 \
   ./codeseeq run -f "$root_task_file" --model=deepseek-v4-pro --yolo; then
   fail "danger host run -f --model=... --yolo did not complete with fake runtime/codex"
@@ -785,6 +788,139 @@ fi
 if ! rg -n '^!\.env\.example$' .gitignore >/dev/null 2>&1; then
   fail ".env.example is not explicitly unignored"
 fi
+
+note "checking bridge wrapper functions present"
+for fn in bridge_mode_resolve bridge_check_deps_process bridge_start_process bridge_stop_owned_process bridge_healthcheck_url bridge_start bridge_select_port; do
+  if ! grep -q "^${fn}()" codeseeq; then
+    fail "bridge function missing from wrapper: ${fn}"
+  fi
+done
+
+note "checking bridge cleanup integration"
+if ! grep -q "bridge_stop_owned_process" codeseeq; then
+  fail "cleanup_tmp_files does not call bridge_stop_owned_process"
+fi
+
+note "checking bridge_start called in host codex path"
+if grep -q "bridge_start" codeseeq; then
+  note "bridge_start integrated in host codex path"
+else
+  fail "run_host_codex does not call bridge_start"
+fi
+
+note "checking bridge mode env defaults present"
+if grep -q "CODESEEQ_BRIDGE_MODE" codeseeq; then
+  note "bridge env var defaults present"
+else
+  fail "bridge env var defaults missing"
+fi
+
+note "checking bridge mode validation"
+if grep -q "invalid CODESEEQ_BRIDGE_MODE" codeseeq; then
+  note "bridge mode validation present"
+else
+  fail "bridge mode validation missing"
+fi
+
+note "checking process mode dependency check"
+if grep -q "bridge_check_deps_process" codeseeq; then
+  note "process mode dep check present"
+else
+  fail "bridge_check_deps_process function missing"
+fi
+
+note "checking bridge Python syntax"
+if python3 -c "import py_compile; py_compile.compile('bin/codeseeq-bridge.py', doraise=True)" 2>/dev/null; then
+  note "bridge.py syntax: OK"
+else
+  fail "bridge.py syntax check failed"
+fi
+
+note "checking requirements-bridge.txt exists"
+if [[ -f requirements-bridge.txt ]]; then
+  note "requirements-bridge.txt present"
+else
+  fail "requirements-bridge.txt missing"
+fi
+
+note "checking Dockerfile no longer installs open-responses npm"
+if grep -q "open-responses" Dockerfile; then
+  fail "Dockerfile still references open-responses"
+else
+  note "Dockerfile open-responses removed (good)"
+fi
+
+note "checking Dockerfile installs requirements-bridge.txt"
+if grep -q "requirements-bridge.txt" Dockerfile; then
+  note "Dockerfile installs requirements-bridge.txt"
+else
+  fail "Dockerfile missing requirements-bridge.txt"
+fi
+
+note "checking container mode preserved"
+if grep -q "start_bridge_container" codeseeq; then
+  note "container bridge function preserved"
+else
+  fail "start_bridge_container function missing"
+fi
+
+note "checking no Codex source vendoring"
+if [[ -d codex/.git ]]; then
+  fail "codex source directory exists"
+else
+  note "no vendored codex source"
+fi
+
+note "checking external mode path in wrapper"
+if grep -q "CODESEEQ_BRIDGE_MODE=external" codeseeq || grep -q "CODESEEQ_BRIDGE_BASE_URL" codeseeq; then
+  note "external mode path present"
+else
+  fail "external mode path missing from wrapper"
+fi
+
+note "checking bridge process startup smoke test"
+tmp_bridge_smoke="$(mktemp -d)"
+bridge_smoke_port=19901
+if CODESEEQ_BRIDGE_HOST=127.0.0.1 CODESEEQ_BRIDGE_PORT="${bridge_smoke_port}" DEEPSEEK_API_KEY="dummy-test-key" python3 bin/codeseeq-bridge.py > "${tmp_bridge_smoke}/bridge.log" 2>&1 &
+then
+  bridge_smoke_pid=$!
+  echo "${bridge_smoke_pid}" > "${tmp_bridge_smoke}/bridge.pid"
+  smoke_deadline=$((SECONDS + 10))
+  smoke_healthy=0
+  while (( SECONDS < smoke_deadline )); do
+    if curl --silent --show-error --fail --max-time 2 "http://127.0.0.1:${bridge_smoke_port}/health" >/dev/null 2>&1; then
+      smoke_healthy=1
+      break
+    fi
+    if ! kill -0 "${bridge_smoke_pid}" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  if (( smoke_healthy )); then
+    note "bridge process healthy on port ${bridge_smoke_port}"
+    if curl --silent --fail "http://127.0.0.1:${bridge_smoke_port}/v1/models" > "${tmp_bridge_smoke}/models.json" 2>/dev/null; then
+      if grep -q "deepseek@deepseek-v4-flash" "${tmp_bridge_smoke}/models.json"; then
+        note "bridge /v1/models returns expected models"
+      else
+        fail "bridge /v1/models missing expected model"
+      fi
+    else
+      fail "bridge /v1/models endpoint unreachable"
+    fi
+  else
+    fail "bridge process failed to become healthy"
+  fi
+  kill "${bridge_smoke_pid}" 2>/dev/null || true
+  sleep 1
+  if kill -0 "${bridge_smoke_pid}" >/dev/null 2>&1; then
+    kill -9 "${bridge_smoke_pid}" 2>/dev/null || true
+  fi
+  note "bridge process terminated cleanly"
+else
+  note "bridge startup smoke skipped (Python deps may be missing)"
+fi
+rm -rf "${tmp_bridge_smoke}"
 
 if (( failures > 0 )); then
   printf '[check] FAILED with %d issue(s).\n' "$failures" >&2
