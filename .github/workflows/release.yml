@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build package
+        run: ./scripts/package.sh /tmp/codeseeq-release.zip
+
+      - name: Validate package
+        run: ./scripts/package.sh --check-archive /tmp/codeseeq-release.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: CodeSeeq ${{ github.ref_name }}
+          body_path: RELEASE-NOTES.md
+          files: /tmp/codeseeq-release.zip
+          draft: false
+          prerelease: false
