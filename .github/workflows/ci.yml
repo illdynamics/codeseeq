@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      - name: Shell syntax (bash -n)
+        run: |
+          for f in codeseeq bin/codeseeq-entrypoint scripts/*.sh; do
+            bash -n "$f" || { echo "FAIL: bash -n $f"; exit 1; }
+          done
+          echo "All shell syntax OK"
+
+      - name: ShellCheck
+        run: |
+          shellcheck codeseeq bin/codeseeq-entrypoint scripts/*.sh || true
+
+      - name: Bridge Python syntax
+        run: python3 -m py_compile bin/codeseeq-bridge.py
+
+      - name: Bridge extraction tests
+        run: ./scripts/test-bridge-extraction.py
+
+      - name: Project checks
+        run: ./scripts/check.sh
+
+      - name: Bridge import check
+        run: make bridge-check
+
+      - name: Git whitespace
+        run: git diff --check
+
+  bridge-smoke:
+    name: Bridge Process Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python deps
+        run: python3 -m pip install --quiet -r requirements-bridge.txt
+
+      - name: Smoke test
+        run: make bridge-process-smoke
+
+      - name: Verify no orphans
+        run: |
+          if pgrep -f codeseeq-bridge.py; then
+            echo "FAIL: orphan bridge process found"
+            exit 1
+          fi
+          echo "No orphans"
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create package
+        run: ./scripts/package.sh /tmp/codeseeq-ci.zip
+
+      - name: Validate package
+        run: ./scripts/package.sh --check-archive /tmp/codeseeq-ci.zip
