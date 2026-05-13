@@ -2,7 +2,7 @@
 
 FROM node:22-bookworm-slim
 
-ARG CODEX_NPM_VERSION=latest
+ARG CODEX_NPM_VERSION=0.130.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \

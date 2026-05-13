@@ -11,7 +11,7 @@ OPENRESPONSES_REF ?= repo-local
 CODEX_REPO ?= https://github.com/openai/codex.git
 CODEX_DOCS ?= https://developers.openai.com/codex
 DEEPSEEK_DOCS ?= https://api-docs.deepseek.com/
-CODEX_NPM_VERSION ?= latest
+CODEX_NPM_VERSION ?= 0.130.0
 
 MODEL ?= deepseek-v4-flash
 THINKING ?=

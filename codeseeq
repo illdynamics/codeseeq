@@ -81,6 +81,7 @@ LEGACY_SYSTEM_PROMPT_PATH="${WORKDIR_HOST}/.codeseeq/system-prompt.md"
 : "${CODESEEQ_BRIDGE_STARTUP_TIMEOUT:=10}"
 : "${CODESEEQ_BRIDGE_HEALTH_PATH:=/health}"
 : "${CODESEEQ_BRIDGE_REUSE:=0}"
+: "${CODESEEQ_UNCENSORED_MODE:=false}"
 BRIDGE_OWNED=""
 BRIDGE_PID=""
 
@@ -162,6 +163,10 @@ Bridge modes:
   --bridge-port PORT    Fixed bridge port (omit for auto-select)
   CODESEEQ_BRIDGE_MODE  Set bridge mode via environment
   CODESEEQ_BRIDGE_BASE_URL  Set bridge URL via environment
+
+Uncensored mode:
+  -U, --uncensored-mode  Load Dolfino aka Dirty D uncensored system prompt
+  CODESEEQ_UNCENSORED_MODE Set uncensored mode via environment
 
 Runtime:
   Podman is preferred. Docker is used as a compatible fallback when Podman is
@@ -545,6 +550,30 @@ is_codex_subcommand() {
   esac
 }
 
+# CodeSeeq privacy hardening: block upstream Codex commands that may contact OpenAI/ChatGPT services
+is_blocked_upstream_command() {
+  case "$1" in
+    login|logout|cloud|app|app-server|plugin|update|features|remote-control)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+block_upstream_codex_commands() {
+  local cmd_arg="$1"
+  if is_blocked_upstream_command "$cmd_arg"; then
+    if is_truthy "${CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES:-false}"; then
+      warn "CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true: allowing potentially risky upstream Codex command: ${cmd_arg}"
+      return 0
+    fi
+    die "disabled in CodeSeeq privacy mode: this upstream Codex command may contact OpenAI/ChatGPT services or modify/update Codex state (set CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true to override)"
+  fi
+  return 0
+}
+
 codex_option_takes_value() {
   case "$1" in
     --model|-m|--sandbox|--sanbox|-s|-p|--profile|--prompt|--cd|-C|--ask-for-approval|-a|--config|-c|--output-last-message|-o|--output-schema|--color|--image|-i|--add-dir|--enable|--disable|--remote|--remote-auth-token-env|--local-provider)
@@ -599,7 +628,7 @@ split_direct_prompt_args() {
 
 require_deepseek_key() {
   [[ -n "${DEEPSEEK_API_KEY:-}" ]] || die "DEEPSEEK_API_KEY is required"
-  export OPENAI_API_KEY="${OPENAI_API_KEY:-$DEEPSEEK_API_KEY}"
+  # CodeSeeq privacy hardening: OPENAI_API_KEY is no longer auto-populated from DEEPSEEK_API_KEY
 }
 
 write_host_config() {
@@ -616,6 +645,23 @@ sandbox_mode = "${CODESEEQ_SANDBOX_MODE}"
 model_context_window = ${CODESEEQ_CONTEXT_WINDOW}
 model_supports_reasoning_summaries = false
 model_reasoning_summary = "none"
+
+web_search = "live"
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[otel]
+exporter = "none"
+metrics_exporter = "none"
+trace_exporter = "none"
+log_user_prompt = false
+
+[history]
+persistence = "none"
 EOF
 
   if system_prompt_present; then
@@ -1259,7 +1305,7 @@ run_safe_container() {
 
 run_host_codex() {
   require_deepseek_key
-  command -v codex >/dev/null 2>&1 || die "host runtime requires local Codex CLI. Install it with: npm install -g @openai/codex"
+  command -v codex >/dev/null 2>&1 || die "host runtime requires local Codex CLI. Install it with: npm install -g @openai/codex@0.130.0 (pinned version)"
 
   local danger=false
   if arg_requests_danger "$@"; then
@@ -1296,6 +1342,10 @@ run_host_codex() {
   elif [[ "${1:-}" == "codex" ]]; then
     shift
     mode="passthrough"
+    # CodeSeeq privacy hardening: block upstream Codex passthrough commands
+    if (( ${#passthrough[@]} > 0 )); then
+      block_upstream_codex_commands "${passthrough[0]}"
+    fi
     passthrough=("$@")
   else
     while (( $# > 0 )); do
@@ -1484,16 +1534,15 @@ exec "${CODESEEQ_INSTALL_DIR}/codeseeq" "\$@"
 LEOF
   chmod +x "$launcher"
 
-  # Install upstream Codex CLI if missing
+  # CodeSeeq privacy hardening: do not auto-install @openai/codex@latest
+  # Pinned version: manually install if needed
   if command -v codex >/dev/null 2>&1; then
     log "codex CLI found: $(command -v codex)"
-  elif command -v npm >/dev/null 2>&1; then
-    log "installing @openai/codex globally via npm ..."
-    npm install -g @openai/codex || log "WARN: npm install failed; install manually: npm install -g @openai/codex"
   else
-    log "WARN: npm not found; install Codex CLI manually: npm install -g @openai/codex"
+    log "codex CLI not found. CodeSeeq uses a pinned Codex version (0.130.0)."
+    log "Install manually if needed: npm install -g @openai/codex@0.130.0"
+    log "Set CODESEEQ_ALLOW_LATEST_RELEASE=true to allow latest version fetching."
   fi
-
   # Install Python bridge deps if python3 available
   if [[ -f "${CODESEEQ_INSTALL_DIR}/requirements-bridge.txt" ]]; then
     if command -v python3 >/dev/null 2>&1; then
@@ -2008,6 +2057,10 @@ while (( $# > 0 )); do
       CODESEEQ_BRIDGE_REUSE=0
       shift
       ;;
+    -U|--uncensored-mode)
+      CODESEEQ_UNCENSORED_MODE=true
+      shift
+      ;;
     --runtime-mode)
       [[ $# -ge 2 ]] || die "$1 requires a value"
       CODESEEQ_RUNTIME_MODE="$2"
@@ -2024,10 +2077,30 @@ while (( $# > 0 )); do
   esac
 done
 # Restore argv without consumed CodeSeeq flags
-set -- "${_CODESEEQ_KEPT_ARGS[@]}"
+set -- "${_CODESEEQ_KEPT_ARGS[@]+"${_CODESEEQ_KEPT_ARGS[@]}"}"
 unset _CODESEEQ_KEPT_ARGS
 
+
+# CodeSeeq uncensored mode: load Dolfino aka Dirty D system prompt
+if is_truthy "${CODESEEQ_UNCENSORED_MODE:-false}"; then
+  # Prevent recursion on re-entry; unset CODESEEQ_UNCENSORED_MODE in child
+  _CODESEEQ_UNCENSORED_DONE="${CODESEEQ_UNCENSORED_DONE:-false}"
+  if is_truthy "$_CODESEEQ_UNCENSORED_DONE"; then
+    : # already applied, skip
+  else
+    CODESEEQ_UNCENSORED_DONE=true
+    UNCENSORED_MD="${CODESEEQ_INSTALL_ROOT}/config/uncensored.md"
+    if [[ -f "$UNCENSORED_MD" ]]; then
+      log "uncensored mode: loading Dolfino aka Dirty D system prompt"
+      CODESEEQ_UNCENSORED_MODE=false "$SELF_PATH" system add -f "$UNCENSORED_MD"
+    else
+      die "uncensored.md not found at ${UNCENSORED_MD}"
+    fi
+  fi
+fi
 cmd_arg="$(first_command_arg "$@" || true)"
+# CodeSeeq privacy hardening: block upstream Codex commands by default
+block_upstream_codex_commands "$cmd_arg"
 
 # Diagnostic / management commands always run via CodeSeeq, not passed to Codex
 if is_codeseeq_diagnostic_command "$cmd_arg"; then
