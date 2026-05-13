@@ -153,11 +153,43 @@ This does not grant the container extra paths. It only explains where the
 - No `codex login` flow is required for CodeSeeq model requests.
 - Generated provider config uses `env_key = "DEEPSEEK_API_KEY"`.
 - Generated provider config uses `requires_openai_auth = false`.
-- `OPENAI_API_KEY` may be exported as a compatibility alias to `DEEPSEEK_API_KEY`
-  for OpenAI-shaped tooling.
+- `OPENAI_API_KEY` is no longer auto-populated from `DEEPSEEK_API_KEY` for privacy hardening.
+
+## Privacy Hardening
+
+CodeSeeq applies privacy hardening by default in every generated Codex config:
+
+```toml
+web_search = "live"
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[otel]
+exporter = "none"
+metrics_exporter = "none"
+trace_exporter = "none"
+log_user_prompt = false
+
+[history]
+persistence = "none"
+```
+
+Additional hardening beyond telemetry:
+
+- **Upstream Codex commands blocked:** `login`, `logout`, `cloud`, `app`, `app-server`, `plugin`, `update`, `features`, and `remote-control` are blocked by default. Set `CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true` to override.
+- **Codex version pinned:** The Dockerfile and Makefile use a pinned `CODEX_NPM_VERSION` (default: `0.130.0`) instead of `latest`. Set `CODESEEQ_ALLOW_LATEST_RELEASE=true` to allow latest release fetching in the installer.
+- **No OPENAI_API_KEY aliasing:** `DEEPSEEK_API_KEY` is used directly. It is not exported as `OPENAI_API_KEY`.
+- **Network diagnostics guard:** Use `CODESEEQ_ALLOW_NETWORK_DIAGNOSTICS=true` to enable diagnostics that contact third-party services outside the normal model/web-search path.
 
 ## Network Scope
 
+- Live web search is enabled and routed through the CodeSeeq/Brave bridge path.
+- Model requests go exclusively to DeepSeek.
+- Diagnostics that contact non-DeepSeek services require explicit opt-in.
 - Safe-mode bridge binds to `127.0.0.1` inside the container.
 - Danger host-mode bridge is published to the first free host port starting at
   `CODESEEQ_BRIDGE_PORT` or auto-selected.

@@ -903,6 +903,127 @@ else
 fi
 rm -rf "${tmp_bridge_smoke}"
 
+
+note "checking privacy hardening: generated config assertions"
+privacy_tmp="$(mktemp -d)"
+if ! CODESEEQ_CODEX_HOME="${privacy_tmp}/.codeseeq" \
+  CODESEEQ_WORKDIR="${privacy_tmp}/workspace" \
+  CODESEEQ_RUNTIME_DIR="${privacy_tmp}/run" \
+  CODESEEQ_LOG_DIR="${privacy_tmp}/log" \
+  DEEPSEEK_API_KEY="dummy-test-key" \
+  ./bin/codeseeq-entrypoint config > "${privacy_tmp}/config-privacy.out"; then
+  fail "codeseeq-entrypoint config generation failed (privacy check)"
+else
+  privacy_config="${privacy_tmp}/.codeseeq/config.toml"
+  cat "$privacy_config" > "${privacy_tmp}/raw-config.toml"
+  # Required privacy settings must be present
+  for required in \
+    'web_search = "live"' \
+    '[analytics]' \
+    'enabled = false' \
+    '[feedback]' \
+    '[otel]' \
+    'exporter = "none"' \
+    'metrics_exporter = "none"' \
+    'trace_exporter = "none"' \
+    'log_user_prompt = false' \
+    '[history]' \
+    'persistence = "none"'; do
+    if ! grep -Fq -- "$required" "${privacy_config}"; then
+      fail "generated config missing privacy setting: ${required}"
+    fi
+  done
+  # Forbidden settings must NOT be present
+  for forbidden in \
+    'web_search = "cached"' \
+    'OPENAI_API_KEY="${OPENAI_API_KEY:-$DEEPSEEK_API_KEY}"' \
+    'CODEX_NPM_VERSION=latest' \
+    '@openai/codex@latest'; do
+    if grep -Fq -- "$forbidden" "${privacy_config}"; then
+      fail "generated config contains forbidden pattern: ${forbidden}"
+    fi
+  done
+  # Verify env_key is DEEPSEEK_API_KEY and requires_openai_auth is false
+  if ! grep -Fq 'env_key = "DEEPSEEK_API_KEY"' "${privacy_config}"; then
+    fail "generated config missing env_key = \"DEEPSEEK_API_KEY\""
+  fi
+  if ! grep -Fq 'requires_openai_auth = false' "${privacy_config}"; then
+    fail "generated config missing requires_openai_auth = false"
+  fi
+fi
+
+
+note "checking privacy hardening: host wrapper config assertions"
+# Host wrapper config verified by checking source code directly
+for required in \
+  'web_search = "live"' \
+  '[analytics]' \
+  'enabled = false' \
+  '[feedback]' \
+  '[otel]' \
+  'exporter = "none"' \
+  'metrics_exporter = "none"' \
+  'trace_exporter = "none"' \
+  'log_user_prompt = false' \
+  '[history]' \
+  'persistence = "none"'; do
+  if ! grep -Fq -- "$required" codeseeq 2>/dev/null; then
+    fail "host wrapper (codeseeq) missing privacy config setting: ${required}"
+  fi
+done
+# Verify the privacy block appears in write_host_config context
+if ! grep -A50 "write_host_config" codeseeq | grep -Fq "web_search"; then
+  fail "host wrapper write_host_config missing privacy block"
+fi
+note "checking privacy hardening: OPENAI_API_KEY is not auto-exported from DEEPSEEK_API_KEY"
+if grep -Fq 'export OPENAI_API_KEY="${OPENAI_API_KEY:-$DEEPSEEK_API_KEY}"' codeseeq 2>/dev/null; then
+  fail "root wrapper still exports OPENAI_API_KEY from DEEPSEEK_API_KEY"
+fi
+if grep -Fq 'export OPENAI_API_KEY="${OPENAI_API_KEY:-$DEEPSEEK_API_KEY}"' bin/codeseeq-entrypoint 2>/dev/null; then
+  fail "entrypoint still exports OPENAI_API_KEY from DEEPSEEK_API_KEY"
+fi
+
+note "checking privacy hardening: pinned Codex version (not latest)"
+if grep -Fq 'CODEX_NPM_VERSION=latest' Dockerfile 2>/dev/null; then
+  fail "Dockerfile still uses CODEX_NPM_VERSION=latest"
+fi
+if grep -Fq 'CODEX_NPM_VERSION ?= latest' Makefile 2>/dev/null; then
+  fail "Makefile still uses CODEX_NPM_VERSION ?= latest"
+fi
+if grep -Fq 'npm install -g @openai/codex' scripts/install-local.sh 2>/dev/null && \
+   ! grep -Fq '@openai/codex@0.130.0' scripts/install-local.sh 2>/dev/null; then
+  fail "install-local.sh still auto-installs @openai/codex without pinned version"
+fi
+
+note "checking privacy hardening: blocked upstream commands"
+fakebin="${tmp_check_dir}/fakebin"
+if PATH="${fakebin}:$PATH" \
+  ./codeseeq login > "${tmp_check_dir}/blocked-login.out" 2>"${tmp_check_dir}/blocked-login.err"; then
+  fail "upstream command 'login' was NOT blocked"
+elif ! grep -Fq 'disabled in CodeSeeq privacy mode' "${tmp_check_dir}/blocked-login.err"; then
+  fail "blocked command 'login' did not print privacy mode error"
+fi
+
+for blocked_cmd in cloud app app-server plugin update features; do
+  if PATH="${fakebin}:$PATH" \
+    ./codeseeq "$blocked_cmd" > "${tmp_check_dir}/blocked-${blocked_cmd}.out" 2>"${tmp_check_dir}/blocked-${blocked_cmd}.err"; then
+    fail "upstream command '${blocked_cmd}' was NOT blocked"
+  elif ! grep -Fq 'disabled in CodeSeeq privacy mode' "${tmp_check_dir}/blocked-${blocked_cmd}.err"; then
+    fail "blocked command '${blocked_cmd}' did not print privacy mode error"
+  fi
+done
+
+note "checking privacy hardening: CODE_NPM_VERSION pinned in Dockerfile"
+if ! grep -Fq 'ARG CODEX_NPM_VERSION=0.130.0' Dockerfile 2>/dev/null; then
+  fail "Dockerfile does not pin CODEX_NPM_VERSION to 0.130.0"
+fi
+
+note "checking privacy hardening: CODE_NPM_VERSION pinned in Makefile"
+if ! grep -Fq 'CODEX_NPM_VERSION ?= 0.130.0' Makefile 2>/dev/null; then
+  fail "Makefile does not pin CODEX_NPM_VERSION to 0.130.0"
+fi
+
+rm -rf "${privacy_tmp}"
 if (( failures > 0 )); then
   printf '[check] FAILED with %d issue(s).\n' "$failures" >&2
   exit 1

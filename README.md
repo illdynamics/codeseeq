@@ -142,7 +142,7 @@ npm install -g @openai/codex
 
 ## How It Works
 
-CodeSeeq does not fork or patch Codex. It launches the upstream Codex CLI with an isolated generated `config.toml`. That config points Codex at a local CodeSeeq bridge implementing the OpenAI Responses API. The bridge translates requests to DeepSeek Chat Completions and converts responses back to the format Codex expects.
+CodeSeeq does not fork or patch Codex. It launches the upstream Codex CLI with an isolated generated `config.toml`. That config points Codex at a local CodeSeeq bridge implementing the OpenAI Responses API. The bridge translates requests to DeepSeek Chat Completions and converts responses back to the format Codex expects. The generated config includes privacy hardening settings: live web search, disabled analytics/feedback/OTel/history, and DeepSeek-only auth with no OpenAI key aliasing.
 
 ## Bridge Modes
 
@@ -447,6 +447,38 @@ The release job is gated behind `needs: [static, project, bridge-smoke, docker]`
 
 Local reference paths mentioned by older docs, such as `./codex` and `./open-responses`, may be absent from a minimal checkout. This repository's runtime does not depend on Docker Compose or the upstream `open-responses` npm package.
 
+
+## Privacy Hardening
+
+CodeSeeq applies privacy hardening by default:
+
+| Setting | Value |
+|---------|-------|
+| **Model provider** | DeepSeek via local bridge |
+| **Web search** | Live (not cached) |
+| **Analytics** | Disabled |
+| **Feedback** | Disabled |
+| **OpenTelemetry log exporter** | None |
+| **OpenTelemetry metrics exporter** | None |
+| **OpenTelemetry trace exporter** | None |
+| **Raw user prompt logging** | Disabled |
+| **History persistence** | None |
+| **Upstream OpenAI/Codex commands** | Blocked (`login`, `logout`, `cloud`, `app`, `app-server`, `plugin`, `update`, `features`) |
+| **OPENAI_API_KEY from DEEPSEEK_API_KEY** | Not auto-populated |
+| **Codex version** | Pinned (no auto-update) |
+| **Latest release auto-fetch** | Requires `CODESEEQ_ALLOW_LATEST_RELEASE=true` |
+
+### Override upstream Codex commands
+
+```bash
+CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true ./codeseeq login
+```
+
+### Override pinned release
+
+```bash
+CODESEEQ_ALLOW_LATEST_RELEASE=true curl -fsSL ... | bash
+```
 ## License
 
 Licensed under the Apache License, Version 2.0 (Apache-2.0).

@@ -306,6 +306,23 @@ sandbox_mode = "${CODESEEQ_SANDBOX_MODE}"
 model_context_window = ${CODESEEQ_CONTEXT_WINDOW}
 model_supports_reasoning_summaries = false
 model_reasoning_summary = "none"
+
+web_search = "live"
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[otel]
+exporter = "none"
+metrics_exporter = "none"
+trace_exporter = "none"
+log_user_prompt = false
+
+[history]
+persistence = "none"
 EOF
 
   if system_prompt_present; then
@@ -348,8 +365,8 @@ print_config() {
 
 require_deepseek_key() {
   [[ -n "${DEEPSEEK_API_KEY:-}" ]] || die "DEEPSEEK_API_KEY is required"
-  # Compatibility for OpenAI-shaped clients and OpenResponses ecosystem tooling.
-  export OPENAI_API_KEY="${OPENAI_API_KEY:-$DEEPSEEK_API_KEY}"
+  # CodeSeeq privacy hardening: OPENAI_API_KEY is no longer auto-populated from DEEPSEEK_API_KEY
+  # (removed per privacy hardening)
 }
 
 ping_deepseek() {
@@ -711,6 +728,29 @@ is_codex_subcommand() {
       ;;
   esac
 }
+# CodeSeeq privacy hardening: block upstream Codex commands that may contact OpenAI/ChatGPT services
+is_blocked_upstream_command() {
+  case "$1" in
+    login|logout|cloud|app|app-server|plugin|update|features|remote-control)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+block_upstream_codex_commands() {
+  local cmd_arg="$1"
+  if is_blocked_upstream_command "$cmd_arg"; then
+    if [[ "$(bool_normalize "${CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES:-false}")" == "true" ]]; then
+      warn "CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true: allowing potentially risky upstream Codex command: ${cmd_arg}"
+      return 0
+    fi
+    die "disabled in CodeSeeq privacy mode: this upstream Codex command may contact OpenAI/ChatGPT services or modify/update Codex state (set CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true to override)"
+  fi
+  return 0
+}
 
 codex_option_takes_value() {
   case "$1" in
@@ -900,6 +940,9 @@ export CODESEEQ_YOLO CODESEEQ_APPROVAL_POLICY CODESEEQ_SANDBOX_MODE
 
 normalize_model "$CODESEEQ_MODEL" "$CODESEEQ_THINKING"
 export CODEX_HOME="$CODESEEQ_CODEX_HOME"
+
+# CodeSeeq privacy hardening: block upstream Codex commands by default
+block_upstream_codex_commands "${1:-}"
 
 case "${1:-}" in
   "")

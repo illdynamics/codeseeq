@@ -134,7 +134,7 @@ In that mode CodeSeeq starts a bridge (process or container), then runs local ho
 Install Codex locally:
 
 ```bash
-npm install -g @openai/codex
+npm install -g @openai/codex@0.130.0
 ```
 
 CodeSeeq will not silently fall back to container Codex for danger-full-access, because that would not be host full access.
@@ -180,6 +180,60 @@ Expected provider fields:
 - `requires_openai_auth = false`
 
 Also verify `CODEX_HOME` is `.codeseeq`, not `~/.codex`.
+
+## Upstream Codex Commands Blocked
+
+If you see:
+
+```
+disabled in CodeSeeq privacy mode: this upstream Codex command may contact OpenAI/ChatGPT services
+```
+
+CodeSeeq blocks these upstream Codex commands by default:
+
+- `login`, `logout`, `cloud`, `app`, `app-server`, `plugin`, `update`, `features`
+
+To allow a specific command:
+
+```bash
+CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true ./codeseeq login
+```
+
+## Codex Auto-Update / Latest Version Disabled
+
+CodeSeeq pins the Codex version instead of using `@openai/codex@latest`. If you need Codex CLI installed manually:
+
+```bash
+npm install -g @openai/codex@0.130.0
+```
+
+The installer also requires `CODESEEQ_ALLOW_LATEST_RELEASE=true` to fetch the latest release.
+
+## Privacy Settings Not In Config
+
+Run `./codeseeq config` to verify the generated config includes:
+
+```toml
+web_search = "live"
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[otel]
+exporter = "none"
+metrics_exporter = "none"
+trace_exporter = "none"
+log_user_prompt = false
+
+[history]
+persistence = "none"
+```
+
+If any of these are missing, make sure you are running the latest CodeSeeq with privacy hardening applied.
+
 
 ## System Prompt Missing
 
