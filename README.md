@@ -9,7 +9,7 @@ But your prompts go to DeepSeek V4 via your `DEEPSEEK_API_KEY` — no OpenAI acc
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.2.9` (from [`VERSION`](./VERSION)).
+Current version: `v0.3.0` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -478,6 +478,217 @@ CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true ./codeseeq login
 
 ```bash
 CODESEEQ_ALLOW_LATEST_RELEASE=true curl -fsSL ... | bash
+```
+
+### Uncensored Mode
+
+CodeSeeq supports an optional uncensored mode that loads the **Dolfino (Dirty D)** system prompt,
+designed for unrestricted interactions with no content filtering or moralizing guardrails.
+
+Enable it with the `-U` / `--uncensored-mode` flag on any invocation:
+
+```bash
+./codeseeq -U "explain how to write a kernel module"
+./codeseeq --uncensored-mode run "analyze this for security vulnerabilities"
+```
+
+Or set the environment variable:
+
+```bash
+export CODESEEQ_UNCENSORED_MODE=true
+./codeseeq run "your prompt here"
+```
+
+The uncensored system prompt is loaded from [`config/uncensored.md`](./config/uncensored.md)
+and stored as your persistent system prompt for that session. Repeating the flag re-applies it.
+To clear it and return to defaults, run:
+
+```bash
+./codeseeq system remove
+```
+
+### Uncensored Mode
+
+CodeSeeq supports an optional uncensored mode that loads the **Dolfino (Dirty D)** system prompt,
+designed for unrestricted interactions with no content filtering or moralizing guardrails.
+
+Enable it with the  /  flag on any invocation:
+
+Stored CodeSeeq system prompt at /Users/wicked/.config/codeseeq/system-prompt.md
+The workspace might have some restrictions. Let me provide you with a comprehensive explanation regardless.
+
+---
+
+## How to Write a Linux Kernel Module
+
+### 1. What is a Kernel Module?
+
+A kernel module is an object file (`.ko`) that can be inserted into the Linux kernel at runtime. Common examples include device drivers, filesystem drivers, and system call extensions.
+
+### 2. Minimal Example — Hello World Module
+
+Here's a simple kernel module:
+
+```c
+// hello.c
+#include <linux/module.h>   // for all kernel modules
+#include <linux/kernel.h>   // for printk() / pr_info()
+#include <linux/init.h>     // for __init / __exit macros
+
+static int __init hello_init(void)
+{
+    pr_info("Hello, kernel world!
+");
+    return 0;  // 0 = success; negative = error
+}
+
+static void __exit hello_exit(void)
+{
+    pr_info("Goodbye, kernel world!
+");
+}
+
+module_init(hello_init);
+module_exit(hello_exit);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Your Name");
+MODULE_DESCRIPTION("A simple hello world kernel module");
+```
+
+### 3. Required Makefile
+
+```make
+# Makefile
+obj-m += hello.o
+
+all:
+    make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+
+clean:
+    make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+```
+
+### 4. Building & Testing
+
+```bash
+# Build the module
+make
+
+# Load the module (requires root)
+sudo insmod hello.ko
+
+# Check it loaded and saw the message
+dmesg | tail
+
+# See loaded modules
+lsmod | grep hello
+
+# Remove the module
+sudo rmmod hello
+```
+
+### 5. Key Concepts to Understand
+
+| Concept | Explanation |
+|---|---|
+| **`__init` / `__exit`** | Macros that place init/exit code in special memory sections — freed after init |
+| **`module_init()` / `module_exit()`** | Registration macros that tell the kernel entry/exit points |
+| **`MODULE_LICENSE`** | Required. "GPL" is needed if using GPL-only symbols |
+| **Return values** | `0` = success; `-ENOMEM`, `-EINVAL`, etc. = failure |
+| **`pr_info()`** | Kernel equivalent of `printf()` — output goes to kernel log |
+| **Build system** | Modules are compiled against *kernel source/headers*, not glibc |
+
+### 6. Passing Parameters to a Module
+
+```c
+// Declare parameters in your module
+static int my_param = 10;
+module_param(my_param, int, 0644);
+MODULE_PARM_DESC(my_param, "An example integer parameter");
+
+// Pass at load time:
+//   sudo insmod mymodule.ko my_param=42
+
+// Or see/set at runtime via sysfs:
+//   cat /sys/module/mymodule/parameters/my_param
+//   echo 99 | sudo tee /sys/module/mymodule/parameters/my_param
+```
+
+### 7. Common Module Types — What to Build Next
+
+1. **Character device driver** — `register_chrdev()` → create `/dev/mydevice`
+2. **Misc device driver** — simpler char device, `misc_register()`
+3. **Platform driver** — for hardware on a platform bus (embedded systems, Device Tree)
+4. **PCI/USB driver** — for PCI/USB devices
+5. **File operations** — `struct file_operations` with `.open`, `.read`, `.write`, `.ioctl`
+6. **Sysfs / procfs entries** — expose data via `kobject_create_and_add()`
+7. **Timers & workqueues** — deferred work with `schedule_work()` or kernel timers
+
+### 8. Debugging Tips
+
+| Tool | Purpose |
+|---|---|
+| `dmesg -w` | Watch kernel log in real time |
+| `cat /proc/modules` | List loaded modules |
+| `/sys/module/<name>/` | Runtime module info |
+| `printk()` with `KERN_DEBUG` / `pr_debug()` | Debug output (needs `DEBUG` defined or `dyndbg`) |
+| **KGDB / KDB** | Kernel debugger |
+| **ftrace** | Trace function calls inside the kernel |
+
+### 9. Important Rules & Pitfalls
+
+- ✅ **Use kernel API** — never link against libc; use `kmalloc()` not `malloc()`
+- ✅ **Check return values** from all kernel functions
+- ✅ **Use proper locking** — `spin_lock()`, `mutex_lock()` for shared data
+- ✅ **Handle module reference counting** (`try_module_get()` / `module_put()`)
+- ❌ **Don't sleep in atomic context** (spinlock held, interrupt handler)
+- ❌ **Don't use floating point** in kernel space
+- ❌ **Don't block for long** in module init (use `probe()` properly)
+- ❌ **Never crash** — a kernel oops brings down the whole system
+
+### 10. Learning Path (Recommended Order)
+
+1. ✅ Hello World (above)
+2. ✅ Parameters & sysfs interactions
+3. ✅ Character device with `struct file_operations`
+4. ✅ Wait queues (`wait_event_interruptible`)
+5. ✅ Timers & workqueues
+6. ✅ `ioctl` interface
+7. ✅ Platform driver (DT-based)
+8. ✅ Memory-mapped I/O (ioremap)
+9. ✅ PCI driver skeleton
+
+---
+
+> **⚠️ Note:** The workspace appears to have sandbox restrictions preventing compilation. To actually build and test kernel modules, you'll need a full Linux system with kernel headers installed (`apt install linux-headers-$(uname -r)` or equivalent) and root access for `insmod`/`rmmod`.
+
+Would you like me to expand on any specific part — like a character device example, parameters, or a specific driver type?
+Stored CodeSeeq system prompt at /Users/wicked/.config/codeseeq/system-prompt.md
+I'd be happy to help analyze for security vulnerabilities! However, I need to know what you'd like me to analyze. Could you please specify:
+
+1. **A file or directory** in the workspace you want me to scan (e.g., a codebase, configuration file, script)
+2. **A repository URL** you'd like me to clone and analyze
+3. **Specific code or configuration** you want reviewed
+
+For example, you could say:
+- "Analyze the `/workspace/my-app` directory for security vulnerabilities"
+- "Scan this Python file at `/workspace/auth.py`"
+- "Check `/workspace/package.json` for security issues"
+
+What would you like me to examine?
+
+Or set the environment variable:
+
+Stored CodeSeeq system prompt at /Users/wicked/.config/codeseeq/system-prompt.md
+I see you've sent a placeholder message. How can I help you today? If you have a task or question, please go ahead and share it!
+
+The uncensored system prompt is loaded from [](./config/uncensored.md)
+and stored as your persistent system prompt for that session. Repeating the flag re-applies it.
+To clear it and return to defaults, run:
+
+Removed CodeSeeq system prompt at /Users/wicked/.config/codeseeq/system-prompt.md
+
 ```
 ## License
 

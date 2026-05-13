@@ -2077,18 +2077,25 @@ while (( $# > 0 )); do
   esac
 done
 # Restore argv without consumed CodeSeeq flags
-set -- "${_CODESEEQ_KEPT_ARGS[@]}"
+set -- "${_CODESEEQ_KEPT_ARGS[@]+"${_CODESEEQ_KEPT_ARGS[@]}"}"
 unset _CODESEEQ_KEPT_ARGS
 
 
 # CodeSeeq uncensored mode: load Dolfino aka Dirty D system prompt
 if is_truthy "${CODESEEQ_UNCENSORED_MODE:-false}"; then
-  UNCENSORED_MD="${CODESEEQ_INSTALL_ROOT}/config/uncensored.md"
-  if [[ -f "$UNCENSORED_MD" ]]; then
-    log "uncensored mode: loading Dolfino aka Dirty D system prompt"
-    "$SELF_PATH" system add -f "$UNCENSORED_MD"
+  # Prevent recursion on re-entry; unset CODESEEQ_UNCENSORED_MODE in child
+  _CODESEEQ_UNCENSORED_DONE="${CODESEEQ_UNCENSORED_DONE:-false}"
+  if is_truthy "$_CODESEEQ_UNCENSORED_DONE"; then
+    : # already applied, skip
   else
-    die "uncensored.md not found at ${UNCENSORED_MD}"
+    CODESEEQ_UNCENSORED_DONE=true
+    UNCENSORED_MD="${CODESEEQ_INSTALL_ROOT}/config/uncensored.md"
+    if [[ -f "$UNCENSORED_MD" ]]; then
+      log "uncensored mode: loading Dolfino aka Dirty D system prompt"
+      CODESEEQ_UNCENSORED_MODE=false "$SELF_PATH" system add -f "$UNCENSORED_MD"
+    else
+      die "uncensored.md not found at ${UNCENSORED_MD}"
+    fi
   fi
 fi
 cmd_arg="$(first_command_arg "$@" || true)"

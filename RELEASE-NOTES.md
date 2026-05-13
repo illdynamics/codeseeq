@@ -1,3 +1,54 @@
+## v0.3.0 - 2026-05-14
+
+### Added
+- **Uncensored mode (`-U` / `--uncensored-mode`).** Loads the Dolfino (Dirty D)
+  uncensored system prompt from `config/uncensored.md` for unrestricted interactions
+  with no content filtering or moralizing guardrails. Also settable via
+  `CODESEEQ_UNCENSORED_MODE=true` environment variable. The flag is safe to use
+  alongside any other CodeSeeq flags and subcommands.
+- **Privacy hardening (default-on).** Every generated Codex config now includes:
+  - `web_search = "live"` — live web search enabled
+  - `[analytics] enabled = false` — analytics disabled
+  - `[feedback] enabled = false` — feedback disabled
+  - `[otel] exporter/metrics_exporter/trace_exporter = "none"` — all OpenTelemetry
+    pipelines disabled
+  - `[otel] log_user_prompt = false` — raw prompt content not logged
+  - `[history] persistence = "none"` — history persistence disabled
+- **Upstream Codex command blocking.** Commands that contact OpenAI/ChatGPT services
+  (`login`, `logout`, `cloud`, `app`, `app-server`, `plugin`, `update`, `features`,
+  `remote-control`) are blocked by default with a clear error message. Override via
+  `CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true`.
+- **`OPENAI_API_KEY` no longer auto-populated from `DEEPSEEK_API_KEY`.** Direct
+  DeepSeek-only auth; no implicit key aliasing for OpenAI-shaped tooling.
+- **Codex version pinned to `0.130.0`.** Both Dockerfile (`ARG CODEX_NPM_VERSION`)
+  and Makefile (`CODEX_NPM_VERSION`) default to a pinned release instead of `latest`.
+  Installer no longer auto-fetches `@openai/codex@latest` without
+  `CODESEEQ_ALLOW_LATEST_RELEASE=true`.
+
+### Fixed
+- **Bash 3.2 compatibility for empty array expansion.** The `_CODESEEQ_KEPT_ARGS`
+  array expansion at end of flag pre-parse loop now uses the `${array[@]+"${array[@]}"}`
+  pattern to avoid "unbound variable" errors on macOS (bash 3.2) and other older
+  shells. Fixes `./codeseeq --uncensored-mode` and other invocations that consume
+  CodeSeeq-specific flags without passing any remaining arguments to Codex.
+- **Uncensored mode recursion guard.** The uncensored mode code now sets
+  `CODESEEQ_UNCENSORED_DONE=true` and unsets `CODESEEQ_UNCENSORED_MODE` in the
+  child process to prevent infinite recursion when `"$SELF_PATH" system add -f`
+  re-enters the launcher with the same env var set.
+
+### Changed
+- **Installer no longer auto-installs `@openai/codex`.** The `install` subcommand
+  no longer runs `npm install -g @openai/codex`. Users install Codex manually with
+  `npm install -g @openai/codex@0.130.0` (pinned version shown in the error message).
+- **Host runtime Codex version check prints pinned version.**
+  `run_host_codex()` now tells users to install `@openai/codex@0.130.0` instead of
+  the unversioned package.
+- **`check.sh` extended.** New assertions validate privacy hardening config content,
+  blocked upstream commands, pinned `CODEX_NPM_VERSION` in both Dockerfile and
+  Makefile, and that `OPENAI_API_KEY` is not auto-exported from `DEEPSEEK_API_KEY`.
+
+---
+
 ## v0.2.9 - 2026-05-12
 
 ### Fixed
