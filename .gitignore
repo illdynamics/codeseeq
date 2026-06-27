@@ -31,3 +31,5 @@ venv/
 /run/
 /var/log/
 data/
+skills
+skills/**

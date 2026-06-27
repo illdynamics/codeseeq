@@ -42,6 +42,45 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 app = FastAPI()
 
+# ---------------------------------------------------------------------------
+# Session tracking for exec_command / write_stdin validation
+# ---------------------------------------------------------------------------
+# Codex returns a numeric session_id from exec_command. The model may
+# call write_stdin with a stale or hallucinated session_id. We track
+# known live sessions so we can validate or gracefully degrade.
+import time as _time
+
+_active_sessions: Dict[int, float] = {}  # session_id -> last_seen_timestamp
+SESSION_TTL_SECONDS = float(os.environ.get("CODESEEQ_SESSION_TTL_SECONDS", "900"))
+
+
+def _register_session(session_id: int) -> None:
+    """Track an active exec session."""
+    if session_id > 0:
+        _active_sessions[session_id] = _time.time()
+
+
+def _session_is_known(session_id: int) -> bool:
+    """Check whether a session ID is known and not expired."""
+    if session_id <= 0:
+        return False
+    last_seen = _active_sessions.get(session_id)
+    if last_seen is None:
+        return False
+    if _time.time() - last_seen > SESSION_TTL_SECONDS:
+        _active_sessions.pop(session_id, None)
+        return False
+    return True
+
+
+def _prune_expired_sessions() -> None:
+    """Remove expired session entries."""
+    now = _time.time()
+    expired = [sid for sid, ts in _active_sessions.items() if now - ts > SESSION_TTL_SECONDS]
+    for sid in expired:
+        _active_sessions.pop(sid, None)
+
+
 DEEPSEEK_CHAT_URL = os.environ.get(
     "DEEPSEEK_CHAT_URL", "https://api.deepseek.com/chat/completions"
 )
@@ -445,6 +484,71 @@ def normalize_tool_arguments_dict(
     if "cmd" in normalized and "command" not in normalized and "command" in schema_keys:
         normalized["command"] = normalized.pop("cmd")
 
+    # --- Bridge-level tool argument normalization ---
+
+    # update_plan: DeepSeek often flattens {step, status, explanation} at top
+    # level instead of nesting inside a `plan` array. Detect and fix.
+    if resolved_name.lower() == "update_plan":
+        # If there's no `plan` key but there IS a `step` or `status` at top level,
+        # wrap them into a proper plan array.
+        if "plan" not in normalized and ("step" in normalized or "status" in normalized):
+            plan_item = {}
+            if "step" in normalized:
+                plan_item["step"] = normalized.pop("step")
+            if "status" in normalized:
+                plan_item["status"] = normalized.pop("status")
+            normalized["plan"] = [plan_item]
+        # If `plan` is a single dict instead of a list, wrap it.
+        if "plan" in normalized and isinstance(normalized["plan"], dict):
+            normalized["plan"] = [normalized["plan"]]
+        # If explanation exists at top level, keep it (it's valid per schema)
+        # but ensure it's a string.
+        if "explanation" in normalized and not isinstance(normalized["explanation"], str):
+            normalized["explanation"] = str(normalized["explanation"])
+
+    # update_goal: Ensure status is one of the allowed values.
+    if resolved_name.lower() == "update_goal":
+        status_val = str(normalized.get("status", "")).lower()
+        if status_val not in {"complete", "blocked"}:
+            # Map common variants
+            if status_val in {"completed", "done", "success", "finished"}:
+                normalized["status"] = "complete"
+            elif status_val in {"error", "fail", "failed", "stuck"}:
+                normalized["status"] = "blocked"
+
+    # create_goal: Normalize objective field.
+    if resolved_name.lower() == "create_goal":
+        if "objective" not in normalized and "goal" in normalized:
+            normalized["objective"] = normalized.pop("goal")
+        if "objective" not in normalized and "prompt" in normalized:
+            normalized["objective"] = normalized.pop("prompt")
+
+    # request_user_input: Validate it has questions.
+    if resolved_name.lower() == "request_user_input":
+        if "questions" not in normalized:
+            normalized["questions"] = [{"id": "input", "header": "Input", "question": "Please provide input:"}]
+        # Ensure each question has required fields
+        for q in normalized.get("questions", []):
+            if isinstance(q, dict):
+                if "id" not in q:
+                    q["id"] = "input"
+                if "header" not in q:
+                    q["header"] = "Input"
+                if "question" not in q:
+                    q["question"] = q.get("header", "Please provide input:")
+
+    # write_stdin: Ensure session_id is present and numeric.
+    if resolved_name.lower() == "write_stdin":
+        if "session_id" not in normalized:
+            normalized["session_id"] = 0
+        elif not isinstance(normalized["session_id"], (int, float)):
+            try:
+                normalized["session_id"] = int(normalized["session_id"])
+            except (ValueError, TypeError):
+                normalized["session_id"] = 0
+        else:
+            normalized["session_id"] = int(normalized["session_id"])
+
     return normalized
 
 
@@ -544,11 +648,89 @@ def prepare_structured_tool_call(
             f"tool={raw_name or '<missing>'} argument_chars={arg_len} error={err}",
         )
 
+    # Bridge-level special tool validation (write_stdin session, etc.)
+    fixed_args, special_err = _validate_special_tool_args(
+        resolved, normalized_args or "{}"
+    )
+    if special_err:
+        return (None, special_err)
+
     prepared = dict(tool_call)
     prepared["function"] = dict(fn)
     prepared["function"]["name"] = resolved
-    prepared["function"]["arguments"] = normalized_args or "{}"
+    prepared["function"]["arguments"] = fixed_args or normalized_args or "{}"
     return prepared, None
+
+
+def _validate_special_tool_args(
+    resolved_name: str,
+    arguments_json: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Perform bridge-level validation and fix-ups for specific tool calls
+    that DeepSeek often hallucinates with wrong arguments.
+
+    Returns (fixed_arguments_json, error_message).
+    If error_message is not None, the tool call should be blocked and
+    converted to a text message instead.
+    """
+    try:
+        args = json.loads(arguments_json or "{}")
+    except Exception:
+        return arguments_json, None
+
+    if not isinstance(args, dict):
+        return arguments_json, None
+
+    # request_user_input should only be called in Plan mode. DeepSeek
+    # often calls it in Default mode. If we detect this is likely a
+    # default-mode call (no goal context), block it gracefully.
+    if resolved_name.lower() == "request_user_input":
+        # Let it through if args look complete; Codex will handle the
+        # mode check. But flag it with a log.
+        if not args.get("questions"):
+            args["questions"] = [
+                {"id": "input", "header": "Input",
+                 "question": "Please provide additional information:"}
+            ]
+        log(f"request_user_input forwarded (Codex mode-check will apply): {json.dumps(args, ensure_ascii=False)[:200]}")
+        return json.dumps(args, ensure_ascii=False), None
+
+    # update_goal without an active goal: if we see the model trying to
+    # update_goal, it may not have created one first. Let it through
+    # since Codex will give a clear error that the model can recover from.
+    if resolved_name.lower() == "update_goal":
+        status_val = str(args.get("status", "")).lower()
+        if status_val not in {"complete", "blocked"}:
+            # Map common variants
+            if status_val in {"completed", "done", "success", "finished"}:
+                args["status"] = "complete"
+            elif status_val in {"error", "fail", "failed", "stuck"}:
+                args["status"] = "blocked"
+            elif status_val:
+                log(f"update_goal with unrecognized status={status_val!r}; letting through for Codex to reject")
+        return json.dumps(args, ensure_ascii=False), None
+
+    # write_stdin with a likely-stale session_id: if the session_id is 0
+    # or clearly not a real session, block it with a recovery message.
+    if resolved_name.lower() == "write_stdin":
+        sid = args.get("session_id", 0)
+        try:
+            sid = int(sid)
+        except (ValueError, TypeError):
+            sid = 0
+        if sid <= 0:
+            # Stale/missing session ID. Return an error that tells the
+            # model to re-run exec_command instead.
+            return None, (
+                "write_stdin called with invalid session_id="
+                f"{args.get('session_id')!r}. The exec_command session "
+                "has ended or was never started. Re-run exec_command "
+                "to start a new session, then use the returned session_id "
+                "for subsequent write_stdin calls."
+            )
+
+    return json.dumps(args, ensure_ascii=False), None
 
 
 def malformed_tool_call_message(errors: List[str]) -> str:
@@ -966,13 +1148,18 @@ def extract_dsml_tool_calls(
             registered_arg_names=registered_arg_names,
         )
 
+        args_json = json.dumps(args, ensure_ascii=False)
+        fixed_args, special_err = _validate_special_tool_args(resolved_name, args_json)
+        if special_err:
+            log(f"dsml tool call blocked: {resolved_name} error={special_err}")
+            continue
         extracted.append(
             {
                 "id": f"call_{uuid.uuid4().hex[:12]}",
                 "type": "function",
                 "function": {
                     "name": resolved_name,
-                    "arguments": json.dumps(args, ensure_ascii=False),
+                    "arguments": fixed_args or args_json,
                 },
                 "_raw_name": raw_name,
             }
@@ -1003,13 +1190,18 @@ def extract_dsml_tool_calls(
             registered_arg_names=registered_arg_names,
         )
 
+        args_json = json.dumps(args, ensure_ascii=False)
+        fixed_args, special_err = _validate_special_tool_args(resolved_name, args_json)
+        if special_err:
+            log(f"permissive dsml tool call blocked: {resolved_name} error={special_err}")
+            continue
         extracted.append(
             {
                 "id": f"call_{uuid.uuid4().hex[:12]}",
                 "type": "function",
                 "function": {
                     "name": resolved_name,
-                    "arguments": json.dumps(args, ensure_ascii=False),
+                    "arguments": fixed_args or args_json,
                 },
                 "_raw_name": raw_name,
             }
@@ -1192,10 +1384,28 @@ TOOL_STEERING_INSTRUCTION_TEMPLATE = (
     "arguments. Keep every tool-call arguments value complete and valid JSON; "
     "for large file creation or edits, split the work into smaller tool calls "
     "instead of placing a very large file body or patch in one call. "
-    "Available tools: {tool_names}."
+    "Available tools: {{tool_names}}.\n"
+    "\n"
+    "IMPORTANT tool-specific rules:\n"
+    '- request_user_input is ONLY available after create_goal has been called '
+    'to enter Plan mode. Never call request_user_input before create_goal.\n'
+    '- update_plan expects arguments: '
+    '{{"plan": [{{"step": "...", "status": "pending|in_progress|completed"}}], "explanation": "..."}}. '
+    'Do NOT use flat {{step, status, explanation}} at the top level; '
+    'always wrap steps inside a `plan` array.\n'
+    '- update_goal expects arguments: '
+    '{{"status": "complete|blocked"}}. '
+    'Only call it when a goal is active. Never call update_goal before '
+    'create_goal.\n'
+    '- write_stdin expects: '
+    '{{"session_id": <number>, "chars": "..."}}. '
+    'Only use session IDs that were returned by a previous exec_command '
+    'call.\n'
+    '- create_goal expects: {{"objective": "..."}}. Call this before '
+    'using request_user_input or update_goal.\n'
+    '- exec_command returns a session ID; you MUST pass that exact number '
+    'to write_stdin for subsequent input to the same process.'
 )
-
-
 def build_tool_steering_message(tool_names: List[str]) -> Optional[Dict[str, Any]]:
     if not tool_names:
         return None
