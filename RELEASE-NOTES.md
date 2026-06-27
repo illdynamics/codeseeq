@@ -1,4 +1,4 @@
-## v0.3.0 - 2026-05-14
+## v0.3.1 - 2026-06-27
 
 ### Added
 - **Uncensored mode (`-U` / `--uncensored-mode`).** Loads the Dolfino (Dirty D)
