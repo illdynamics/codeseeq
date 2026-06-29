@@ -76,28 +76,28 @@ def main() -> None:
         {"exec_command"},
         {"exec_command": {"cmd", "yield_time_ms", "max_output_tokens"}},
         "exec_command",
-        {"cmd": 'echo "hi" > /workspace/test.txt'},
+        {"cmd": 'echo "hi" > /workspace/test.txt', "tty": True},
     )
     assert_call(
         "<exec_command><command>pwd</command></exec_command>",
         {"shell"},
         {"shell": {"cmd"}},
         "shell",
-        {"cmd": "pwd"},
+        {"cmd": "pwd", "tty": True},
     )
     assert_call(
         '<tool_call name="exec_command"><command>pwd</command></tool_call>',
         {"exec_command"},
         {"exec_command": {"cmd"}},
         "exec_command",
-        {"cmd": "pwd"},
+        {"cmd": "pwd", "tty": True},
     )
     assert_call(
         '<function_calls><invoke name="bash"><parameter name="command">pwd</parameter></invoke></function_calls>',
         {"shell"},
         {"shell": {"cmd"}},
         "shell",
-        {"cmd": "pwd"},
+        {"cmd": "pwd", "tty": True},
     )
 
     events = bridge._function_call_lifecycle_events(
@@ -132,7 +132,7 @@ def main() -> None:
     )
     assert err is None, err
     assert prepared is not None
-    assert json.loads(prepared["function"]["arguments"]) == {"cmd": "pwd"}
+    assert json.loads(prepared["function"]["arguments"]) == {"cmd": "pwd", "tty": True}
 
     prepared, err = bridge.prepare_structured_tool_call(
         {
@@ -222,7 +222,7 @@ def main() -> None:
         {"exec_command": {"cmd"}},
     )
     assert len(calls) == 1, calls
-    assert json.loads(calls[0]["function"]["arguments"]) == {"cmd": "cat /workspace/test.txt"}
+    assert json.loads(calls[0]["function"]["arguments"]) == {"cmd": "cat /workspace/test.txt", "tty": True}
 
     buf = bridge.StreamingDsmlBuffer({"exec_command"})
     safe_parts = []
@@ -246,7 +246,7 @@ def main() -> None:
         {"exec_command": {"cmd"}},
     )
     assert len(calls) == 1, calls
-    assert json.loads(calls[0]["function"]["arguments"]) == {"cmd": "cat /workspace/test.txt"}
+    assert json.loads(calls[0]["function"]["arguments"]) == {"cmd": "cat /workspace/test.txt", "tty": True}
     print("[test-bridge-extraction] PASS")
 
 
