@@ -486,6 +486,17 @@ def normalize_tool_arguments_dict(
 
     # --- Bridge-level tool argument normalization ---
 
+    # Shell/exec tools: Default tty=true so stdin stays open for subsequent
+    # write_stdin calls. Without tty=true, Codex closes stdin immediately
+    # after command start, causing "stdin is closed for this session"
+    # errors when the model later calls write_stdin. Non-interactive
+    # commands work fine with tty=true — they just complete normally.
+    # Apply to ALL shell-type resolved names because the model may use
+    # aliases (bash, shell, exec_command, etc.) that resolve to various
+    # Codex tool names, and any of them may be followed by write_stdin.
+    if resolved_name.lower() in SHELL_TOOL_NAMES:
+        normalized["tty"] = True  # always force tty=true to keep stdin open for write_stdin
+
     # update_plan: DeepSeek often flattens {step, status, explanation} at top
     # level instead of nesting inside a `plan` array. Detect and fix.
     if resolved_name.lower() == "update_plan":
@@ -501,10 +512,10 @@ def normalize_tool_arguments_dict(
         # If `plan` is a single dict instead of a list, wrap it.
         if "plan" in normalized and isinstance(normalized["plan"], dict):
             normalized["plan"] = [normalized["plan"]]
-        # If explanation exists at top level, keep it (it's valid per schema)
-        # but ensure it's a string.
-        if "explanation" in normalized and not isinstance(normalized["explanation"], str):
-            normalized["explanation"] = str(normalized["explanation"])
+        # Codex's tool router rejects `explanation` at the top level of
+        # update_plan (Codex's Rust struct does not include it despite the
+        # prompt mentioning it). Strip it so Codex can parse the call.
+        normalized.pop("explanation", None)
 
     # update_goal: Ensure status is one of the allowed values.
     if resolved_name.lower() == "update_goal":
@@ -1404,7 +1415,10 @@ TOOL_STEERING_INSTRUCTION_TEMPLATE = (
     '- create_goal expects: {{"objective": "..."}}. Call this before '
     'using request_user_input or update_goal.\n'
     '- exec_command returns a session ID; you MUST pass that exact number '
-    'to write_stdin for subsequent input to the same process.'
+    'to write_stdin for subsequent input to the same process.\n'
+    '- exec_command always requires \'tty\': true to keep stdin open '
+    'for subsequent write_stdin calls. Always include \'tty\': true '
+    'in every exec_command call.'
 )
 def build_tool_steering_message(tool_names: List[str]) -> Optional[Dict[str, Any]]:
     if not tool_names:
