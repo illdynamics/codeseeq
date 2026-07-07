@@ -1,3 +1,55 @@
+## v0.3.3 - 2026-07-07
+
+### Added
+- **`CODESEEQ_REASONING_EFFORT` environment variable.** Controls the
+  reasoning effort level forwarded to DeepSeek for thinking-enabled
+  models. Accepted values: `minimal`, `low`, `medium`, `high`, `xhigh`,
+  `max`. The bridge maps `low`/`medium` → `high` and `xhigh` → `max`
+  to match DeepSeek's supported levels.
+- **Reasoning summary wiring in the launcher.** When thinking is enabled,
+  the `codeseeq` launcher now exports `MODEL_SUPPORTS_REASONING_SUMMARIES=true`
+  and `MODEL_REASONING_SUMMARY=auto`, corresponding to the updated model
+  catalog entries. When thinking is disabled, both are set to `false`/`none`.
+
+### Fixed
+- **Bridge reasoning-effort resilience.** The bridge now handles missing or
+  non-dict `reasoning` fields in thinking-enabled requests without crashing.
+  When `reasoning` is absent, falls back to the `CODESEEQ_REASONING_EFFORT`
+  environment variable, defaulting to an empty string (conservative). Also
+  adds a truthiness guard so `effort=""` does not trigger the mapping logic.
+- **Thinking-model catalog entries updated.** `deepseek-v4-flash-thinking`
+  and `deepseek-v4-pro-thinking` now correctly declare
+  `supports_reasoning_summaries: true` with `reasoning_summary: "auto"` and
+  `supported_reasoning_levels: [{level: "high"}, {level: "max"}]`. This
+  fixes Codex treating these models as non-thinking-capable.
+
+### Changed
+- **Model catalog formatting.** `config/codex-model-catalog.json` entries
+  reformatted for consistency (expanded inline-objects to multi-line).
+
+---
+
+## v0.3.2 - 2026-06-29
+
+### Fixed
+- **`tty: true` forced on all shell/exec tool calls.** The bridge now
+  unconditionally sets `tty: true` on every `shell`, `exec_command`, `bash`,
+  and related tool call before forwarding to Codex. This keeps stdin open
+  for subsequent `write_stdin` calls, preventing "stdin is closed for this
+  session" errors when the model pipes input to a running command. Non-
+  interactive commands work fine with `tty: true` — they just complete
+  normally.
+- **`update_plan` explanation stripped before Codex forwarding.** Codex's
+  Rust tool router rejects `explanation` at the top level of `update_plan`
+  arguments as an unknown field (its struct doesn't include it despite the
+  prompt mentioning it). The bridge now strips `explanation` from
+  normalized arguments before forwarding, so Codex can parse the call
+  without "unknown field explanation, expected step or status" errors.
+- **Tool steering instruction updated.** The injected steering message now
+  documents that `exec_command` always requires `tty: true`.
+
+---
+
 ## v0.3.1 - 2026-06-27
 
 ### Added

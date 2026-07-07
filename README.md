@@ -9,7 +9,7 @@ But your prompts go to DeepSeek V4 via your `DEEPSEEK_API_KEY` — no OpenAI acc
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.3.1` (from [`VERSION`](./VERSION)).
+Current version: `v0.3.3` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
