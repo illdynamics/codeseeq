@@ -11,12 +11,17 @@
       "visibility": "list",
       "shell_type": "default",
       "web_search_tool_type": "text",
-      "truncation_policy": {"mode": "tokens", "limit": 1000000},
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 1000000
+      },
       "supports_parallel_tool_calls": true,
       "priority": 10,
       "base_instructions": "You are a coding assistant.",
       "supported_reasoning_levels": [],
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "supports_search_tool": true,
       "support_verbosity": false,
       "experimental_supported_tools": []
@@ -27,20 +32,37 @@
       "description": "DeepSeek V4 Flash with thinking enabled",
       "context_window": 1000000,
       "max_context_window": 1000000,
-      "supports_reasoning_summaries": false,
+      "supports_reasoning_summaries": true,
       "supported_in_api": true,
       "visibility": "list",
       "shell_type": "default",
       "web_search_tool_type": "text",
-      "truncation_policy": {"mode": "tokens", "limit": 1000000},
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 1000000
+      },
       "supports_parallel_tool_calls": true,
       "priority": 11,
       "base_instructions": "You are a coding assistant.",
-      "supported_reasoning_levels": [],
-      "input_modalities": ["text"],
+      "supported_reasoning_levels": [
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "high",
+          "description": "Maximum reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
       "supports_search_tool": true,
       "support_verbosity": false,
-      "experimental_supported_tools": []
+      "experimental_supported_tools": [],
+      "reasoning_summary": "auto"
     },
     {
       "slug": "deepseek@deepseek-v4-pro",
@@ -53,12 +75,17 @@
       "visibility": "list",
       "shell_type": "default",
       "web_search_tool_type": "text",
-      "truncation_policy": {"mode": "tokens", "limit": 1000000},
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 1000000
+      },
       "supports_parallel_tool_calls": true,
       "priority": 20,
       "base_instructions": "You are a coding assistant.",
       "supported_reasoning_levels": [],
-      "input_modalities": ["text"],
+      "input_modalities": [
+        "text"
+      ],
       "supports_search_tool": true,
       "support_verbosity": false,
       "experimental_supported_tools": []
@@ -69,20 +96,37 @@
       "description": "DeepSeek V4 Pro with thinking enabled",
       "context_window": 1000000,
       "max_context_window": 1000000,
-      "supports_reasoning_summaries": false,
+      "supports_reasoning_summaries": true,
       "supported_in_api": true,
       "visibility": "list",
       "shell_type": "default",
       "web_search_tool_type": "text",
-      "truncation_policy": {"mode": "tokens", "limit": 1000000},
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 1000000
+      },
       "supports_parallel_tool_calls": true,
       "priority": 21,
       "base_instructions": "You are a coding assistant.",
-      "supported_reasoning_levels": [],
-      "input_modalities": ["text"],
+      "supported_reasoning_levels": [
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "high",
+          "description": "Maximum reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
       "supports_search_tool": true,
       "support_verbosity": false,
-      "experimental_supported_tools": []
+      "experimental_supported_tools": [],
+      "reasoning_summary": "auto"
     }
   ]
 }

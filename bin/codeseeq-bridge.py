@@ -1516,9 +1516,12 @@ def deepseek_payload(
 
     payload["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
 
-    if thinking_enabled and isinstance(body.get("reasoning"), dict):
-        effort = body["reasoning"].get("effort")
-        if effort in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+    if thinking_enabled:
+        reasoning = body.get("reasoning")
+        if not isinstance(reasoning, dict):
+            reasoning = {}
+        effort = reasoning.get("effort") or os.environ.get("CODESEEQ_REASONING_EFFORT", "")
+        if effort and effort in {"minimal", "low", "medium", "high", "xhigh", "max"}:
             if effort in {"low", "medium"}:
                 effort = "high"
             if effort == "xhigh":
