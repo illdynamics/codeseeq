@@ -81,14 +81,18 @@ EOF
 chmod +x "$launcher"
 
 
-# CodeSeeq privacy hardening: do not auto-install @openai/codex@latest
-# Pinned version: manually install if needed
+
+# Install Codex CLI (pinned version) for host-runtime mode and local use.
 if command -v codex >/dev/null 2>&1; then
   log "codex CLI found: $(command -v codex)"
 else
-  log "codex CLI not found. CodeSeeq uses a pinned Codex version (0.130.0)."
-  log "Install manually if needed: npm install -g @openai/codex@0.130.0"
-  log "Set CODESEEQ_ALLOW_LATEST_RELEASE=true to allow latest version fetching."
+  if command -v npm >/dev/null 2>&1; then
+    log "installing Codex CLI (pinned version 0.130.0) ..."
+    npm install -g "@openai/codex@0.130.0" || log "WARN: npm install failed; install manually: npm install -g @openai/codex@0.130.0"
+  else
+    log "WARN: npm not found, cannot auto-install Codex CLI."
+    log "Install Node.js + npm then run: npm install -g @openai/codex@0.130.0"
+  fi
 fi
 
 # --- Install Python bridge deps if python3 available ---
