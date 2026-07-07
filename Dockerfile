@@ -6,6 +6,7 @@ ARG CODEX_NPM_VERSION=0.130.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
+    bubblewrap \
     ca-certificates \
     curl \
     git \
