@@ -1992,6 +1992,7 @@ case "${1:-}" in
   install)
     shift
     cmd_install "$@"
+    exit $?
     ;;
   build)
     shift
@@ -2002,10 +2003,12 @@ case "${1:-}" in
   smoke)
     shift
     cmd_smoke "$@"
+    exit $?
     ;;
   package)
     shift
     cmd_package "$@"
+    exit $?
     ;;
   system)
     shift

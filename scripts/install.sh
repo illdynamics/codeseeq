@@ -6,7 +6,7 @@ set -Eeuo pipefail
 log()  { printf '[codeseeq-install] %s\n' "$*" >&2; }
 die()  { printf '[codeseeq-install:error] %s\n' "$*" >&2; exit 1; }
 
-REPO="${CODESEEQ_REPO:-codeseeq/codeseeq}"
+REPO="${CODESEEQ_REPO:-illdynamics/codeseeq}"
 # If CODESEEQ_RELEASE_TAG is not explicitly set, fetch the latest version
 # from the VERSION file on the default branch (single source of truth).
 if [ -z "${CODESEEQ_RELEASE_TAG+x}" ]; then

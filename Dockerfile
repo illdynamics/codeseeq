@@ -2,11 +2,12 @@
 
 FROM node:22-bookworm-slim
 
-ARG CODEX_NPM_VERSION=0.130.0
+ARG DEEPSEEK_API_KEY
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     bubblewrap \
+    git \
     ca-certificates \
     curl \
     git \
@@ -18,11 +19,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Official CLI installs.
-RUN npm install -g "@openai/codex@${CODEX_NPM_VERSION}"
+RUN npm install -g @openai/codex
 
-# Bridge runtime deps.
-COPY requirements-bridge.txt /tmp/requirements-bridge.txt
-RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements-bridge.txt &&     rm /tmp/requirements-bridge.txt
+# Codeseeq
+RUN git clone https://github.com/illdynamics/codeseeq.git /tmp/codeseeq
+RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/codeseeq/requirements-bridge.txt
+RUN /tmp/codeseeq/codeseeq install
+RUN rm -rf /tmp/codeseeq
 
 # Runtime files.
 COPY bin/codeseeq-entrypoint /usr/local/bin/codeseeq-entrypoint
