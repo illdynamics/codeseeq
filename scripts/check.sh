@@ -28,8 +28,12 @@ fail() {
 shell_files=()
 while IFS= read -r f; do
   shell_files+=("$f")
-done < <(find codeseeq bin/ scripts/ -type f | while IFS= read -r f; do
-  if [[ -f "$f" ]] && head -n 1 "$f" | _rg -q 'bash'; then
+done < <(find codeseeq bin/ scripts/ -type f \
+    -not -path '*/__pycache__/*' \
+    -not -name '*.py' \
+    -not -name '*.pyc' \
+  | while IFS= read -r f; do
+  if [[ -f "$f" ]] && head -c 20 "$f" | _rg -q '^#!.*bash'; then
     printf '%s\n' "$f"
   fi
 done)
