@@ -11,7 +11,7 @@ REPO="${CODESEEQ_REPO:-illdynamics/codeseeq}"
 # from the VERSION file on the default branch (single source of truth).
 if [ -z "${CODESEEQ_RELEASE_TAG+x}" ]; then
   VERSION_URL="https://raw.githubusercontent.com/${REPO}/main/VERSION"
-  RELEASE_TAG="$(curl -fsSL "$VERSION_URL" 2>/dev/null || echo "v0.3.0")"
+  RELEASE_TAG="$(curl -fsSL "$VERSION_URL" 2>/dev/null || echo "v0.3.5")"
   # sanitize: strip whitespace
   RELEASE_TAG="$(printf "%s" "$RELEASE_TAG" | tr -d "[:space:]")"
 else
