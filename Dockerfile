@@ -3,6 +3,7 @@
 FROM node:22-bookworm-slim
 
 ARG DEEPSEEK_API_KEY
+ARG CODEX_NPM_VERSION=0.130.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
@@ -19,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Official CLI installs.
-RUN npm install -g @openai/codex
+RUN npm install -g @openai/codex@${CODEX_NPM_VERSION}
 
 # Codeseeq
 RUN git clone https://github.com/illdynamics/codeseeq.git /tmp/codeseeq
@@ -63,4 +64,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 USER codeseeq
 
 ENTRYPOINT ["tini", "--", "/usr/local/bin/codeseeq-entrypoint"]
-CMD ["codex"]
+CMD ["codeseeq"]

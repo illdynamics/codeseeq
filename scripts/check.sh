@@ -7,9 +7,10 @@ cd "$repo_root"
 
 failures=0
 
+
 _rg() {
   if command -v rg >/dev/null 2>&1; then
-    rg "$@"
+    rg "$@" 2>/dev/null
   else
     grep -R "$@"
   fi
@@ -28,7 +29,7 @@ shell_files=()
 while IFS= read -r f; do
   shell_files+=("$f")
 done < <(find codeseeq bin/ scripts/ -type f | while IFS= read -r f; do
-  if [[ -f "$f" ]] && head -n 1 "$f" | rg -q 'bash'; then
+  if [[ -f "$f" ]] && head -n 1 "$f" | _rg -q 'bash'; then
     printf '%s\n' "$f"
   fi
 done)
