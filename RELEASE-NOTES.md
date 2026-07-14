@@ -1,3 +1,37 @@
+## v0.3.6 - 2026-07-14
+
+### Added
+- **Venice.ai image generation backend.** New `CODESEEQ_IMAGE_BACKEND` configuration
+  option (default `none`). Set to `venice` to enable image generation via the
+  Venice.ai API using `VENICE_API_KEY`.
+  - Supports all Venice `/image/generate` parameters: model selection (`auto` or
+    specific models like `z-image-turbo`, `gpt-image-2`, `nano-banana-pro`),
+    aspect ratio, resolution (1K/2K/4K), format (jpeg/png/webp), variants (1–4),
+    safe mode, watermark control, negative prompts, seed, and CFG scale.
+  - New standalone script: `bin/codeseeq-venice-image.py` for direct CLI usage
+    without Codex.
+  - New bridge endpoint: `POST /v1/images/generations` for OpenAI-compatible
+    image generation proxied through Venice.
+  - New `ping-image` diagnostic command.
+  - New `--image-backend` and `--venice-image-model` CLI flags.
+  - Doctor output now includes image backend status and Venice API key state.
+  - Health endpoint now reports `image_backend` status.
+- **Comprehensive environment variable configuration** for all Venice image
+  parameters: `CODESEEQ_VENICE_IMAGE_MODEL`, `CODESEEQ_VENICE_IMAGE_ASPECT_RATIO`,
+  `CODESEEQ_VENICE_IMAGE_RESOLUTION`, `CODESEEQ_VENICE_IMAGE_FORMAT`,
+  `CODESEEQ_VENICE_IMAGE_VARIANTS`, `CODESEEQ_VENICE_IMAGE_SAFE_MODE`,
+  `CODESEEQ_VENICE_IMAGE_HIDE_WATERMARK`, `CODESEEQ_VENICE_IMAGE_SEED`,
+  `CODESEEQ_VENICE_IMAGE_RETURN_BINARY`, `CODESEEQ_VENICE_IMAGE_NEGATIVE_PROMPT`,
+  `CODESEEQ_VENICE_IMAGE_CFG_SCALE`, `CODESEEQ_VENICE_IMAGE_STEPS`.
+
+### Changed
+- **Version bump to v0.3.6.**
+- **Health endpoint** now reports `image_backend` status and Venice configuration.
+- **Dockerfile** now includes `bin/codeseeq-venice-image.py`.
+- All documentation updated with image backend section and configuration reference.
+
+---
+
 ## v0.3.5 - 2026-07-08
 
 ### Changed

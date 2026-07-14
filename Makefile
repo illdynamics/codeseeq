@@ -97,6 +97,13 @@ ping-web:
 	@test -n "$$BRAVE_API_KEY" || (echo "BRAVE_API_KEY is required" >&2; exit 1)
 	CODESEEQ_MODEL=$(MODEL) CODESEEQ_THINKING=$(THINKING) IMAGE=$(IMAGE) CONTAINER=$(CONTAINER) ./codeseeq ping-web
 
+.PHONY: ping-image
+ping-image:
+	@test -n "$$DEEPSEEK_API_KEY" || (echo "DEEPSEEK_API_KEY is required" >&2; exit 1)
+	@test -n "$$VENICE_API_KEY" || (echo "VENICE_API_KEY is required" >&2; exit 1)
+	@test "$${CODESEEQ_IMAGE_BACKEND:-none}" = "venice" || (echo "CODESEEQ_IMAGE_BACKEND=venice is required" >&2; exit 1)
+	CODESEEQ_IMAGE_BACKEND=venice CODESEEQ_MODEL=$(MODEL) CODESEEQ_THINKING=$(THINKING) IMAGE=$(IMAGE) CONTAINER=$(CONTAINER) ./codeseeq ping-image
+
 .PHONY: ping-docs
 ping-docs:
 	@test -n "$$DEEPSEEK_API_KEY" || (echo "DEEPSEEK_API_KEY is required" >&2; exit 1)

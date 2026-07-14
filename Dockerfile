@@ -30,6 +30,7 @@ RUN rm -rf /tmp/codeseeq
 
 # Runtime files.
 COPY bin/codeseeq-entrypoint /usr/local/bin/codeseeq-entrypoint
+COPY bin/codeseeq-venice-image.py /usr/local/bin/codeseeq-venice-image.py
 COPY bin/codeseeq-bridge.py /usr/local/bin/codeseeq-bridge.py
 COPY bin/codeseeq-healthcheck /usr/local/bin/codeseeq-healthcheck
 COPY bin/codeseeq-print-config /usr/local/bin/codeseeq-print-config
@@ -38,6 +39,7 @@ COPY config/codex-model-catalog.json /etc/codeseeq/codex-model-catalog.json
 
 RUN chmod +x \
     /usr/local/bin/codeseeq-entrypoint \
+    /usr/local/bin/codeseeq-venice-image.py \
     /usr/local/bin/codeseeq-bridge.py \
     /usr/local/bin/codeseeq-healthcheck \
     /usr/local/bin/codeseeq-print-config

@@ -83,6 +83,19 @@ LEGACY_SYSTEM_PROMPT_PATH="${WORKDIR_HOST}/.codeseeq/system-prompt.md"
 : "${CODESEEQ_BRIDGE_HEALTH_PATH:=/health}"
 : "${CODESEEQ_BRIDGE_REUSE:=0}"
 : "${CODESEEQ_UNCENSORED_MODE:=false}"
+
+# --- Image backend configuration ---
+: "${CODESEEQ_IMAGE_BACKEND:=none}"
+: "${CODESEEQ_VENICE_IMAGE_MODEL:=auto}"
+: "${CODESEEQ_VENICE_IMAGE_ASPECT_RATIO:=1:1}"
+: "${CODESEEQ_VENICE_IMAGE_RESOLUTION:=1K}"
+: "${CODESEEQ_VENICE_IMAGE_FORMAT:=webp}"
+: "${CODESEEQ_VENICE_IMAGE_VARIANTS:=1}"
+: "${CODESEEQ_VENICE_IMAGE_SAFE_MODE:=true}"
+: "${CODESEEQ_VENICE_IMAGE_HIDE_WATERMARK:=false}"
+: "${CODESEEQ_VENICE_IMAGE_SEED:=0}"
+: "${CODESEEQ_VENICE_IMAGE_RETURN_BINARY:=false}"
+
 BRIDGE_OWNED=""
 BRIDGE_PID=""
 
@@ -168,6 +181,13 @@ Bridge modes:
 Uncensored mode:
   -U, --uncensored-mode  Load Dolfino aka Dirty D uncensored system prompt
   CODESEEQ_UNCENSORED_MODE Set uncensored mode via environment
+
+Image backend:
+  --image-backend BACKEND       Set image backend: none (default) or venice
+  --venice-image-model MODEL    Venice image model (default: auto,
+                                e.g. z-image-turbo, gpt-image-2)
+  CODESEEQ_IMAGE_BACKEND        Set image backend via environment
+  VENICE_API_KEY                Required when backend=venice
 
 Runtime:
   Podman is preferred. Docker is used as a compatible fallback when Podman is
@@ -543,7 +563,7 @@ first_command_arg() {
 
 is_codeseeq_diagnostic_command() {
   case "$1" in
-    models|doctor|config|ping|ping-stream|ping-web|ping-docs|shell) return 0 ;;
+    models|doctor|config|ping|ping-stream|ping-web|ping-docs|ping-image|shell) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -2075,6 +2095,24 @@ while (( $# > 0 )); do
       ;;
     -U|--uncensored-mode)
       CODESEEQ_UNCENSORED_MODE=true
+      shift
+      ;;
+    --image-backend)
+      [[ $# -ge 2 ]] || die "--image-backend requires a value (none or venice)"
+      CODESEEQ_IMAGE_BACKEND="$2"
+      shift 2
+      ;;
+    --image-backend=*)
+      CODESEEQ_IMAGE_BACKEND="${1#--image-backend=}"
+      shift
+      ;;
+    --venice-image-model)
+      [[ $# -ge 2 ]] || die "--venice-image-model requires a value"
+      CODESEEQ_VENICE_IMAGE_MODEL="$2"
+      shift 2
+      ;;
+    --venice-image-model=*)
+      CODESEEQ_VENICE_IMAGE_MODEL="${1#--venice-image-model=}"
       shift
       ;;
     --runtime-mode)

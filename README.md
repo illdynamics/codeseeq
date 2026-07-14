@@ -9,7 +9,7 @@ But your prompts go to DeepSeek V4 via your `DEEPSEEK_API_KEY` — no OpenAI acc
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.3.5` (from [`VERSION`](./VERSION)).
+Current version: `v0.3.6` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -20,6 +20,7 @@ Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 - **DEEPSEEK_API_KEY** — set in your shell for model requests.
 - **BRAVE_API_KEY** (optional) — needed for web-search pings (`ping-web`).
 - **UNSTRUCTURED_API_KEY** (optional) — needed for doc-input pings (`ping-docs`).
+- **VENICE_API_KEY** (optional) — needed for image generation via Venice.ai when `CODESEEQ_IMAGE_BACKEND=venice`.
 - Podman or Docker (optional — only needed for container mode).
 - Python 3 + `pip install -r requirements-bridge.txt` (optional — only needed for host/process mode).
 
@@ -301,6 +302,7 @@ CodeSeeq-specific commands remain available:
 ./codeseeq ping-stream
 ./codeseeq ping-web
 ./codeseeq ping-docs
+./codeseeq ping-image
 ./codeseeq shell
 ./codeseeq smoke
 ./codeseeq system --help
@@ -331,6 +333,9 @@ All supported variables are documented in [`.env.example`](./.env.example). Key 
 | `CODESEEQ_APPROVAL_POLICY`    | `on-request`         | Codex approval policy                            |
 | `CODESEEQ_SANDBOX_MODE`       | `workspace-write`    | Codex sandbox mode                               |
 | `CODESEEQ_YOLO`               | `false`              | Bypass approvals and sandbox (equivalent to `-y`)|
+| `CODESEEQ_IMAGE_BACKEND`       | `none`               | Image backend: `none` or `venice`                 |
+| `VENICE_API_KEY`               | —                    | Venice API key (image generation)                 |
+| `CODESEEQ_VENICE_IMAGE_MODEL`  | `auto`               | Venice image model                                |
 | `CODESEEQ_RUNTIME_MODE`       | `auto`               | `auto`, `container`, or `host`                   |
 | `CODESEEQ_BRIDGE_MODE`        | `auto`               | `auto`, `process`, `container`, or `external`    |
 | `CONTAINER`                   | `podman`             | Container runtime (`podman` or `docker`)         |
@@ -355,6 +360,47 @@ Validate a generated or uploaded archive:
 ```
 
 Do not create release zips manually in Finder or macOS Archive Utility. Manual zips can include `__MACOSX`, `.DS_Store`, `.git/`, `.codeseeq/`, nested zips, or `.env` files. `.env.example` is the only env-style file intended for release archives.
+
+## Image Generation Backend
+
+CodeSeeq supports an optional image generation backend via [Venice.ai](https://venice.ai) — a privacy-first, uncensored AI platform.
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `CODESEEQ_IMAGE_BACKEND` | `none` | Image backend: `none` (default) or `venice` |
+| `VENICE_API_KEY` | — | Venice API key (required when backend is `venice`) |
+| `CODESEEQ_VENICE_IMAGE_MODEL` | `auto` | Model: `auto` or specific name (e.g. `z-image-turbo`, `gpt-image-2`) |
+| `CODESEEQ_VENICE_IMAGE_ASPECT_RATIO` | `1:1` | Aspect ratio: `1:1`, `16:9`, `9:16`, `4:3`, `3:4` |
+| `CODESEEQ_VENICE_IMAGE_RESOLUTION` | `1K` | Resolution: `1K`, `2K`, `4K` |
+| `CODESEEQ_VENICE_IMAGE_FORMAT` | `webp` | Output format: `jpeg`, `png`, `webp` |
+| `CODESEEQ_VENICE_IMAGE_VARIANTS` | `1` | Number of variants: 1–4 |
+| `CODESEEQ_VENICE_IMAGE_SAFE_MODE` | `true` | Blur adult content |
+| `CODESEEQ_VENICE_IMAGE_HIDE_WATERMARK` | `false` | Hide Venice watermark |
+
+### Usage
+
+```bash
+# Enable Venice image backend
+export CODESEEQ_IMAGE_BACKEND=venice
+export VENICE_API_KEY=your-key-here
+
+# Test connectivity
+./codeseeq ping-image
+
+# Use auto model selection (default)
+./codeseeq run "generate a picture of a cat"
+
+# Specify model and aspect ratio
+CODESEEQ_VENICE_IMAGE_MODEL=z-image-turbo \
+CODESEEQ_VENICE_IMAGE_ASPECT_RATIO=16:9 \
+CODESEEQ_VENICE_IMAGE_RESOLUTION=4K \
+./codeseeq run "generate a cinematic wide shot of venice at sunset"
+
+# Direct CLI usage (no Codex needed)
+python3 bin/codeseeq-venice-image.py --prompt "a beautiful sunset" --out sunset.png
+```
 
 ## Supported Models
 
@@ -426,7 +472,7 @@ The release job is gated behind `needs: [static, project, bridge-smoke, docker]`
 | `models`                  | List available models                            |
 | `doctor`                  | Run diagnostics                                  |
 | `ping` / `ping-stream`    | Test model connectivity                          |
-| `ping-web` / `ping-docs`  | Test web search / doc input connectivity         |
+| `ping-web` / `ping-docs` / `ping-image` | Test web search / doc input / image generation connectivity |
 | `prompt`                  | Run a one-shot prompt (`PROMPT=...`)             |
 | `run`                     | Start interactive Codex session                  |
 | `shell`                   | Start Codex shell mode                           |

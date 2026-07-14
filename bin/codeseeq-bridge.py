@@ -1662,7 +1662,12 @@ def _function_call_lifecycle_events(
 
 @app.get("/health")
 async def health() -> Dict[str, str]:
-    return {"status": "ok"}
+    image_backend = os.environ.get("CODESEEQ_IMAGE_BACKEND", "none")
+    info: Dict[str, str] = {"status": "ok", "image_backend": image_backend}
+    if image_backend == "venice":
+        info["venice_api_key_configured"] = str(bool(os.environ.get("VENICE_API_KEY", "")))
+        info["venice_image_model"] = os.environ.get("CODESEEQ_VENICE_IMAGE_MODEL", "auto")
+    return info
 
 
 @app.get("/v1/models")
@@ -2205,6 +2210,161 @@ async def responses(request: Request) -> Any:
         )
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+# ---------------------------------------------------------------------------
+# Image generation backend (Venice.ai)
+# ---------------------------------------------------------------------------
+IMAGE_BACKEND = os.environ.get("CODESEEQ_IMAGE_BACKEND", "none")
+VENICE_IMAGE_URL = os.environ.get(
+    "CODESEEQ_VENICE_IMAGE_URL", "https://api.venice.ai/api/v1/image/generate"
+)
+
+
+def _translate_openai_to_venice(
+    body: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Convert OpenAI /images/generations request to Venice /image/generate format."""
+    venice: Dict[str, Any] = {
+        "model": body.get("model") or os.environ.get("CODESEEQ_VENICE_IMAGE_MODEL", "auto"),
+        "prompt": body.get("prompt", ""),
+    }
+
+    # Map OpenAI size to Venice aspect_ratio + resolution
+    size = body.get("size", "1024x1024")
+    size_map = {
+        "256x256": ("1:1", "1K"),
+        "512x512": ("1:1", "1K"),
+        "1024x1024": ("1:1", "1K"),
+        "1792x1024": ("16:9", "2K"),
+        "1024x1792": ("9:16", "2K"),
+    }
+    default_aspect, default_resolution = size_map.get(size, ("1:1", "1K"))
+
+    venice["aspect_ratio"] = os.environ.get(
+        "CODESEEQ_VENICE_IMAGE_ASPECT_RATIO", default_aspect
+    )
+    venice["resolution"] = os.environ.get(
+        "CODESEEQ_VENICE_IMAGE_RESOLUTION", default_resolution
+    )
+
+    # Format
+    response_format = body.get("response_format")
+    if response_format == "b64_json":
+        venice["format"] = os.environ.get("CODESEEQ_VENICE_IMAGE_FORMAT", "webp")
+    elif response_format == "url":
+        venice["format"] = os.environ.get("CODESEEQ_VENICE_IMAGE_FORMAT", "webp")
+    else:
+        venice["format"] = os.environ.get("CODESEEQ_VENICE_IMAGE_FORMAT", "webp")
+
+    # Variants (n)
+    n = body.get("n", 1)
+    try:
+        n_int = int(n)
+    except (TypeError, ValueError):
+        n_int = 1
+    venice["variants"] = min(max(n_int, 1), 4)
+
+    # Inject other Venice params from env
+    for env_key, venice_key, coerce_fn in [
+        ("CODESEEQ_VENICE_IMAGE_SAFE_MODE", "safe_mode", lambda v: v.strip().lower() in ("1", "true", "yes", "on")),
+        ("CODESEEQ_VENICE_IMAGE_HIDE_WATERMARK", "hide_watermark", lambda v: v.strip().lower() in ("1", "true", "yes", "on")),
+        ("CODESEEQ_VENICE_IMAGE_NEGATIVE_PROMPT", "negative_prompt", str),
+        ("CODESEEQ_VENICE_IMAGE_SEED", "seed", lambda v: int(v) if v.strip() else 0),
+        ("CODESEEQ_VENICE_IMAGE_RETURN_BINARY", "return_binary", lambda v: v.strip().lower() in ("1", "true", "yes", "on")),
+        ("CODESEEQ_VENICE_IMAGE_CFG_SCALE", "cfg_scale", lambda v: float(v)),
+        ("CODESEEQ_VENICE_IMAGE_STEPS", "steps", lambda v: int(v)),
+        ("CODESEEQ_VENICE_IMAGE_QUALITY", "quality", str),
+    ]:
+        val = os.environ.get(env_key, "")
+        if val:
+            try:
+                venice[venice_key] = coerce_fn(val)
+            except (ValueError, TypeError):
+                pass  # skip invalid values
+
+    return venice
+
+
+def _translate_venice_to_openai(
+    venice_resp: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Convert Venice /image/generate response to OpenAI /images/generations format."""
+    import time as _time
+
+    data = []
+    for img_b64 in venice_resp.get("images", []):
+        data.append({"b64_json": img_b64})
+
+    return {
+        "created": int(_time.time()),
+        "data": data,
+    }
+
+
+@app.post("/v1/images/generations")
+async def image_generations(request: Request):
+    """OpenAI-compatible image generation endpoint proxied through Venice.ai."""
+    if IMAGE_BACKEND != "venice":
+        raise HTTPException(
+            status_code=501,
+            detail="Image backend not configured. Set CODESEEQ_IMAGE_BACKEND=venice and provide VENICE_API_KEY.",
+        )
+
+    venice_api_key = os.environ.get("VENICE_API_KEY", "")
+    if not venice_api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="VENICE_API_KEY environment variable is not set.",
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    venice_payload = _translate_openai_to_venice(body)
+
+    log(f"venice image gen: model={venice_payload.get('model')} "
+        f"aspect={venice_payload.get('aspect_ratio')} "
+        f"resolution={venice_payload.get('resolution')}")
+
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            resp = await client.post(
+                VENICE_IMAGE_URL,
+                json=venice_payload,
+                headers={
+                    "Authorization": f"Bearer {venice_api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail="Venice API request timed out.",
+        )
+    except httpx.ConnectError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cannot connect to Venice API: {exc}",
+        )
+
+    if resp.status_code >= 400:
+        try:
+            err_body = resp.json()
+            err_msg = err_body.get("error", resp.text[:500])
+        except Exception:
+            err_msg = resp.text[:500]
+        log(f"venice image error: status={resp.status_code} detail={err_msg}")
+        raise HTTPException(status_code=resp.status_code, detail=err_msg)
+
+    try:
+        venice_data = resp.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="Invalid JSON response from Venice API.")
+
+    result = _translate_venice_to_openai(venice_data)
+    return result
 
 
 def main():

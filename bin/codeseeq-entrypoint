@@ -118,12 +118,29 @@ fi
 : "${CODESEEQ_BRIDGE_MODE:=auto}"
 : "${CODESEEQ_YOLO:=false}"
 : "${CODESEEQ_HOST_WORKDIR:=}"
+
+# --- Image backend configuration ---
+: "${CODESEEQ_IMAGE_BACKEND:=none}"
+: "${CODESEEQ_VENICE_IMAGE_MODEL:=auto}"
+: "${CODESEEQ_VENICE_IMAGE_ASPECT_RATIO:=1:1}"
+: "${CODESEEQ_VENICE_IMAGE_RESOLUTION:=1K}"
+: "${CODESEEQ_VENICE_IMAGE_FORMAT:=webp}"
+: "${CODESEEQ_VENICE_IMAGE_VARIANTS:=1}"
+: "${CODESEEQ_VENICE_IMAGE_SAFE_MODE:=true}"
+: "${CODESEEQ_VENICE_IMAGE_HIDE_WATERMARK:=false}"
+: "${CODESEEQ_VENICE_IMAGE_SEED:=0}"
+: "${CODESEEQ_VENICE_IMAGE_RETURN_BINARY:=false}"
 : "${CODESEEQ_WORKSPACE_BANNER:=true}"
 : "${CODESEEQ_CONFIG_HOME:=${XDG_CONFIG_HOME:-/home/codeseeq/.config}/codeseeq}"
 : "${CODESEEQ_SYSTEM_PROMPT_FILE:=${CODESEEQ_CONFIG_HOME}/system-prompt.md}"
 : "${CODESEEQ_SYSTEM_PROMPT_INJECTION:=codex-config-developer_instructions}"
 
 export CODESEEQ_MODEL CODESEEQ_THINKING CODESEEQ_OPENRESPONSES_HOST CODESEEQ_OPENRESPONSES_PORT
+export CODESEEQ_IMAGE_BACKEND CODESEEQ_VENICE_IMAGE_MODEL
+export CODESEEQ_VENICE_IMAGE_ASPECT_RATIO CODESEEQ_VENICE_IMAGE_RESOLUTION
+export CODESEEQ_VENICE_IMAGE_FORMAT CODESEEQ_VENICE_IMAGE_VARIANTS
+export CODESEEQ_VENICE_IMAGE_SAFE_MODE CODESEEQ_VENICE_IMAGE_HIDE_WATERMARK
+export CODESEEQ_VENICE_IMAGE_SEED CODESEEQ_VENICE_IMAGE_RETURN_BINARY
 export CODESEEQ_OPENRESPONSES_URL CODESEEQ_OPENRESPONSES_CMD CODESEEQ_CODEX_HOME CODESEEQ_WORKDIR
 export CODESEEQ_APPROVAL_POLICY CODESEEQ_SANDBOX_MODE CODESEEQ_STREAM CODESEEQ_STREAM_IDLE_TIMEOUT_MS
 export CODESEEQ_REQUEST_MAX_RETRIES CODESEEQ_CONTEXT_WINDOW CODESEEQ_MAX_OUTPUT_TOKENS CODESEEQ_YOLO
@@ -422,6 +439,40 @@ EOF
   fi
 }
 
+ping_image() {
+  [[ -n "${VENICE_API_KEY:-}" ]] || die "VENICE_API_KEY is required for ping-image"
+  if [[ "${CODESEEQ_IMAGE_BACKEND:-none}" != "venice" ]]; then
+    die "ping-image requires CODESEEQ_IMAGE_BACKEND=venice"
+  fi
+  start_bridge || die "failed to start bridge"
+
+  local payload
+  payload=$(cat <<'INNEREOF'
+{"model":"MODEL_PLACEHOLDER","prompt":"A red circle on white background","size":"256x256"}
+INNEREOF
+)
+  payload="${payload/MODEL_PLACEHOLDER/${CODESEEQ_VENICE_IMAGE_MODEL:-auto}}"
+
+  local out attempt
+  for attempt in 1 2 3; do
+    if out="$(curl --silent --show-error --fail       -H 'Content-Type: application/json'       -H "Authorization: Bearer ${VENICE_API_KEY}"       -d "$payload"       "${CODESEEQ_OPENRESPONSES_URL}/images/generations" 2>&1)"; then
+      break
+    fi
+    if (( attempt == 3 )); then
+      echo "$out" >&2
+      die "image generation ping failed after retries"
+    fi
+    sleep 1
+  done
+
+  if echo "$out" | grep -q 'b64_json'; then
+    echo "PONG-IMAGE: success"
+  else
+    echo "$out" >&2
+    die "image generation ping failed: unexpected response"
+  fi
+}
+
 ping_web() {
   require_deepseek_key
   [[ -n "${BRAVE_API_KEY:-}" ]] || die "BRAVE_API_KEY is required for ping-web"
@@ -543,6 +594,9 @@ System prompt path: ${CODESEEQ_SYSTEM_PROMPT_FILE}
 System prompt bytes: $(system_prompt_bytes)
 System prompt lines: $(system_prompt_lines)
 System prompt injection: ${CODESEEQ_SYSTEM_PROMPT_INJECTION}
+Image backend: ${CODESEEQ_IMAGE_BACKEND:-none}
+Venice image model: ${CODESEEQ_VENICE_IMAGE_MODEL:-auto}
+Venice API key: $(key_state "${VENICE_API_KEY:-}")
 Bridge URL: ${CODESEEQ_OPENRESPONSES_URL}
 Bridge startup command: ${CODESEEQ_OPENRESPONSES_CMD}
 Bridge health: ${health_state}
@@ -850,7 +904,7 @@ Usage:
   codeseeq codex [args...]
 
 Commands:
-  run, models, doctor, config, ping, ping-stream, ping-web, ping-docs, shell, codex
+  run, models, doctor, config, ping, ping-stream, ping-web, ping-docs, ping-image, shell, codex
 
 Safety defaults:
   approval_policy=on-request
@@ -963,6 +1017,10 @@ case "${1:-}" in
   ping-web)
     shift
     ping_web
+    ;;
+  ping-image)
+    shift
+    ping_image
     ;;
   ping-docs)
     shift

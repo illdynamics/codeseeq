@@ -1,6 +1,6 @@
 # Architecture
 
-Current version: `v0.3.5`
+Current version: `v0.3.6`
 
 ## Runtime Modes
 
@@ -275,6 +275,34 @@ Jobs:
    bridge-smoke, docker]` and `if: startsWith(github.ref, 'refs/tags/v')`.
    Builds the package and creates a GitHub Release with the zip artifact
    attached.
+
+## Image Generation Backend
+
+CodeSeeq supports an optional image generation backend. The default is `none` (no
+image backend configured). Set `CODESEEQ_IMAGE_BACKEND=venice` to enable image
+generation via the Venice.ai API.
+
+### Venice Backend Architecture
+
+```text
+Codex / user
+  -> POST /v1/images/generations (bridge endpoint)
+  -> bin/codeseeq-bridge.py
+  -> POST https://api.venice.ai/api/v1/image/generate
+  -> Venice.ai inference
+  -> Base64-encoded images returned
+```
+
+### Standalone Script
+
+`bin/codeseeq-venice-image.py` provides direct CLI access to Venice image
+generation without going through the bridge or Codex:
+
+```bash
+python3 bin/codeseeq-venice-image.py --prompt "a cat" --out cat.png --model z-image-turbo
+```
+
+The bridge's `/health` endpoint reports the current image backend status.
 
 ## Packaging Model
 
