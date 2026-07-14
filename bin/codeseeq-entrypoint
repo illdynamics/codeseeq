@@ -121,7 +121,7 @@ fi
 
 # --- Image backend configuration ---
 : "${CODESEEQ_IMAGE_BACKEND:=none}"
-: "${CODESEEQ_VENICE_IMAGE_MODEL:=auto}"
+: "${CODESEEQ_VENICE_IMAGE_MODEL:=z-image-turbo}"
 : "${CODESEEQ_VENICE_IMAGE_ASPECT_RATIO:=1:1}"
 : "${CODESEEQ_VENICE_IMAGE_RESOLUTION:=1K}"
 : "${CODESEEQ_VENICE_IMAGE_FORMAT:=webp}"
@@ -130,6 +130,12 @@ fi
 : "${CODESEEQ_VENICE_IMAGE_HIDE_WATERMARK:=false}"
 : "${CODESEEQ_VENICE_IMAGE_SEED:=0}"
 : "${CODESEEQ_VENICE_IMAGE_RETURN_BINARY:=false}"
+
+# Auto-detect: if VENICE_API_KEY is set and backend is still "none", switch to venice
+if [[ "${CODESEEQ_IMAGE_BACKEND}" == "none" && -n "${VENICE_API_KEY:-}" ]]; then
+  CODESEEQ_IMAGE_BACKEND=venice
+  log "auto-detected VENICE_API_KEY; image backend set to venice"
+fi
 : "${CODESEEQ_WORKSPACE_BANNER:=true}"
 : "${CODESEEQ_CONFIG_HOME:=${XDG_CONFIG_HOME:-/home/codeseeq/.config}/codeseeq}"
 : "${CODESEEQ_SYSTEM_PROMPT_FILE:=${CODESEEQ_CONFIG_HOME}/system-prompt.md}"
@@ -451,7 +457,7 @@ ping_image() {
 {"model":"MODEL_PLACEHOLDER","prompt":"A red circle on white background","size":"256x256"}
 INNEREOF
 )
-  payload="${payload/MODEL_PLACEHOLDER/${CODESEEQ_VENICE_IMAGE_MODEL:-auto}}"
+  payload="${payload/MODEL_PLACEHOLDER/${CODESEEQ_VENICE_IMAGE_MODEL:-z-image-turbo}}"
 
   local out attempt
   for attempt in 1 2 3; do
@@ -595,7 +601,7 @@ System prompt bytes: $(system_prompt_bytes)
 System prompt lines: $(system_prompt_lines)
 System prompt injection: ${CODESEEQ_SYSTEM_PROMPT_INJECTION}
 Image backend: ${CODESEEQ_IMAGE_BACKEND:-none}
-Venice image model: ${CODESEEQ_VENICE_IMAGE_MODEL:-auto}
+Venice image model: ${CODESEEQ_VENICE_IMAGE_MODEL:-z-image-turbo}
 Venice API key: $(key_state "${VENICE_API_KEY:-}")
 Bridge URL: ${CODESEEQ_OPENRESPONSES_URL}
 Bridge startup command: ${CODESEEQ_OPENRESPONSES_CMD}

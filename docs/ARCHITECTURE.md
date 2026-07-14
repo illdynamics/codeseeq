@@ -1,6 +1,6 @@
 # Architecture
 
-Current version: `v0.3.6`
+Current version: `v0.3.7`
 
 ## Runtime Modes
 
@@ -278,9 +278,10 @@ Jobs:
 
 ## Image Generation Backend
 
-CodeSeeq supports an optional image generation backend. The default is `none` (no
-image backend configured). Set `CODESEEQ_IMAGE_BACKEND=venice` to enable image
-generation via the Venice.ai API.
+CodeSeeq supports an optional image generation backend via Venice.ai. The
+default is `none` (no image backend configured). When `VENICE_API_KEY` is set,
+CodeSeeq auto-detects and enables the Venice backend automatically. You can also
+explicitly set `CODESEEQ_IMAGE_BACKEND=venice`.
 
 ### Venice Backend Architecture
 
@@ -302,7 +303,7 @@ generation without going through the bridge or Codex:
 python3 bin/codeseeq-venice-image.py --prompt "a cat" --out cat.png --model z-image-turbo
 ```
 
-The bridge's `/health` endpoint reports the current image backend status.
+The bridge's `/health` endpoint reports the effective image backend status (including auto-detection) and version.
 
 ## Packaging Model
 

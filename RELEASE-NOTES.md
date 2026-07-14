@@ -1,3 +1,31 @@
+## v0.3.7 - 2026-07-14
+
+### Changed
+- **Venice image backend auto-detection.** When `VENICE_API_KEY` is set,
+  CodeSeeq automatically enables the Venice backend without requiring
+  `CODESEEQ_IMAGE_BACKEND=venice`. The launcher, entrypoint, and bridge
+  all auto-detect the key and activate Venice. Explicit `CODESEEQ_IMAGE_BACKEND`
+  still works as an override.
+- **Default image output to current directory.** `bin/codeseeq-venice-image.py`
+  now saves generated images to the current working directory instead of a
+  `codeseeq-images/` subdirectory.
+- **`ping-image` no longer requires explicit `CODESEEQ_IMAGE_BACKEND=venice`.**
+  Setting `VENICE_API_KEY` is sufficient; auto-detection handles the rest.
+
+### Removed
+- **OpenAI `image_gen` skill deleted.** The `.codeseeq/skills/.system/imagegen/`
+  skill (OpenAI `image_gen` tool, GPT image models, `OPENAI_API_KEY` dependency)
+  has been completely removed. CodeSeeq uses Venice.ai exclusively for image
+  generation. No OpenAI API keys or endpoints are ever contacted for images.
+
+### Changed
+- **Health endpoint** now reports version `0.3.7`, shows effective image backend
+  (including auto-detected `venice`), and Venice API key state.
+- **Version bump to v0.3.7.** All docs, configs, and internal version strings
+  updated.
+
+---
+
 ## v0.3.6 - 2026-07-14
 
 ### Added

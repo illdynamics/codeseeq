@@ -8,7 +8,7 @@ Usage:
 
 Environment:
   VENICE_API_KEY                     Required
-  CODESEEQ_VENICE_IMAGE_MODEL        Model name or "auto" (default: auto)
+  CODESEEQ_VENICE_IMAGE_MODEL        Model name (default: z-image-turbo)
   CODESEEQ_VENICE_IMAGE_ASPECT_RATIO Default aspect ratio (default: 1:1)
   CODESEEQ_VENICE_IMAGE_RESOLUTION   Resolution: 1K, 2K, 4K (default: 1K)
   CODESEEQ_VENICE_IMAGE_FORMAT       jpeg, png, webp (default: webp)
@@ -42,8 +42,8 @@ HTTP_TIMEOUT = float(os.environ.get("CODESEEQ_VENICE_IMAGE_TIMEOUT", "180"))
 
 
 def _default_output_dir() -> Path:
-    """Default output directory: ./codeseeq-images/ in the current working dir."""
-    return Path.cwd() / "codeseeq-images"
+    """Default output directory: current working directory."""
+    return Path.cwd()
 
 
 def _env_bool(key: str, default: bool = True) -> bool:
@@ -77,7 +77,7 @@ def build_payload(prompt: str, args: argparse.Namespace) -> Dict[str, Any]:
     }
 
     # Model
-    model = args.model or _env_str("CODESEEQ_VENICE_IMAGE_MODEL", "auto")
+    model = args.model or _env_str("CODESEEQ_VENICE_IMAGE_MODEL", "z-image-turbo")
     payload["model"] = model
 
     # Aspect ratio
@@ -247,7 +247,7 @@ Examples:
     parser.add_argument("--out", "-o", default=None, help="Output file path")
     parser.add_argument("--out-dir", "-d", default=None, help="Output directory (created if needed)")
     parser.add_argument("--model", "-m", default=None,
-                        help="Model name (default: auto, e.g. z-image-turbo, gpt-image-2)")
+                        help="Model name (default: z-image-turbo)")
     parser.add_argument("--aspect-ratio", "-a", default=None,
                         help="Aspect ratio (default: 1:1, e.g. 16:9, 4:3)")
     parser.add_argument("--resolution", "-r", default=None,

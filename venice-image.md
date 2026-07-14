@@ -1,7 +1,7 @@
-# Venice Image Backend — Implementation Plan for CodeSeeq v0.3.6
+# Venice Image Backend — Implementation Plan for CodeSeeq v0.3.7
 
 > **Status:** Ready for agent implementation  
-> **Version:** v0.3.6  
+> **Version:** v0.3.7  
 > **Plan authored:** 2026-07-14  
 
 ---
@@ -351,7 +351,7 @@ def translate_from_venice(venice_resp: dict, original_request: dict) -> dict:
 ```python
 @app.get("/health")
 async def health():
-    info = {"status": "ok", "version": "0.3.6"}
+    info = {"status": "ok", "version": "0.3.7"}
     info["image_backend"] = IMAGE_BACKEND
     if IMAGE_BACKEND == "venice":
         info["venice_api_key_configured"] = bool(VENICE_API_KEY)
@@ -630,7 +630,7 @@ python3 bin/codeseeq-venice-image.py --prompt "a beautiful sunset" --out sunset.
 Add at the top:
 
 ```markdown
-## v0.3.6 - 2026-07-14
+## v0.3.7 - 2026-07-14
 
 ### Added
 - **Venice.ai image generation backend.** New `CODESEEQ_IMAGE_BACKEND` configuration
@@ -656,7 +656,7 @@ Add at the top:
   `CODESEEQ_VENICE_IMAGE_CFG_SCALE`, `CODESEEQ_VENICE_IMAGE_STEPS`.
 
 ### Changed
-- **Version bump to v0.3.6.**
+- **Version bump to v0.3.7.**
 - **Health endpoint** now reports `image_backend` status and Venice configuration.
 - **Dockerfile** now includes `codeseeq-venice-image.py`.
 
@@ -667,7 +667,7 @@ Add at the top:
 **Update version line:**
 
 ```markdown
-Current version: `v0.3.6`
+Current version: `v0.3.7`
 ```
 
 **Add new section after "Bridge API Format":**
@@ -716,7 +716,7 @@ The bridge's `/health` endpoint reports the current image backend status.
 ### 11. MODIFY: `VERSION`
 
 ```
-v0.3.6
+v0.3.7
 ```
 
 ### 12. MODIFY: `config/model-catalog.json` (if needed)
@@ -749,16 +749,16 @@ fi
 
 ## Version Bump Checklist
 
-Every file containing `v0.3.5` must be updated to `v0.3.6`:
+Every file containing `v0.3.5` must be updated to `v0.3.7`:
 
 | File | Status |
 |---|---|
-| `VERSION` | Update to `v0.3.6` |
-| `README.md` | Update version line to `v0.3.6` |
-| `docs/ARCHITECTURE.md` | Update version line to `v0.3.6` |
-| `docs/TROUBLESHOOTING.md` | Update version line to `v0.3.6` |
-| `docs/SECURITY.md` | Update version line to `v0.3.6` |
-| `RELEASE-NOTES.md` | Add v0.3.6 entry at top |
+| `VERSION` | Update to `v0.3.7` |
+| `README.md` | Update version line to `v0.3.7` |
+| `docs/ARCHITECTURE.md` | Update version line to `v0.3.7` |
+| `docs/TROUBLESHOOTING.md` | Update version line to `v0.3.7` |
+| `docs/SECURITY.md` | Update version line to `v0.3.7` |
+| `RELEASE-NOTES.md` | Add v0.3.7 entry at top |
 | `bin/codeseeq-bridge.py` | Update docstring and health endpoint version |
 | `.env` / `.env.example` | No version stored, just add new vars |
 
@@ -789,11 +789,11 @@ Execute in this order to minimize rework:
 ### Phase 4: Documentation
 
 10. **Modify `README.md`** — New section, env var table, commands, Makefile targets.
-11. **Modify `RELEASE-NOTES.md`** — Add v0.3.6 entry.
+11. **Modify `RELEASE-NOTES.md`** — Add v0.3.7 entry.
 12. **Modify `docs/ARCHITECTURE.md`** — New section, version bump.
 13. **Modify `docs/TROUBLESHOOTING.md`** — Version bump (and any image-related troubleshooting).
 14. **Modify `docs/SECURITY.md`** — Version bump.
-15. **Modify `VERSION`** — Change to `v0.3.6`.
+15. **Modify `VERSION`** — Change to `v0.3.7`.
 16. **Modify `.gitignore`** — Add `codeseeq-images/`.
 
 ### Phase 5: Validation

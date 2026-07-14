@@ -2,7 +2,7 @@
 """
 codeseeq-bridge: OpenAI Responses API <-> DeepSeek Chat Completions translation bridge.
 
-v0.2.0 patches:
+v0.3.7 patches:
 - Robust streaming DSML tool-call detection (inline, not post-hoc)
 - Correct OpenAI Responses streaming event types for function tools
   (response.function_call_arguments.delta / .done) instead of the previous
@@ -1663,10 +1663,15 @@ def _function_call_lifecycle_events(
 @app.get("/health")
 async def health() -> Dict[str, str]:
     image_backend = os.environ.get("CODESEEQ_IMAGE_BACKEND", "none")
-    info: Dict[str, str] = {"status": "ok", "image_backend": image_backend}
-    if image_backend == "venice":
-        info["venice_api_key_configured"] = str(bool(os.environ.get("VENICE_API_KEY", "")))
-        info["venice_image_model"] = os.environ.get("CODESEEQ_VENICE_IMAGE_MODEL", "auto")
+    venice_key = os.environ.get("VENICE_API_KEY", "")
+    # Auto-detection: if no backend configured but VENICE_API_KEY is set, report venice
+    effective_backend = image_backend
+    if image_backend == "none" and venice_key:
+        effective_backend = "venice"
+    info: Dict[str, str] = {"status": "ok", "version": "0.3.7", "image_backend": effective_backend}
+    if effective_backend == "venice":
+        info["venice_api_key_configured"] = str(bool(venice_key))
+        info["venice_image_model"] = os.environ.get("CODESEEQ_VENICE_IMAGE_MODEL", "z-image-turbo")
     return info
 
 
@@ -2214,7 +2219,10 @@ async def responses(request: Request) -> Any:
 # ---------------------------------------------------------------------------
 # Image generation backend (Venice.ai)
 # ---------------------------------------------------------------------------
-IMAGE_BACKEND = os.environ.get("CODESEEQ_IMAGE_BACKEND", "none")
+# Image backend: auto-detect Venice if VENICE_API_KEY is set
+_configured_backend = os.environ.get("CODESEEQ_IMAGE_BACKEND", "none")
+_venice_key = os.environ.get("VENICE_API_KEY", "")
+IMAGE_BACKEND = "venice" if (_configured_backend == "none" and _venice_key) else _configured_backend
 VENICE_IMAGE_URL = os.environ.get(
     "CODESEEQ_VENICE_IMAGE_URL", "https://api.venice.ai/api/v1/image/generate"
 )
@@ -2225,7 +2233,7 @@ def _translate_openai_to_venice(
 ) -> Dict[str, Any]:
     """Convert OpenAI /images/generations request to Venice /image/generate format."""
     venice: Dict[str, Any] = {
-        "model": body.get("model") or os.environ.get("CODESEEQ_VENICE_IMAGE_MODEL", "auto"),
+        "model": body.get("model") or os.environ.get("CODESEEQ_VENICE_IMAGE_MODEL", "z-image-turbo"),
         "prompt": body.get("prompt", ""),
     }
 
@@ -2307,7 +2315,7 @@ async def image_generations(request: Request):
     if IMAGE_BACKEND != "venice":
         raise HTTPException(
             status_code=501,
-            detail="Image backend not configured. Set CODESEEQ_IMAGE_BACKEND=venice and provide VENICE_API_KEY.",
+            detail="Image backend not configured. Set CODESEEQ_IMAGE_BACKEND=venice or provide VENICE_API_KEY for auto-detection.",
         )
 
     venice_api_key = os.environ.get("VENICE_API_KEY", "")

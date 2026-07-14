@@ -86,7 +86,7 @@ LEGACY_SYSTEM_PROMPT_PATH="${WORKDIR_HOST}/.codeseeq/system-prompt.md"
 
 # --- Image backend configuration ---
 : "${CODESEEQ_IMAGE_BACKEND:=none}"
-: "${CODESEEQ_VENICE_IMAGE_MODEL:=auto}"
+: "${CODESEEQ_VENICE_IMAGE_MODEL:=z-image-turbo}"
 : "${CODESEEQ_VENICE_IMAGE_ASPECT_RATIO:=1:1}"
 : "${CODESEEQ_VENICE_IMAGE_RESOLUTION:=1K}"
 : "${CODESEEQ_VENICE_IMAGE_FORMAT:=webp}"
@@ -95,6 +95,12 @@ LEGACY_SYSTEM_PROMPT_PATH="${WORKDIR_HOST}/.codeseeq/system-prompt.md"
 : "${CODESEEQ_VENICE_IMAGE_HIDE_WATERMARK:=false}"
 : "${CODESEEQ_VENICE_IMAGE_SEED:=0}"
 : "${CODESEEQ_VENICE_IMAGE_RETURN_BINARY:=false}"
+
+# Auto-detect: if VENICE_API_KEY is set and backend is still "none", switch to venice
+if [[ "${CODESEEQ_IMAGE_BACKEND}" == "none" && -n "${VENICE_API_KEY:-}" ]]; then
+  CODESEEQ_IMAGE_BACKEND=venice
+  log "auto-detected VENICE_API_KEY; image backend set to venice"
+fi
 
 BRIDGE_OWNED=""
 BRIDGE_PID=""

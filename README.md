@@ -9,7 +9,7 @@ But your prompts go to DeepSeek V4 via your `DEEPSEEK_API_KEY` — no OpenAI acc
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.3.6` (from [`VERSION`](./VERSION)).
+Current version: `v0.3.7` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -20,7 +20,7 @@ Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 - **DEEPSEEK_API_KEY** — set in your shell for model requests.
 - **BRAVE_API_KEY** (optional) — needed for web-search pings (`ping-web`).
 - **UNSTRUCTURED_API_KEY** (optional) — needed for doc-input pings (`ping-docs`).
-- **VENICE_API_KEY** (optional) — needed for image generation via Venice.ai when `CODESEEQ_IMAGE_BACKEND=venice`.
+- **VENICE_API_KEY** (optional) — automatically enables Venice.ai image generation when set (no `CODESEEQ_IMAGE_BACKEND` needed).
 - Podman or Docker (optional — only needed for container mode).
 - Python 3 + `pip install -r requirements-bridge.txt` (optional — only needed for host/process mode).
 
@@ -333,9 +333,9 @@ All supported variables are documented in [`.env.example`](./.env.example). Key 
 | `CODESEEQ_APPROVAL_POLICY`    | `on-request`         | Codex approval policy                            |
 | `CODESEEQ_SANDBOX_MODE`       | `workspace-write`    | Codex sandbox mode                               |
 | `CODESEEQ_YOLO`               | `false`              | Bypass approvals and sandbox (equivalent to `-y`)|
-| `CODESEEQ_IMAGE_BACKEND`       | `none`               | Image backend: `none` or `venice`                 |
+| `CODESEEQ_IMAGE_BACKEND`       | `none`               | Image backend: `none` or `venice` (auto-set when VENICE_API_KEY present) |
 | `VENICE_API_KEY`               | —                    | Venice API key (image generation)                 |
-| `CODESEEQ_VENICE_IMAGE_MODEL`  | `auto`               | Venice image model                                |
+| `CODESEEQ_VENICE_IMAGE_MODEL`  | `z-image-turbo`               | Venice image model                                |
 | `CODESEEQ_RUNTIME_MODE`       | `auto`               | `auto`, `container`, or `host`                   |
 | `CODESEEQ_BRIDGE_MODE`        | `auto`               | `auto`, `process`, `container`, or `external`    |
 | `CONTAINER`                   | `podman`             | Container runtime (`podman` or `docker`)         |
@@ -365,13 +365,15 @@ Do not create release zips manually in Finder or macOS Archive Utility. Manual z
 
 CodeSeeq supports an optional image generation backend via [Venice.ai](https://venice.ai) — a privacy-first, uncensored AI platform.
 
+**Auto-detection:** When `VENICE_API_KEY` is set, CodeSeeq automatically enables the Venice backend. No explicit `CODESEEQ_IMAGE_BACKEND=venice` is required.
+
 ### Configuration
 
 | Variable | Default | Description |
 |---|---|---|
-| `CODESEEQ_IMAGE_BACKEND` | `none` | Image backend: `none` (default) or `venice` |
-| `VENICE_API_KEY` | — | Venice API key (required when backend is `venice`) |
-| `CODESEEQ_VENICE_IMAGE_MODEL` | `auto` | Model: `auto` or specific name (e.g. `z-image-turbo`, `gpt-image-2`) |
+| `VENICE_API_KEY` | — | Venice API key — setting this auto-enables the Venice image backend |
+| `CODESEEQ_IMAGE_BACKEND` | `none` | Image backend: `none` or `venice` (auto-set when key present) |
+| `CODESEEQ_VENICE_IMAGE_MODEL` | `z-image-turbo` | Model (e.g. `z-image-turbo`, `gpt-image-2`) |
 | `CODESEEQ_VENICE_IMAGE_ASPECT_RATIO` | `1:1` | Aspect ratio: `1:1`, `16:9`, `9:16`, `4:3`, `3:4` |
 | `CODESEEQ_VENICE_IMAGE_RESOLUTION` | `1K` | Resolution: `1K`, `2K`, `4K` |
 | `CODESEEQ_VENICE_IMAGE_FORMAT` | `webp` | Output format: `jpeg`, `png`, `webp` |
@@ -382,8 +384,7 @@ CodeSeeq supports an optional image generation backend via [Venice.ai](https://v
 ### Usage
 
 ```bash
-# Enable Venice image backend
-export CODESEEQ_IMAGE_BACKEND=venice
+# Auto-detection: just set VENICE_API_KEY, no backend config needed
 export VENICE_API_KEY=your-key-here
 
 # Test connectivity
@@ -398,7 +399,7 @@ CODESEEQ_VENICE_IMAGE_ASPECT_RATIO=16:9 \
 CODESEEQ_VENICE_IMAGE_RESOLUTION=4K \
 ./codeseeq run "generate a cinematic wide shot of venice at sunset"
 
-# Direct CLI usage (no Codex needed)
+# Direct CLI usage (no Codex needed) — outputs to current directory
 python3 bin/codeseeq-venice-image.py --prompt "a beautiful sunset" --out sunset.png
 ```
 
