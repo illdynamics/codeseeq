@@ -2,7 +2,10 @@
 """
 codeseeq-bridge: OpenAI Responses API <-> DeepSeek Chat Completions translation bridge.
 
-v0.3.7 patches:
+v0.3.8 patches:
+- JSON salvage: best-effort repair of truncated tool-call argument JSON
+  from DeepSeek streaming, preventing "Expecting , delimiter" errors
+  for large calls like update_plan with multi-step plan arrays.
 - Robust streaming DSML tool-call detection (inline, not post-hoc)
 - Correct OpenAI Responses streaming event types for function tools
   (response.function_call_arguments.delta / .done) instead of the previous
@@ -595,6 +598,114 @@ def _arguments_value_to_json_text(value: Any) -> str:
     return str(value)
 
 
+def _salvage_truncated_json(json_str: str) -> Optional[str]:
+    """
+    Best-effort repair of truncated/incomplete JSON from streaming tool calls.
+
+    DeepSeek's streaming delivery can truncate tool-call argument JSON,
+    especially for complex calls like update_plan with large plan arrays.
+    This attempts progressively more aggressive fixes before giving up.
+    """
+    if not json_str or json_str.isspace():
+        return None
+
+    s = json_str.strip()
+
+    def _needed_closers(text: str) -> str:
+        """Return the sequence of closing brackets needed to balance `text`,
+        ignoring brackets inside quoted strings. The closers are ordered so
+        the innermost unclosed bracket is closed first."""
+        stack: List[str] = []
+        in_string = False
+        string_char = None
+        escape_next = False
+        for ch in text:
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == '\\':
+                escape_next = True
+                continue
+            if ch in ('"', "'") and (not in_string or ch == string_char):
+                in_string = not in_string
+                if in_string:
+                    string_char = ch
+                else:
+                    string_char = None
+                continue
+            if in_string:
+                continue
+            if ch in ('{', '['):
+                stack.append(ch)
+            elif ch == '}':
+                if stack and stack[-1] == '{':
+                    stack.pop()
+            elif ch == ']':
+                if stack and stack[-1] == '[':
+                    stack.pop()
+
+        closers = []
+        for opener in reversed(stack):
+            closers.append('}' if opener == '{' else ']')
+        return ''.join(closers)
+
+    # Strategy 1: The JSON is valid except unclosed brackets.
+    closers = _needed_closers(s)
+    if closers:
+        candidate = s + closers
+        try:
+            json.loads(candidate)
+            return candidate
+        except Exception:
+            pass
+
+    # Strategy 2: The JSON was truncated mid-string. Find the last
+    # unclosed quote, close it, then close unbalanced brackets.
+    in_string = False
+    string_char = None
+    escape_next = False
+    last_string_start = -1
+    for i, ch in enumerate(s):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\':
+            escape_next = True
+            continue
+        if ch in ('"', "'") and (not in_string or ch == string_char):
+            if not in_string:
+                in_string = True
+                string_char = ch
+                last_string_start = i
+            else:
+                in_string = False
+                string_char = None
+
+    if in_string and last_string_start >= 0:
+        candidate = s + string_char
+        closers2 = _needed_closers(candidate)
+        if closers2:
+            candidate = candidate + closers2
+        try:
+            json.loads(candidate)
+            return candidate
+        except Exception:
+            pass
+
+    # Strategy 3: Trailing comma in array/object — remove then close.
+    if s.rstrip().endswith(','):
+        candidate = s.rstrip().rstrip(',')
+        closers3 = _needed_closers(candidate)
+        if closers3:
+            candidate = candidate + closers3
+        try:
+            json.loads(candidate)
+            return candidate
+        except Exception:
+            pass
+
+    return None
+
 def validate_tool_arguments_json(
     arguments_value: Any,
     *,
@@ -614,7 +725,17 @@ def validate_tool_arguments_json(
     try:
         parsed = json.loads(arguments_json or "{}")
     except Exception as exc:
-        return None, str(exc)
+        # Try to salvage truncated JSON before giving up.
+        salvaged = _salvage_truncated_json(arguments_json)
+        if salvaged is not None:
+            log(f"salvaged truncated tool arguments: tool={raw_name} "
+                f"original_chars={len(arguments_json)} salvaged_chars={len(salvaged)}")
+            try:
+                parsed = json.loads(salvaged)
+            except Exception:
+                return None, str(exc)
+        else:
+            return None, str(exc)
 
     if not isinstance(parsed, dict):
         return None, "tool arguments must be a JSON object"
@@ -707,9 +828,12 @@ def _validate_special_tool_args(
         log(f"request_user_input forwarded (Codex mode-check will apply): {json.dumps(args, ensure_ascii=False)[:200]}")
         return json.dumps(args, ensure_ascii=False), None
 
-    # update_goal without an active goal: if we see the model trying to
-    # update_goal, it may not have created one first. Let it through
-    # since Codex will give a clear error that the model can recover from.
+    # update_goal: if the model calls this without first creating a goal
+    # via create_goal, Codex will reject it with "cannot update goal because
+    # this thread has no goal". Instead of letting the opaque Codex error
+    # through, intercept with a clear recovery message that tells the model
+    # to use create_goal first, OR to silently acknowledge the goal is done
+    # if the task is actually complete.
     if resolved_name.lower() == "update_goal":
         status_val = str(args.get("status", "")).lower()
         if status_val not in {"complete", "blocked"}:
@@ -720,7 +844,16 @@ def _validate_special_tool_args(
                 args["status"] = "blocked"
             elif status_val:
                 log(f"update_goal with unrecognized status={status_val!r}; letting through for Codex to reject")
-        return json.dumps(args, ensure_ascii=False), None
+        # Return a recovery message instead of letting Codex reject it.
+        # The bridge cannot track whether a goal exists (that's Codex state),
+        # so we emit a non-error response that tells the model to either
+        # create_goal first or treat the goal as naturally completed.
+        return None, (
+            "update_goal requires an active goal. If you haven't called "
+            "create_goal yet, call create_goal with the objective first, "
+            "then call update_goal. If the task is naturally done (not a "
+            "tracked goal), just summarize your results without calling "
+            "update_goal.")
 
     # write_stdin with a likely-stale session_id: if the session_id is 0
     # or clearly not a real session, block it with a recovery message.
