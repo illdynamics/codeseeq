@@ -2401,9 +2401,6 @@ async def responses(request: Request) -> Any:
         message_item_id_local = f"msg_{uuid.uuid4().hex[:20]}"
         message_item_open = {"value": False}
         message_output_index: Dict[str, Optional[int]] = {"value": None}
-        reasoning_item_id_local = f"rs_{uuid.uuid4().hex[:20]}"
-        reasoning_item_open = {"value": False}
-        reasoning_output_index: Dict[str, Optional[int]] = {"value": None}
         next_output_index = {"value": 0}
         dsml_buf = StreamingDsmlBuffer(registered_set)
 
@@ -2553,30 +2550,11 @@ async def responses(request: Request) -> Any:
                         reasoning_delta = delta.get("reasoning_content")
                         if isinstance(reasoning_delta, str) and reasoning_delta:
                             reasoning_parts.append(reasoning_delta)
-                            # Open the reasoning output item on first delta (Codex requires
-                            # response.output_item.added before any reasoning delta)
-                            if not reasoning_item_open["value"]:
-                                reasoning_item_open["value"] = True
-                                reasoning_output_index["value"] = allocate_output_index()
-                                yield sse_event(
-                                    "response.output_item.added",
-                                    {
-                                        "type": "response.output_item.added",
-                                        "output_index": reasoning_output_index["value"],
-                                        "item": {
-                                            "id": reasoning_item_id_local,
-                                            "type": "reasoning",
-                                            "summary": [],
-                                        },
-                                    },
-                                )
                             yield sse_event(
                                 "response.reasoning_text.delta",
                                 {
                                     "type": "response.reasoning_text.delta",
                                     "delta": reasoning_delta,
-                                    "item_id": reasoning_item_id_local,
-                                    "output_index": reasoning_output_index["value"],
                                     "content_index": 0,
                                 },
                             )
@@ -2715,30 +2693,18 @@ async def responses(request: Request) -> Any:
 
         # Reasoning summary item.
         full_reasoning = "".join(reasoning_parts).strip()
-        if reasoning_item_open["value"]:
-            # Close reasoning text content
-            yield sse_event(
-                "response.reasoning_text.done",
-                {
-                    "type": "response.reasoning_text.done",
-                    "item_id": reasoning_item_id_local,
-                    "output_index": reasoning_output_index["value"],
-                    "content_index": 0,
-                    "text": full_reasoning,
-                },
-            )
-            # Close reasoning output item
+        if full_reasoning:
             yield sse_event(
                 "response.output_item.done",
                 {
                     "type": "response.output_item.done",
-                    "output_index": reasoning_output_index["value"],
+                    "output_index": allocate_output_index(),
                     "item": {
-                        "id": reasoning_item_id_local,
                         "type": "reasoning",
-                        "summary": [
-                            {"type": "summary_text", "text": full_reasoning[:1000]}
-                        ] if full_reasoning else [],
+                        "id": f"rs_{uuid.uuid4().hex[:12]}",
+                        "summary": [{"type": "summary_text", "text": full_reasoning[:1000]}],
+                        "content": [{"type": "reasoning_text", "text": full_reasoning}],
+                        "encrypted_content": None,
                     },
                 },
             )
