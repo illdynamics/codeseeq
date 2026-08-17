@@ -35,3 +35,10 @@ skills
 skills/**
 
 codeseeq-images/
+
+# Qq
+.qq**
+.qq
+.qq/**
+*.pyc
+._*
