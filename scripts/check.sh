@@ -25,6 +25,22 @@ fail() {
   failures=$((failures + 1))
 }
 
+note "sanitizing ambient environment for deterministic checks"
+# The check suite must be deterministic regardless of the caller's ambient
+# environment.  The host wrapper (codeseeq) inherits these variables, and an
+# inherited value (e.g. CODESEEQ_RUNTIME_MODE=host) silently changes which
+# path (host vs. fake container runtime) the fake-runtime assertions exercise.
+# Unset them here; every test sets exactly what it needs.
+unset CONTAINER IMAGE DOCKER_HOST PODMAN_HOST 2>/dev/null || true
+unset CODESEEQ_RUNTIME_MODE CODESEEQ_HOST_MODE CODESEEQ_AUTO_BUILD 2>/dev/null || true
+unset CODESEEQ_MODEL CODESEEQ_THINKING 2>/dev/null || true
+unset CODESEEQ_APPROVAL_POLICY CODESEEQ_SANDBOX_MODE 2>/dev/null || true
+unset CODESEEQ_BRIDGE_MODE CODESEEQ_RUNTIME_DIR CODESEEQ_LOG_DIR 2>/dev/null || true
+unset CODESEEQ_OPENRESPONSES_PORT CODESEEQ_OPENRESPONSES_URL 2>/dev/null || true
+unset CODESEEQ_WORKDIR_HOST CODESEEQ_WORKDIR 2>/dev/null || true
+unset DEEPSEEK_API_KEY DEEPSEEK_BASE_URL DEEPSEEK_CHAT_URL 2>/dev/null || true
+unset VENICE_API_KEY BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY 2>/dev/null || true
+
 shell_files=()
 while IFS= read -r f; do
   shell_files+=("$f")
