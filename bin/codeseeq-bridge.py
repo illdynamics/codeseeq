@@ -947,7 +947,7 @@ def normalize_tool_arguments_dict(
     # write_stdin calls. Without tty=true, Codex closes stdin immediately
     # after command start, causing "stdin is closed for this session"
     # errors when the model later calls write_stdin. Non-interactive
-    # commands work fine with tty=true — they just complete normally.
+    # commands work fine with tty=true - they just complete normally.
     # Apply to ALL shell-type resolved names because the model may use
     # aliases (bash, shell, exec_command, etc.) that resolve to various
     # Codex tool names, and any of them may be followed by write_stdin.
@@ -1274,6 +1274,12 @@ def normalize_model(model: str) -> "ModelSpec":
         if raw.startswith("qwibus"):
             canonical = f"qwibus@{ds_model}"
         else:
+            # Preserve the "-thinking" suffix so thinking variants resolve to
+            # their own spec (deepseek@deepseek-v4-flash-thinking) instead of
+            # collapsing onto the non-thinking spec. Without this, every
+            # -thinking alias silently ran with thinking disabled.
+            if thinking and not ds_model.endswith("-thinking"):
+                ds_model = f"{ds_model}-thinking"
             canonical = f"deepseek@{ds_model}"
 
     if canonical not in MODEL_SPECS:
@@ -2022,7 +2028,14 @@ def deepseek_payload(
                         "function": {"name": tool_choice["name"]},
                     }
 
-    # FIXED — only send when enabled; omit entirely for non-thinking models
+    # Qwibus models run on lightning-mlx. Non-thinking variants MUST send
+    # enable_thinking=false so the Qwen3 chat template renders an empty
+    # <think> block instead of an open <think> tag; otherwise chain-of-
+    # thought leaks into reasoning_content (and sometimes the content).
+    if spec.slug.startswith("qwibus") and not thinking_enabled:
+        payload["enable_thinking"] = False
+
+    # FIXED - only send when enabled; omit entirely for non-thinking models
     if thinking_enabled:
         payload["thinking"] = {"type": "enabled"}
         reasoning = body.get("reasoning")
@@ -2280,6 +2293,26 @@ async def responses(request: Request) -> Any:
     if spec.system_prompt:
         messages.insert(0, {"role": "system", "content": spec.system_prompt})
 
+    # Qwen3-family chat templates (lightning-mlx) render ONLY the first
+    # system message when tools are present; every additional system message
+    # is silently dropped by the template. Codex also forwards its developer
+    # instructions as a system-role message (input_to_messages maps
+    # role "developer" -> "system"), so a request can carry three system
+    # messages (/no_think, developer instructions, tool steering). Collapse
+    # them into a single system message for qwibus models so all content
+    # reaches the model and the MLX log shows roles=['system','user'].
+    if spec.slug.startswith("qwibus"):
+        system_parts: List[str] = []
+        rest: List[Dict[str, Any]] = []
+        for _m in messages:
+            if _m.get("role") == "system" and _m.get("content"):
+                system_parts.append(str(_m["content"]))
+            else:
+                rest.append(_m)
+        if system_parts:
+            rest.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
+        messages = rest
+
     payload = deepseek_payload(body, spec, messages)
     stream = bool(body.get("stream", False))
 
@@ -2348,7 +2381,11 @@ async def responses(request: Request) -> Any:
                     structured_tool_call_count += 1
 
         reasoning = msg.get("reasoning_content")
-        if isinstance(reasoning, str) and reasoning.strip():
+        if (
+            spec.thinking
+            and isinstance(reasoning, str)
+            and reasoning.strip()
+        ):
             output_items.append(
                 {
                     "type": "reasoning",
@@ -2549,8 +2586,14 @@ async def responses(request: Request) -> Any:
                             else {}
                         )
 
-                        # 1. Reasoning
-                        reasoning_delta = delta.get("reasoning_content")
+                        # 1. Reasoning - only forward reasoning deltas when the
+                        # model spec has thinking enabled. DeepSeek can still
+                        # emit reasoning_content on non-thinking models; leaking
+                        # it into the Responses stream would open reasoning
+                        # items Codex never asked for and waste output tokens.
+                        reasoning_delta = (
+                            delta.get("reasoning_content") if spec.thinking else None
+                        )
                         if isinstance(reasoning_delta, str) and reasoning_delta:
                             reasoning_parts.append(reasoning_delta)
                             # Open the reasoning output item on first delta (Codex requires

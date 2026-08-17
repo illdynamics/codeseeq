@@ -42,3 +42,6 @@ codeseeq-images/
 .qq/**
 *.pyc
 ._*
+
+# Bridge backup artifacts
+bin/*.bak-*

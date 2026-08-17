@@ -152,8 +152,8 @@
       "top_p": 0.92,
       "top_k": 20,
       "api_key_required": false,
-      "context_window": 16384,
-      "max_context_window": 16384,
+      "context_window": 32768,
+      "max_context_window": 128000,
       "max_output_tokens": 4096,
       "timeout_seconds": 60,
       "supports_reasoning_summaries": false,
@@ -163,7 +163,7 @@
       "web_search_tool_type": "text",
       "truncation_policy": {
         "mode": "tokens",
-        "limit": 16384
+        "limit": 32768
       },
       "supports_parallel_tool_calls": true,
       "priority": 30,
@@ -188,7 +188,7 @@
       "top_k": 20,
       "api_key_required": false,
       "context_window": 32768,
-      "max_context_window": 32768,
+      "max_context_window": 128000,
       "max_output_tokens": 8192,
       "timeout_seconds": 600,
       "supports_reasoning_summaries": true,
