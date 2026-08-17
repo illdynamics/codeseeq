@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `v0.3.8`
+Current version: `v0.3.9`
 
 ## `./codeseeq` is not executable
 
@@ -141,13 +141,23 @@ CodeSeeq will not silently fall back to container Codex for danger-full-access, 
 
 ## Bridge Port Conflict
 
-Host mode starts a bridge for each CodeSeeq invocation. It picks the first free
-localhost port starting at `CODESEEQ_BRIDGE_PORT` or `8080`.
+Host mode starts a bridge for each CodeSeeq invocation. When
+`CODESEEQ_BRIDGE_PORT` is unset, the bridge performs a **real bind** starting at
+`CODESEEQ_OPENRESPONSES_PORT` (default `8080`) and increments up to
+`CODESEEQ_OPENRESPONSES_PORT_SCAN_LIMIT`, writing the chosen port to
+`CODESEEQ_BRIDGE_PORT_FILE`. This is bind-based (not a connect probe), so
+parallel invocations no longer race for a specific port.
 
-Change the starting port:
+Pin an exact port:
 
 ```bash
 CODESEEQ_BRIDGE_PORT=18080 ./codeseeq -y "say hi"
+```
+
+Change the auto-select starting port:
+
+```bash
+CODESEEQ_OPENRESPONSES_PORT=18080 ./codeseeq -y "say hi"
 ```
 
 If startup fails, inspect the bridge container name printed in the startup log,

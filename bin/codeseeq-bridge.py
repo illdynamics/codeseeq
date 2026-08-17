@@ -2,7 +2,20 @@
 """
 codeseeq-bridge: OpenAI Responses API <-> DeepSeek Chat Completions translation bridge.
 
-v0.3.8 patches:
+v0.3.9 patches:
+- JSON config fallback (CODESEEQ_CONFIG_JSON) with env > JSON > built-in
+  precedence; every CODESEEQ_* variable plus provider/credential names is
+  configurable either way.
+- Bind-based port auto-selection (no connect-probe TOCTOU) via main() with a
+  port discovery file (CODESEEQ_BRIDGE_PORT_FILE) and a fixed-port path.
+- Enforced CODESEEQ_STREAM_IDLE_TIMEOUT_MS as an idle (between-chunk) read
+  timeout on streaming responses.
+- Per-model env keys strip the "provider@" prefix so documented
+  CODESEEQ_<MODEL>_* overrides (e.g. CODESEEQ_QWIBUS_QWIKK_BASE_URL) work, and
+  explicit env/config values take precedence over the model catalog.
+- Removed dead session-tracking code and CODESEEQ_SESSION_TTL_SECONDS.
+
+Prior patches:
 - Per-model endpoint + sampling configuration (base/chat URL, temperature,
   top_p, top_k, context window, max output tokens, timeout, thinking, and
   per-model system prompt). Added qwibus-qwikk and qwibus-qmplx local
@@ -37,6 +50,7 @@ import html
 import json
 import os
 import re
+import socket
 import sys
 import tempfile
 import uuid
@@ -49,42 +63,88 @@ from fastapi.responses import JSONResponse, StreamingResponse
 app = FastAPI()
 
 # ---------------------------------------------------------------------------
-# Session tracking for exec_command / write_stdin validation
+# JSON configuration fallback (env vars override config.toml/json at all times)
 # ---------------------------------------------------------------------------
-# Codex returns a numeric session_id from exec_command. The model may
-# call write_stdin with a stale or hallucinated session_id. We track
-# known live sessions so we can validate or gracefully degrade.
-import time as _time
+# Every CODESEEQ_* environment variable (plus the provider/credential names
+# below) can alternatively be supplied through a JSON config file. JSON keys
+# are the literal environment variable names. The precedence is:
+#
+#   explicit environment variable  >  JSON config  >  built-in default
+#
+# The config path is resolved from CODESEEQ_CONFIG_JSON, or
+# $CODESEEQ_CONFIG_HOME/config.json, or ~/.config/codeseeq/config.json, or
+# /etc/codeseeq/config.json (first file that exists wins).
 
-_active_sessions: Dict[int, float] = {}  # session_id -> last_seen_timestamp
-SESSION_TTL_SECONDS = float(os.environ.get("CODESEEQ_SESSION_TTL_SECONDS", "900"))
+_NON_CODESEEQ_CONFIG_KEYS = frozenset(
+    {
+        "DEEPSEEK_API_KEY",
+        "BRAVE_API_KEY",
+        "UNSTRUCTURED_API_KEY",
+        "RESPONSES_API_KEY",
+        "VENICE_API_KEY",
+        "CONTAINER",
+        "IMAGE",
+        "OPENAI_BASE_URL",
+        "DEEPSEEK_BASE_URL",
+        "DEEPSEEK_CHAT_URL",
+        "UNSTRUCTURED_API_URL",
+        "QWIBUS_NO_API_KEY",
+    }
+)
 
 
-def _register_session(session_id: int) -> None:
-    """Track an active exec session."""
-    if session_id > 0:
-        _active_sessions[session_id] = _time.time()
+def _config_json_candidates() -> List[str]:
+    candidates: List[str] = []
+    explicit = os.environ.get("CODESEEQ_CONFIG_JSON")
+    if explicit:
+        candidates.append(explicit)
+    config_home = os.environ.get("CODESEEQ_CONFIG_HOME")
+    if config_home:
+        candidates.append(os.path.join(config_home, "config.json"))
+    candidates.append(os.path.expanduser("~/.config/codeseeq/config.json"))
+    candidates.append("/etc/codeseeq/config.json")
+    return candidates
 
 
-def _session_is_known(session_id: int) -> bool:
-    """Check whether a session ID is known and not expired."""
-    if session_id <= 0:
-        return False
-    last_seen = _active_sessions.get(session_id)
-    if last_seen is None:
-        return False
-    if _time.time() - last_seen > SESSION_TTL_SECONDS:
-        _active_sessions.pop(session_id, None)
-        return False
-    return True
+def _load_config_json() -> None:
+    """Populate os.environ from the JSON config for any configurable key that
+    is not already set in the environment (env var always wins)."""
+    path = None
+    for candidate in _config_json_candidates():
+        if os.path.isfile(candidate):
+            path = candidate
+            break
+    if path is None:
+        return
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        print(f"[codeseeq-bridge] warning: ignoring unreadable/invalid JSON config: {path}", file=sys.stderr, flush=True)
+        return
+
+    if not isinstance(data, dict):
+        print(f"[codeseeq-bridge] warning: ignoring JSON config (not an object): {path}", file=sys.stderr, flush=True)
+        return
+
+    for key, value in data.items():
+        if not isinstance(key, str) or not key:
+            continue
+        # Only apply keys that are real config parameters: any CODESEEQ_*
+        # variable, plus the explicit provider/credential allowlist.
+        if not (key.startswith("CODESEEQ_") or key in _NON_CODESEEQ_CONFIG_KEYS):
+            continue
+        if os.environ.get(key) not in (None, ""):
+            continue
+        if isinstance(value, bool):
+            os.environ[key] = "true" if value else "false"
+        elif isinstance(value, (str, int, float)):
+            os.environ[key] = str(value)
 
 
-def _prune_expired_sessions() -> None:
-    """Remove expired session entries."""
-    now = _time.time()
-    expired = [sid for sid, ts in _active_sessions.items() if now - ts > SESSION_TTL_SECONDS]
-    for sid in expired:
-        _active_sessions.pop(sid, None)
+# Load JSON config before any module-level os.environ reads below.
+_load_config_json()
 
 
 DEEPSEEK_CHAT_URL = os.environ.get(
@@ -98,6 +158,9 @@ UNSTRUCTURED_API_URL = os.environ.get(
 )
 HTTP_TIMEOUT = float(os.environ.get("CODESEEQ_BRIDGE_TIMEOUT_SECONDS", "120"))
 CHUNK_SIZE = int(os.environ.get("CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE", "120"))
+# CODESEEQ_STREAM_IDLE_TIMEOUT_MS enforces an idle (between-chunk) timeout on
+# streaming responses so a stalled upstream/client cannot hang a uvicorn task.
+STREAM_IDLE_TIMEOUT_MS = float(os.environ.get("CODESEEQ_STREAM_IDLE_TIMEOUT_MS", "600000"))
 DEFAULT_DEEPSEEK_MAX_OUTPUT_TOKENS = 384000
 
 # ---------------------------------------------------------------------------
@@ -129,6 +192,11 @@ _MODEL_ENV_KEY_RE = re.compile(r"[^A-Za-z0-9]+")
 
 
 def _model_env_key(name: str) -> str:
+    # Strip a "provider@model" prefix so the generated env key matches the
+    # documented CODESEEQ_<MODEL>_* scheme (e.g. "qwibus@qwibus-qwikk" ->
+    # "QWIBUS_QWIKK"). Without this, per-model env overrides never matched.
+    if "@" in name:
+        name = name.rsplit("@", 1)[-1]
     return _MODEL_ENV_KEY_RE.sub("_", name).strip("_").upper()
 
 
@@ -386,10 +454,11 @@ def _apply_catalog_overrides(specs: Dict[str, ModelSpec]) -> Dict[str, ModelSpec
     of the built-in defaults, keeping each entry's spec objects intact.
 
     The catalog path is CODESEEQ_MODEL_CATALOG_JSON (default
-    /etc/codeseeq/model-catalog.json in the container). This makes the JSON
-    catalog the single source of truth for endpoint/sampling knobs while the
-    hard-coded defaults remain a safe fallback (and cover models that may not
-    yet be listed in the catalog).
+    /etc/codeseeq/model-catalog.json in the container). The JSON catalog is the
+    fallback source of truth for endpoint/sampling knobs, but any explicit
+    environment variable (or JSON config value, which is loaded into
+    os.environ) always wins over the catalog, matching the documented
+    precedence: env > config > catalog > built-in default.
     """
     path = os.environ.get(
         "CODESEEQ_MODEL_CATALOG_JSON", "/etc/codeseeq/model-catalog.json"
@@ -404,14 +473,8 @@ def _apply_catalog_overrides(specs: Dict[str, ModelSpec]) -> Dict[str, ModelSpec
     if not isinstance(entries, list):
         return specs
 
-    def _bool(v: Any, default: Optional[bool]) -> Optional[bool]:
-        if v is None:
-            return default
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, str):
-            return v.strip().lower() in {"1", "true", "yes", "on"}
-        return default
+    def _env_present(*names: str) -> bool:
+        return _env_first(*names) is not None
 
     for entry in entries:
         if not isinstance(entry, dict):
@@ -422,50 +485,76 @@ def _apply_catalog_overrides(specs: Dict[str, ModelSpec]) -> Dict[str, ModelSpec
         spec = specs.get(provider_model)
         if spec is None:
             continue
+        key = _model_env_key(provider_model)
 
-        if entry.get("base_url") is not None:
+        if entry.get("base_url") is not None and not _env_present(
+            f"CODESEEQ_{key}_BASE_URL",
+            "OPENAI_BASE_URL",
+            "DEEPSEEK_BASE_URL",
+            "CODESEEQ_BASE_URL",
+        ):
             spec.base_url = str(entry["base_url"])
-        if entry.get("chat_url") is not None:
+        if entry.get("chat_url") is not None and not _env_present(
+            f"CODESEEQ_{key}_CHAT_URL", "DEEPSEEK_CHAT_URL"
+        ):
             spec.chat_url = str(entry["chat_url"])
-        if entry.get("temperature") is not None:
+        if entry.get("temperature") is not None and not _env_present(
+            f"CODESEEQ_{key}_TEMPERATURE"
+        ):
             try:
                 spec.temperature = float(entry["temperature"])
             except (TypeError, ValueError):
                 pass
-        if entry.get("top_p") is not None:
+        if entry.get("top_p") is not None and not _env_present(
+            f"CODESEEQ_{key}_TOP_P"
+        ):
             try:
                 spec.top_p = float(entry["top_p"])
             except (TypeError, ValueError):
                 pass
-        if entry.get("top_k") is not None:
+        if entry.get("top_k") is not None and not _env_present(
+            f"CODESEEQ_{key}_TOP_K"
+        ):
             try:
                 spec.top_k = int(entry["top_k"])
             except (TypeError, ValueError):
                 pass
-        if entry.get("max_output_tokens") is not None:
+        if entry.get("max_output_tokens") is not None and not _env_present(
+            f"CODESEEQ_{key}_MAX_OUTPUT_TOKENS", "CODESEEQ_MAX_OUTPUT_TOKENS"
+        ):
             try:
                 spec.max_output_tokens = int(entry["max_output_tokens"])
             except (TypeError, ValueError):
                 pass
-        if entry.get("timeout_seconds") is not None:
+        if entry.get("timeout_seconds") is not None and not _env_present(
+            f"CODESEEQ_{key}_TIMEOUT_SECONDS"
+        ):
             try:
                 spec.timeout_seconds = float(entry["timeout_seconds"])
             except (TypeError, ValueError):
                 pass
-        if entry.get("context_window") is not None:
+        if entry.get("context_window") is not None and not _env_present(
+            f"CODESEEQ_{key}_CONTEXT_WINDOW"
+        ):
             try:
                 spec.context_window = int(entry["context_window"])
             except (TypeError, ValueError):
                 pass
 
-        if "enable_thinking" in entry:
+        if "enable_thinking" in entry and not _env_present(
+            f"CODESEEQ_{key}_ENABLE_THINKING"
+        ):
             spec.enable_thinking = bool(entry["enable_thinking"])
             spec.thinking = bool(entry["enable_thinking"])
-        elif "thinking" in entry:
+        elif "thinking" in entry and not _env_present(
+            f"CODESEEQ_{key}_ENABLE_THINKING"
+        ):
             spec.thinking = bool(entry["thinking"])
             spec.enable_thinking = bool(entry["thinking"])
 
-        if entry.get("system_prompt") is not None:
+        if entry.get("system_prompt") is not None and not _env_present(
+            f"CODESEEQ_{key}_SYSTEM_PROMPT"
+        ):
             spec.system_prompt = entry["system_prompt"]
 
     return specs
@@ -2087,7 +2176,7 @@ async def health() -> Dict[str, str]:
     effective_backend = image_backend
     if image_backend == "none" and venice_key:
         effective_backend = "venice"
-    info: Dict[str, str] = {"status": "ok", "version": "0.3.8", "image_backend": effective_backend}
+    info: Dict[str, str] = {"status": "ok", "version": "0.3.9", "image_backend": effective_backend}
     if effective_backend == "venice":
         info["venice_api_key_configured"] = str(bool(venice_key))
         info["venice_image_model"] = os.environ.get("CODESEEQ_VENICE_IMAGE_MODEL", "z-image-turbo")
@@ -2400,7 +2489,10 @@ async def responses(request: Request) -> Any:
             return out
 
         try:
-            async with httpx.AsyncClient(timeout=model_timeout) as client:
+            stream_idle_timeout = max(1.0, STREAM_IDLE_TIMEOUT_MS / 1000.0)
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(model_timeout, read=stream_idle_timeout)
+            ) as client:
                 async with client.stream(
                     "POST", model_chat_url, json=payload, headers=headers
                 ) as resp:
@@ -2517,8 +2609,8 @@ async def responses(request: Request) -> Any:
                             if completed_blocks:
                                 for ev in dsml_block_events(completed_blocks):
                                     yield ev
-        except (httpx.RemoteProtocolError, httpx.ReadError, asyncio.CancelledError) as exc:
-            log(f"deepseek stream connection error: {exc!r}")
+        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.TimeoutException, asyncio.CancelledError) as exc:
+            log(f"deepseek stream connection/idle error: {exc!r}")
             yield sse_event(
                 "response.failed",
                 {
@@ -2811,21 +2903,100 @@ async def image_generations(request: Request):
     return result
 
 
+def _parse_port_env() -> int:
+    raw = os.environ.get(
+        "CODESEEQ_BRIDGE_PORT",
+        os.environ.get("CODESEEQ_OPENRESPONSES_PORT", "8080"),
+    )
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise SystemExit(f"invalid bridge port: {raw!r}")
+
+
+def _write_port_file(path: Optional[str], port: int) -> None:
+    if not path:
+        return
+    try:
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(str(port))
+        os.replace(tmp, path)
+    except OSError as exc:  # pragma: no cover - best effort discovery file
+        print(f"[codeseeq-bridge] warning: could not write port file {path}: {exc}", file=sys.stderr, flush=True)
+
+
+def _bind_socket(host: str, port: int) -> socket.socket:
+    """Bind a listening TCP socket, raising OSError on failure."""
+    family = socket.AF_INET
+    if host and ":" in host:
+        family = socket.AF_INET6
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.listen(2048)
+    return sock
+
+
 def main():
     import uvicorn
+    from uvicorn import Config, Server
+
     host = os.environ.get(
         "CODESEEQ_BRIDGE_HOST",
         os.environ.get("CODESEEQ_OPENRESPONSES_HOST", "127.0.0.1"),
     )
-    port = int(
-        os.environ.get(
-            "CODESEEQ_BRIDGE_PORT",
-            os.environ.get("CODESEEQ_OPENRESPONSES_PORT", "8080"),
-        )
-    )
-    if host != "127.0.0.1":
+    port_file = os.environ.get("CODESEEQ_BRIDGE_PORT_FILE") or None
+
+    if host != "127.0.0.1" and host != "localhost":
         log(f"warning: bridge binding to non-localhost address: {host}")
-    uvicorn.run(app, host=host, port=port)
+
+    # Explicitly requested fixed port -> bind exactly that port (no fallback).
+    fixed = "CODESEEQ_BRIDGE_PORT" in os.environ
+    if fixed:
+        port = _parse_port_env()
+        try:
+            sock = _bind_socket(host, port)
+        except OSError as exc:
+            raise SystemExit(f"failed to bind fixed port {host}:{port}: {exc}")
+        _write_port_file(port_file, port)
+        log(f"bridge listening on {host}:{port}")
+        config = Config(app, host=host, port=port)
+        server = Server(config)
+        server.run(sockets=[sock])
+        return
+
+    # Auto-select: do a true bind (not a connect probe) and increment on
+    # conflict, eliminating the TOCTOU gap entirely. If a port already holds
+    # a bound-but-not-listening socket, bind() still fails and we move on.
+    start = _parse_port_env()
+    limit_raw = os.environ.get("CODESEEQ_OPENRESPONSES_PORT_SCAN_LIMIT", "100")
+    try:
+        limit = int(limit_raw)
+    except (TypeError, ValueError):
+        limit = 100
+    if limit < 1:
+        limit = 1
+
+    sock = None
+    chosen = None
+    for candidate in range(start, start + limit):
+        try:
+            sock = _bind_socket(host, candidate)
+            chosen = candidate
+            break
+        except OSError:
+            sock = None
+            continue
+
+    if sock is None or chosen is None:
+        raise SystemExit(f"no free bridge port found in range {start}-{start + limit - 1}")
+
+    _write_port_file(port_file, chosen)
+    log(f"bridge listening on {host}:{chosen}")
+    config = Config(app, host=host, port=chosen)
+    server = Server(config)
+    server.run(sockets=[sock])
 
 
 if __name__ == "__main__":

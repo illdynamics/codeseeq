@@ -692,8 +692,8 @@ else
   if ! grep -Fxq -- "--entrypoint" "${tmp_check_dir}/runtime-danger-bridge.args" || ! grep -Fxq -- "/usr/local/bin/codeseeq-bridge.py" "${tmp_check_dir}/runtime-danger-bridge.args"; then
     fail "danger host mode did not start bridge with bridge-only entrypoint"
   fi
-  if ! grep -Fxq -- "127.0.0.1:18081:18081" "${tmp_check_dir}/runtime-danger-bridge.args"; then
-    fail "danger host bridge did not bind to 127.0.0.1 requested port"
+  if ! grep -Fxq -- "127.0.0.1:18081:8080" "${tmp_check_dir}/runtime-danger-bridge.args"; then
+    fail "danger host bridge did not bind to 127.0.0.1 requested host port (mapped to internal 8080)"
   fi
   if ! grep -Fxq -- "--dangerously-bypass-approvals-and-sandbox" "${tmp_check_dir}/runtime-danger-codex.args" || ! grep -Fxq -- "exec" "${tmp_check_dir}/runtime-danger-codex.args"; then
     fail "danger host Codex args missing dangerous exec mode"
@@ -723,7 +723,7 @@ if ! PATH="${runtimebin}:$PATH" \
   ./codeseeq -y "Return exactly: codeseeq-ok"; then
   fail "danger host mode did not complete when base bridge ports were busy"
 else
-  if ! grep -Fxq -- "127.0.0.1:18085:18085" "${tmp_check_dir}/runtime-danger-port-scan-bridge.args"; then
+  if ! grep -Fxq -- "127.0.0.1:18085:8080" "${tmp_check_dir}/runtime-danger-port-scan-bridge.args"; then
     fail "danger host mode did not advance to the first free bridge port"
   fi
   if ! _rg -n '^base_url = "http://127.0.0.1:18085/v1"$' "${port_scan_workspace}/.codeseeq/config.toml" >/dev/null 2>&1; then

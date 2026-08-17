@@ -1,3 +1,51 @@
+## v0.3.9 - 2026-08-17
+
+### Fixed
+- **Parallel `codeseeq` now binds ports reliably.** The bridge no longer relies
+  on a connect-probe (TOCTOU race) to pick a port. When `CODESEEQ_BRIDGE_PORT`
+  is unset it performs a real `bind()` starting at `CODESEEQ_OPENRESPONSES_PORT`
+  and increments up to `CODESEEQ_OPENRESPONSES_PORT_SCAN_LIMIT`, writing the
+  chosen port to `CODESEEQ_BRIDGE_PORT_FILE`. Multiple simultaneous invocations
+  now obtain distinct ports without crashing on "address already in use".
+- **Decoupled container bridge ports.** The standalone bridge container now
+  binds a fixed internal port (`CODESEEQ_BRIDGE_CONTAINER_PORT`, default `8080`)
+  and is mapped to the auto-selected host port, eliminating the
+  host-port == container-port collision.
+- **`CODESEEQ_STREAM_IDLE_TIMEOUT_MS` is now actually enforced.** The bridge
+  applies it as an idle (between-chunk) read timeout on streaming responses, so
+  a stalled upstream stream or client can no longer hang a uvicorn task
+  indefinitely (a timeout now yields a `response.failed` event).
+- **Per-model env overrides now work for every model.** The bridge previously
+  generated per-model env keys from the full `provider@model` slug
+  (e.g. `CODESEEQ_QWIBUS_QWIBUS_QWIKK_BASE_URL` instead of the documented
+  `CODESEEQ_QWIBUS_QWIKK_BASE_URL`), so qwibus (and other) per-model overrides
+  were silently ignored. The provider prefix is now stripped, and explicit
+  env/config values correctly take precedence over the catalog.
+- **Container runtime no longer drops qwibus/provider config.** The env
+  collection now forwards generic base-URL overrides and all per-model
+  `CODESEEQ_<MODEL>_*` knobs into the Codex container, so qwibus endpoints can
+  be configured in container mode.
+- **Removed dead session-tracking code** (`_active_sessions`,
+  `_session_is_known`, `_prune_expired_sessions`, `CODESEEQ_SESSION_TTL_SECONDS`)
+  which had no callers.
+
+### Added
+- **JSON configuration alternative.** Every environment variable can now be
+  supplied through a JSON config file (keys are the literal env-var names).
+  Precedence is environment variable > JSON config > built-in default. Config
+  path is `CODESEEQ_CONFIG_JSON` (default `~/.config/codeseeq/config.json`,
+  or `/home/codeseeq/.config/codeseeq/config.json` in the container).
+- **Catalog clarification.** `config/model-catalog.json` (bridge) and
+  `config/codex-model-catalog.json` (Codex TUI) are documented as two distinct,
+  both-used catalogs; neither is redundant.
+
+### Changed
+- **Health endpoint** reports version `0.3.9`.
+- **Version bump to v0.3.9.** All docs, configs, and internal version strings
+  updated.
+
+---
+
 ## v0.3.8 - 2026-08-17
 
 ### Added

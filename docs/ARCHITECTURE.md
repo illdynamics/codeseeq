@@ -1,6 +1,6 @@
 # Architecture
 
-Current version: `v0.3.8`
+Current version: `v0.3.9`
 
 ## Runtime Modes
 
@@ -137,8 +137,13 @@ Host runtime mode:
   sandbox settings. The `--dangerously-bypass-approvals-and-sandbox` flag is
   only added when the operator explicitly requests danger/yolo bypass.
 - bridge runs as process or container sidecar, bound to `127.0.0.1`.
-- each invocation starts its own bridge on the first free port starting at
-  `CODESEEQ_BRIDGE_PORT` or falls back to auto-selection.
+- each invocation starts its own bridge. When `CODESEEQ_BRIDGE_PORT` is unset,
+  the bridge performs a **real bind** starting at `CODESEEQ_OPENRESPONSES_PORT`
+  (default `8080`) and increments up to `CODESEEQ_OPENRESPONSES_PORT_SCAN_LIMIT`
+  until a free port is found, then writes the chosen port to
+  `CODESEEQ_BRIDGE_PORT_FILE`. This eliminates the earlier connect-probe
+  (TOCTOU) race so parallel `codeseeq` invocations reliably obtain distinct
+  ports.
 
 No supported path uses the user's real `~/.codex`.
 
@@ -228,11 +233,19 @@ stdin prompts.
 5. **`requirements-bridge.txt`** — Python dependencies for the bridge (FastAPI,
    Uvicorn, httpx). Install with: `python3 -m pip install -r requirements-bridge.txt`
 
-6. **`config/model-catalog.json`** — DeepSeek model definitions used by the
-   wrapper and bridge for model validation and catalog injection.
+6. **`config/model-catalog.json`** — Human-facing DeepSeek/qwibus model
+   definitions read by the bridge via `CODESEEQ_MODEL_CATALOG_JSON` to supply
+   endpoint/sampling defaults (`provider_model` schema). Per-model
+   `CODESEEQ_<MODEL>_*` env vars (or their JSON-config equivalents) always
+   override these defaults.
 
 7. **`config/codex-model-catalog.json`** — Codex-compatible model catalog
-   injected into Codex config via `model_catalog_json` for TUI model selection.
+   injected into Codex config via `model_catalog_json` for TUI model selection
+   (`slug` schema).
+
+These two catalogs are intentionally distinct and both are used; neither is
+redundant (the bridge consumes `model-catalog.json`, while Codex consumes
+`codex-model-catalog.json`).
 
 ## Interactive Menu Compatibility
 

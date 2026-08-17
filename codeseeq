@@ -32,6 +32,74 @@ bool_normalize() {
   esac
 }
 
+# ---------------------------------------------------------------------------
+# JSON configuration fallback (env vars override JSON config at all times)
+# ---------------------------------------------------------------------------
+config_json_path() {
+  printf '%s' "${CODESEEQ_CONFIG_JSON:-${CODESEEQ_CONFIG_HOME}/config.json}"
+}
+
+load_config_json() {
+  local path
+  path="$(config_json_path)"
+  [[ -n "$path" && -f "$path" ]] || return 0
+
+  local parsed=""
+  if command -v python3 >/dev/null 2>&1; then
+    parsed="$(python3 - "$path" <<'INNERCFG'
+import json, os, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(0)
+if not isinstance(data, dict):
+    sys.exit(0)
+allowlist = {
+    "DEEPSEEK_API_KEY", "BRAVE_API_KEY", "UNSTRUCTURED_API_KEY",
+    "RESPONSES_API_KEY", "VENICE_API_KEY", "CONTAINER", "IMAGE",
+    "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL", "DEEPSEEK_CHAT_URL",
+    "UNSTRUCTURED_API_URL", "QWIBUS_NO_API_KEY",
+}
+for k, v in data.items():
+    if not isinstance(k, str) or not k:
+        continue
+    if not (k.startswith("CODESEEQ_") or k in allowlist):
+        continue
+    # Environment always wins over JSON config.
+    if os.environ.get(k) not in (None, ""):
+        continue
+    if isinstance(v, bool):
+        sys.stdout.write("%s=%s\n" % (k, "true" if v else "false"))
+    elif isinstance(v, (str, int, float)):
+        sys.stdout.write("%s=%s\n" % (k, v))
+INNERCFG
+)"
+  elif command -v jq >/dev/null 2>&1; then
+    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
+  else
+    warn "CODESEEQ_CONFIG_JSON/JSON config configured but neither python3 nor jq is available; skipping JSON config"
+    return 0
+  fi
+
+  if [[ -z "$parsed" ]]; then
+    return 0
+  fi
+
+  local line k v
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    k="${line%%=*}"
+    v="${line#*=}"
+    [[ -n "$k" ]] || continue
+    # env always wins; only apply when unset or empty
+    if [[ -z "${!k+x}" ]] || [[ -z "${!k:-}" ]]; then
+      export "$k=$v"
+    fi
+  done <<< "$parsed"
+  return 0
+}
+
 resolve_self_path() {
   local source="$1"
   while [[ -h "$source" ]]; do
@@ -56,6 +124,10 @@ HOST_CODEX_HOME="${CODESEEQ_HOST_CODEX_HOME:-${WORKDIR_HOST}/.codeseeq}"
 HOST_CONFIG_ROOT="${XDG_CONFIG_HOME:-${HOME:-${WORKDIR_HOST}}/.config}"
 CODESEEQ_CONFIG_HOME="${CODESEEQ_CONFIG_HOME:-${HOST_CONFIG_ROOT}/codeseeq}"
 CONTAINER_CONFIG_HOME="${CODESEEQ_CONTAINER_CONFIG_HOME:-/home/codeseeq/.config/codeseeq}"
+
+# Load JSON config (env vars always win); must run before the defaults below.
+load_config_json
+
 SYSTEM_PROMPT_PATH="${CODESEEQ_SYSTEM_PROMPT_FILE:-${CODESEEQ_CONFIG_HOME}/system-prompt.md}"
 SYSTEM_PROMPT_CONTAINER_PATH="${CONTAINER_CONFIG_HOME}/$(basename "$SYSTEM_PROMPT_PATH")"
 LEGACY_SYSTEM_PROMPT_PATH="${WORKDIR_HOST}/.codeseeq/system-prompt.md"
@@ -76,6 +148,8 @@ LEGACY_SYSTEM_PROMPT_PATH="${WORKDIR_HOST}/.codeseeq/system-prompt.md"
 : "${CODESEEQ_BRIDGE_MODE:=auto}"
 : "${CODESEEQ_BRIDGE_HOST:=127.0.0.1}"
 : "${CODESEEQ_BRIDGE_PORT:=}"
+: "${CODESEEQ_BRIDGE_PORT_FILE:=}"
+: "${CODESEEQ_BRIDGE_CONTAINER_PORT:=8080}"
 : "${CODESEEQ_BRIDGE_BASE_URL:=}"
 : "${CODESEEQ_BRIDGE_LOG:=}"
 : "${CODESEEQ_BRIDGE_PID_FILE:=}"
@@ -801,6 +875,23 @@ select_host_bridge_port() {
   die "no free host bridge port found in range ${start}-$((end - 1))"
 }
 
+# Names of every provider/model configuration variable the bridge reads.
+# Used to forward host env (and, implicitly, JSON config values) into both the
+# standalone bridge container and the Codex container. Per-model keys use the
+# documented CODESEEQ_<MODEL>_<SUFFIX> scheme (provider prefix stripped).
+codeseeq_bridge_env_names() {
+  printf '%s\n'     DEEPSEEK_API_KEY BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY     DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS QWIBUS_NO_API_KEY
+
+  local key suffix
+  for key in DEEPSEEK_V4_FLASH DEEPSEEK_V4_FLASH_THINKING DEEPSEEK_V4_PRO \
+             DEEPSEEK_V4_PRO_THINKING QWIBUS_QWIKK QWIBUS_QMPLX; do
+    for suffix in BASE_URL CHAT_URL TEMPERATURE TOP_P TOP_K MAX_OUTPUT_TOKENS \
+                  TIMEOUT_SECONDS ENABLE_THINKING SYSTEM_PROMPT; do
+      printf '%s\n' "CODESEEQ_${key}_${suffix}"
+    done
+  done
+}
+
 start_bridge_container() {
   ensure_container_runtime
   ensure_image
@@ -815,21 +906,29 @@ start_bridge_container() {
     "$CONTAINER" rm -f "$name" >/dev/null 2>&1 || true
   fi
 
+  # The host-side port (already auto-selected) is decoupled from the port the
+  # bridge binds inside the container. A fresh container namespace always has
+  # its internal port free, so mapping host==container is no longer required
+  # and can never collide with a service already in the (shared) image.
+  local host_port="${CODESEEQ_OPENRESPONSES_PORT}"
+  local internal_port="${CODESEEQ_BRIDGE_CONTAINER_PORT:-8080}"
+
   local run_args=(run -d --rm --name "$name")
   if [[ "$CONTAINER" == "podman" && -n "${CODESEEQ_PODMAN_USERNS:-}" ]]; then
     run_args+=(--userns="$CODESEEQ_PODMAN_USERNS")
   fi
   run_args+=(
-    -p "127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT}:${CODESEEQ_OPENRESPONSES_PORT}"
+    -p "127.0.0.1:${host_port}:${internal_port}"
     -e CODESEEQ_OPENRESPONSES_HOST=0.0.0.0
-    -e "CODESEEQ_OPENRESPONSES_PORT=${CODESEEQ_OPENRESPONSES_PORT}"
+    -e "CODESEEQ_OPENRESPONSES_PORT=${internal_port}"
   )
   local env_name
-  for env_name in DEEPSEEK_API_KEY BRAVE_API_KEY UNSTRUCTURED_API_KEY DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL CODESEEQ_BRIDGE_TIMEOUT_SECONDS CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING CODESEEQ_QWIBUS_QWIKK_BASE_URL CODESEEQ_QWIBUS_QWIKK_CHAT_URL CODESEEQ_QWIBUS_QWIKK_TEMPERATURE CODESEEQ_QWIBUS_QWIKK_TOP_P CODESEEQ_QWIBUS_QWIKK_TOP_K CODESEEQ_QWIBUS_QWIKK_MAX_OUTPUT_TOKENS CODESEEQ_QWIBUS_QWIKK_TIMEOUT_SECONDS CODESEEQ_QWIBUS_QWIKK_ENABLE_THINKING CODESEEQ_QWIBUS_QWIKK_SYSTEM_PROMPT CODESEEQ_QWIBUS_QMPLX_BASE_URL CODESEEQ_QWIBUS_QMPLX_CHAT_URL CODESEEQ_QWIBUS_QMPLX_TEMPERATURE CODESEEQ_QWIBUS_QMPLX_TOP_P CODESEEQ_QWIBUS_QMPLX_TOP_K CODESEEQ_QWIBUS_QMPLX_MAX_OUTPUT_TOKENS CODESEEQ_QWIBUS_QMPLX_TIMEOUT_SECONDS CODESEEQ_QWIBUS_QMPLX_ENABLE_THINKING CODESEEQ_QWIBUS_QMPLX_SYSTEM_PROMPT; do
+  while IFS= read -r env_name; do
+    [[ -n "$env_name" ]] || continue
     if [[ -n "${!env_name:-}" ]]; then
       run_args+=(-e "$env_name")
     fi
-  done
+  done < <(codeseeq_bridge_env_names)
   run_args+=(--entrypoint /usr/local/bin/codeseeq-bridge.py "$IMAGE")
 
   log "starting bridge container ${name} with ${CONTAINER} on ${CODESEEQ_OPENRESPONSES_URL}"
@@ -890,22 +989,15 @@ bridge_start_process() {
   bridge_resolve_log_pid_paths
 
   local host="${CODESEEQ_BRIDGE_HOST:-127.0.0.1}"
+  local fixed_port="${CODESEEQ_BRIDGE_PORT:-}"
+  local port_file="${CODESEEQ_BRIDGE_PORT_FILE:-${CODESEEQ_BRIDGE_PID_FILE}.port}"
+  rm -f "$port_file" 2>/dev/null || true
 
-  if [[ -n "${CODESEEQ_BRIDGE_PORT:-}" ]]; then
-    set_bridge_endpoint "$host" "$CODESEEQ_BRIDGE_PORT"
-  else
-    select_host_bridge_port
-    set_bridge_endpoint "$host" "$CODESEEQ_OPENRESPONSES_PORT"
-  fi
-
-  # Reuse existing healthy bridge if CODESEEQ_BRIDGE_REUSE=1
-  if is_truthy "${CODESEEQ_BRIDGE_REUSE:-0}"; then
-    if bridge_healthcheck_url "http://${host}:${CODESEEQ_OPENRESPONSES_PORT}${CODESEEQ_BRIDGE_HEALTH_PATH}"; then
-      log "reusing existing bridge at http://${host}:${CODESEEQ_OPENRESPONSES_PORT}"
-      BRIDGE_OWNED=""
-      return 0
-    fi
-    log "bridge reuse enabled but no healthy bridge found at http://${host}:${CODESEEQ_OPENRESPONSES_PORT}; starting new one"
+  # Client-facing URL host: use 127.0.0.1 when the bridge binds to 0.0.0.0
+  # (unless an explicit bridge base URL is configured).
+  local client_host="$host"
+  if [[ "$host" == "0.0.0.0" && -z "${CODESEEQ_BRIDGE_BASE_URL:-}" ]]; then
+    client_host="127.0.0.1"
   fi
 
   if [[ "$host" != "127.0.0.1" && "$host" != "localhost" ]]; then
@@ -915,36 +1007,59 @@ bridge_start_process() {
     fi
   fi
 
-  # Client-facing URL: use 127.0.0.1 when bridge binds to 0.0.0.0 (unless explicit base URL)
-  if [[ "$host" == "0.0.0.0" && -z "${CODESEEQ_BRIDGE_BASE_URL:-}" ]]; then
-    CODESEEQ_OPENRESPONSES_URL="http://127.0.0.1:${CODESEEQ_OPENRESPONSES_PORT}/v1"
+  # Reuse an existing healthy bridge on the target port when requested.
+  local reuse_port="${fixed_port:-${CODESEEQ_OPENRESPONSES_PORT}}"
+  if is_truthy "${CODESEEQ_BRIDGE_REUSE:-0}"; then
+    if bridge_healthcheck_url "http://${client_host}:${reuse_port}${CODESEEQ_BRIDGE_HEALTH_PATH}"; then
+      set_bridge_endpoint "$client_host" "$reuse_port"
+      log "reusing existing bridge at http://${client_host}:${reuse_port}"
+      BRIDGE_OWNED=""
+      return 0
+    fi
+    log "bridge reuse enabled but no healthy bridge found at http://${client_host}:${reuse_port}; starting new one"
   fi
+
   log "bridge mode=process starting python3 on http://${host}:${CODESEEQ_OPENRESPONSES_PORT}"
   log "bridge log: ${CODESEEQ_BRIDGE_LOG}"
 
-  CODESEEQ_BRIDGE_HOST="$host"   CODESEEQ_BRIDGE_PORT="$CODESEEQ_OPENRESPONSES_PORT"   python3 "${CODESEEQ_INSTALL_ROOT}/bin/codeseeq-bridge.py"     >> "$CODESEEQ_BRIDGE_LOG" 2>&1 &
+  # Launch the bridge. A fixed CODESEEQ_BRIDGE_PORT binds exactly one port;
+  # otherwise the bridge performs a true bind + increment (eliminating the
+  # previous connect-probe TOCTOU race) and writes its chosen port to the
+  # discovery file so we can learn the real port after it is up.
+  if [[ -n "$fixed_port" ]]; then
+    CODESEEQ_BRIDGE_HOST="$host"       CODESEEQ_BRIDGE_PORT="$fixed_port"       CODESEEQ_BRIDGE_PORT_FILE="$port_file"       python3 "${CODESEEQ_INSTALL_ROOT}/bin/codeseeq-bridge.py" >> "$CODESEEQ_BRIDGE_LOG" 2>&1 &
+  else
+    CODESEEQ_BRIDGE_HOST="$host"       CODESEEQ_BRIDGE_PORT_FILE="$port_file"       python3 "${CODESEEQ_INSTALL_ROOT}/bin/codeseeq-bridge.py" >> "$CODESEEQ_BRIDGE_LOG" 2>&1 &
+  fi
 
   BRIDGE_PID=$!
   echo "$BRIDGE_PID" > "$CODESEEQ_BRIDGE_PID_FILE"
   BRIDGE_OWNED="process"
 
+  local actual_port=""
   local deadline=$((SECONDS + CODESEEQ_BRIDGE_STARTUP_TIMEOUT))
   while (( SECONDS < deadline )); do
-    if bridge_healthcheck_url "http://${host}:${CODESEEQ_OPENRESPONSES_PORT}${CODESEEQ_BRIDGE_HEALTH_PATH}"; then
-      log "bridge process healthy (pid=${BRIDGE_PID})"
+    if [[ -n "$fixed_port" ]]; then
+      actual_port="$fixed_port"
+    elif [[ -s "$port_file" ]]; then
+      actual_port="$(cat "$port_file" 2>/dev/null || true)"
+    fi
+    if [[ -n "$actual_port" ]] && bridge_healthcheck_url "http://${client_host}:${actual_port}${CODESEEQ_BRIDGE_HEALTH_PATH}"; then
+      set_bridge_endpoint "$client_host" "$actual_port"
+      log "bridge process healthy (pid=${BRIDGE_PID}) on http://${client_host}:${actual_port}"
       return 0
     fi
     if ! kill -0 "$BRIDGE_PID" >/dev/null 2>&1; then
       warn "bridge process exited early; last log lines:"
       tail -n 40 "$CODESEEQ_BRIDGE_LOG" >&2 || true
-      die "bridge process exited before becoming healthy on http://${host}:${CODESEEQ_OPENRESPONSES_PORT}"
+      die "bridge process exited before becoming healthy"
     fi
     sleep 1
   done
 
   warn "bridge process health check timed out after ${CODESEEQ_BRIDGE_STARTUP_TIMEOUT}s"
   tail -n 40 "$CODESEEQ_BRIDGE_LOG" >&2 || true
-  die "bridge process health check timed out on http://${host}:${CODESEEQ_OPENRESPONSES_PORT}"
+  die "bridge process health check timed out"
 }
 
 bridge_stop_owned_process() {
@@ -969,6 +1084,7 @@ bridge_stop_owned_process() {
   fi
 
   rm -f "$CODESEEQ_BRIDGE_PID_FILE" 2>/dev/null || true
+  rm -f "${CODESEEQ_BRIDGE_PORT_FILE:-${CODESEEQ_BRIDGE_PID_FILE}.port}" 2>/dev/null || true
 }
 
 bridge_healthcheck_url() {
@@ -1274,18 +1390,16 @@ collect_env() {
   CONTAINER_ENV_ARGS=()
 
   local name
-  for name in \
-    DEEPSEEK_API_KEY \
-    BRAVE_API_KEY \
-    UNSTRUCTURED_API_KEY \
-    RESPONSES_API_KEY \
-    DEEPSEEK_CHAT_URL \
-    CODESEEQ_BRAVE_WEB_URL \
-    UNSTRUCTURED_API_URL; do
+  # Forward provider/model configuration (credentials + endpoints + per-model
+  # knobs) that the in-container bridge consumes. Per-model qwibus/deepseek
+  # overrides and generic base-URL fallbacks are included so they are no longer
+  # silently dropped when running Codex inside the container.
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
     if [[ -n "${!name:-}" ]]; then
       CONTAINER_ENV_ARGS+=(-e "$name")
     fi
-  done
+  done < <(codeseeq_bridge_env_names)
 
   CONTAINER_ENV_ARGS+=(
     -e "CODESEEQ_MODEL=${CODESEEQ_MODEL}"

@@ -9,7 +9,7 @@ But your prompts go to DeepSeek V4 via your `DEEPSEEK_API_KEY` — no OpenAI acc
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.3.8` (from [`VERSION`](./VERSION)).
+Current version: `v0.3.9` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -192,11 +192,20 @@ CODESEEQ_BRIDGE_MODE=external CODESEEQ_BRIDGE_BASE_URL=http://127.0.0.1:8080/v1 
 |----------------------------------|----------------------------|----------------------------------------------------|
 | `CODESEEQ_BRIDGE_MODE`          | `auto`                     | `auto`, `process`, `container`, or `external`      |
 | `CODESEEQ_BRIDGE_HOST`          | `127.0.0.1`                | Bridge listen address                              |
-| `CODESEEQ_BRIDGE_PORT`          | auto-select                | Fixed bridge port (omit for auto)                  |
+| `CODESEEQ_BRIDGE_PORT`          | auto-select                | Fixed bridge port (omit for auto-select)           |
+| `CODESEEQ_BRIDGE_PORT_FILE`     | `<pid-file>.port`          | File the bridge writes its chosen port to          |
+| `CODESEEQ_BRIDGE_CONTAINER_PORT`| `8080`                     | Internal port the bridge binds inside a container  |
 | `CODESEEQ_BRIDGE_BASE_URL`      | —                          | Full bridge URL override (external mode)           |
 | `CODESEEQ_BRIDGE_LOG`           | `~/.config/codeseeq/log/bridge.log` | Bridge log file                                |
 | `CODESEEQ_BRIDGE_STARTUP_TIMEOUT` | `10`                     | Seconds to wait for health check                   |
 | `CODESEEQ_BRIDGE_REUSE`         | `0`                        | Reuse existing healthy bridge                      |
+
+When `CODESEEQ_BRIDGE_PORT` is omitted, the bridge performs a **real bind** for
+each candidate port starting at `CODESEEQ_OPENRESPONSES_PORT` (default `8080`)
+and increments up to `CODESEEQ_OPENRESPONSES_PORT_SCAN_LIMIT` until an actually
+free port is found. This removes the old connect-probe race (TOCTOU) so
+multiple `codeseeq` invocations can run in parallel and reliably get distinct
+ports. The chosen port is written to `CODESEEQ_BRIDGE_PORT_FILE`.
 
 ## Container Runtime
 
@@ -341,7 +350,40 @@ All supported variables are documented in [`.env.example`](./.env.example). Key 
 | `CONTAINER`                   | `podman`             | Container runtime (`podman` or `docker`)         |
 | `IMAGE`                       | `codeseeq:dev`       | Container image tag                              |
 
+### JSON configuration (optional alternative to environment variables)
+
+Every CodeSeeq setting can be supplied through a JSON config file instead of
+(and in addition to) environment variables. JSON keys are the literal
+environment-variable names (`CODESEEQ_MODEL`, `DEEPSEEK_API_KEY`,
+`CODESEEQ_QWIBUS_QWIKK_BASE_URL`, etc.). Precedence is always:
+
+1. explicit environment variable
+2. JSON config value
+3. built-in default
+
+So a value set in the environment **always overrides** the same key in JSON.
+JSON config is read from `CODESEEQ_CONFIG_JSON` if set, otherwise
+`~/.config/codeseeq/config.json` (host) or
+`/home/codeseeq/.config/codeseeq/config.json` (container).
+
+```json
+{
+  "CODESEEQ_MODEL": "qwibus-qwikk",
+  "CODESEEQ_BRIDGE_MODE": "process",
+  "CODESEEQ_QWIBUS_QWIKK_BASE_URL": "http://127.0.0.1:1337",
+  "CODESEEQ_QWIBUS_QWIKK_CHAT_URL": "http://127.0.0.1:1337/v1/chat/completions"
+}
+```
+
+The full list of supported keys corresponds one-to-one with the environment
+variables documented in [`.env.example`](./.env.example) (any `CODESEEQ_*`
+variable plus `DEEPSEEK_API_KEY`, `BRAVE_API_KEY`, `UNSTRUCTURED_API_KEY`,
+`RESPONSES_API_KEY`, `VENICE_API_KEY`, `CONTAINER`, `IMAGE`,
+`OPENAI_BASE_URL`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_CHAT_URL`,
+`UNSTRUCTURED_API_URL`, and `QWIBUS_NO_API_KEY`).
+
 ## Clean Packages
+
 
 Release zips must be produced by the official package command only:
 
@@ -409,13 +451,32 @@ python3 bin/codeseeq-venice-image.py --prompt "a beautiful sunset" --out sunset.
 - `deepseek-v4-flash-thinking`
 - `deepseek-v4-pro`
 - `deepseek-v4-pro-thinking`
+- `qwibus-qwikk` (local gateway, no API key)
+- `qwibus-qmplx` (local gateway, no API key)
 
 Provider-form aliases:
 
 - `deepseek@deepseek-v4-flash`
+- `deepseek@deepseek-v4-flash-thinking`
 - `deepseek@deepseek-v4-pro`
+- `deepseek@deepseek-v4-pro-thinking`
+- `qwibus@qwibus-qwikk`
+- `qwibus@qwibus-qmplx`
 
-Non-DeepSeek models are rejected by the wrapper/bridge.
+### Model catalogs
+
+CodeSeeq ships two catalogs in `config/`, and both are used for distinct
+consumers:
+
+| File | Consumer | Purpose |
+|---|---|---|
+| `config/codex-model-catalog.json` | Codex CLI | Passed via `model_catalog_json` in the generated `config.toml` for TUI model selection (`slug` schema). |
+| `config/model-catalog.json` | CodeSeeq bridge | Read via `CODESEEQ_MODEL_CATALOG_JSON` to supply endpoint/sampling defaults (`provider_model` schema). |
+
+They are intentionally **not** redundant, so neither is deleted. Either path can be
+overridden with `CODESEEQ_HOST_MODEL_CATALOG_JSON` (host) or
+`CODESEEQ_MODEL_CATALOG_JSON` (bridge). Per-model `CODESEEQ_<MODEL>_*` env vars
+(or their JSON-config equivalents) always override the bridge catalog.
 
 ## Diagnostics
 

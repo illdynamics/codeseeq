@@ -38,6 +38,73 @@ key_state() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# JSON configuration fallback (env vars override JSON config at all times)
+# ---------------------------------------------------------------------------
+config_json_path() {
+  printf '%s' "${CODESEEQ_CONFIG_JSON:-${CODESEEQ_CONFIG_HOME:-${XDG_CONFIG_HOME:-/home/codeseeq/.config}/codeseeq}/config.json}"
+}
+
+load_config_json() {
+  local path
+  path="$(config_json_path)"
+  [[ -n "$path" && -f "$path" ]] || return 0
+
+  local parsed=""
+  if command -v python3 >/dev/null 2>&1; then
+    parsed="$(python3 - "$path" <<'INNERCFG'
+import json, os, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(0)
+if not isinstance(data, dict):
+    sys.exit(0)
+allowlist = {
+    "DEEPSEEK_API_KEY", "BRAVE_API_KEY", "UNSTRUCTURED_API_KEY",
+    "RESPONSES_API_KEY", "VENICE_API_KEY", "CONTAINER", "IMAGE",
+    "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL", "DEEPSEEK_CHAT_URL",
+    "UNSTRUCTURED_API_URL", "QWIBUS_NO_API_KEY",
+}
+for k, v in data.items():
+    if not isinstance(k, str) or not k:
+        continue
+    if not (k.startswith("CODESEEQ_") or k in allowlist):
+        continue
+    # Environment always wins over JSON config.
+    if os.environ.get(k) not in (None, ""):
+        continue
+    if isinstance(v, bool):
+        sys.stdout.write("%s=%s\n" % (k, "true" if v else "false"))
+    elif isinstance(v, (str, int, float)):
+        sys.stdout.write("%s=%s\n" % (k, v))
+INNERCFG
+)"
+  elif command -v jq >/dev/null 2>&1; then
+    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
+  else
+    warn "CODESEEQ_CONFIG_JSON/JSON config configured but neither python3 nor jq is available; skipping JSON config"
+    return 0
+  fi
+
+  if [[ -z "$parsed" ]]; then
+    return 0
+  fi
+
+  local line k v
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    k="${line%%=*}"
+    v="${line#*=}"
+    [[ -n "$k" ]] || continue
+    if [[ -z "${!k+x}" ]] || [[ -z "${!k:-}" ]]; then
+      export "$k=$v"
+    fi
+  done <<< "$parsed"
+  return 0
+}
+
 toml_quote_file() {
   local path="$1"
   if command -v jq >/dev/null 2>&1; then
@@ -89,6 +156,8 @@ print_workspace_banner() {
     } >&2
   fi
 }
+
+load_config_json
 
 if [[ -n "${CODESEEQ_SYSTEM_PROMPT_FILE+x}" ]]; then
   CODESEEQ_SYSTEM_PROMPT_FILE_EXPLICIT=true
