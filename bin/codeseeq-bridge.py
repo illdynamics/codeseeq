@@ -2022,9 +2022,9 @@ def deepseek_payload(
                         "function": {"name": tool_choice["name"]},
                     }
 
-    payload["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
-
+    # FIXED — only send when enabled; omit entirely for non-thinking models
     if thinking_enabled:
+        payload["thinking"] = {"type": "enabled"}
         reasoning = body.get("reasoning")
         if not isinstance(reasoning, dict):
             reasoning = {}
@@ -2037,7 +2037,6 @@ def deepseek_payload(
             payload["reasoning_effort"] = effort
 
     return payload
-
 
 def deepseek_usage_to_responses_usage(usage: Any) -> Dict[str, int]:
     if not isinstance(usage, dict):
