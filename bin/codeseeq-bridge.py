@@ -3,9 +3,12 @@
 codeseeq-bridge: OpenAI Responses API <-> DeepSeek Chat Completions translation bridge.
 
 v0.3.8 patches:
-- JSON salvage: best-effort repair of truncated tool-call argument JSON
-  from DeepSeek streaming, preventing "Expecting , delimiter" errors
-  for large calls like update_plan with multi-step plan arrays.
+- Per-model endpoint + sampling configuration (base/chat URL, temperature,
+  top_p, top_k, context window, max output tokens, timeout, thinking, and
+  per-model system prompt). Added qwibus-qwikk and qwibus-qmplx local
+  gateway models with no API-key requirement, plus per-model
+  CODESEEQ_<KEY>_* env overrides and generic OPENAI/DEEPSEEK/CODESEEQ_BASE_URL
+  fallbacks.
 - Robust streaming DSML tool-call detection (inline, not post-hoc)
 - Correct OpenAI Responses streaming event types for function tools
   (response.function_call_arguments.delta / .done) instead of the previous
@@ -97,6 +100,123 @@ HTTP_TIMEOUT = float(os.environ.get("CODESEEQ_BRIDGE_TIMEOUT_SECONDS", "120"))
 CHUNK_SIZE = int(os.environ.get("CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE", "120"))
 DEFAULT_DEEPSEEK_MAX_OUTPUT_TOKENS = 384000
 
+# ---------------------------------------------------------------------------
+# Per-model configuration.
+#
+# Each supported model carries its own endpoint + sampling defaults so that a
+# model can point at a different OpenAI-compatible gateway (localhost, custom
+# proxy, etc.) without flipping global env vars. Values below are defaults;
+# they can be overridden per-model via the following env-var naming scheme:
+#
+#   CODESEEQ_<KEY>_BASE_URL            e.g. CODESEEQ_QWIBUS_QWIKK_BASE_URL
+#   CODESEEQ_<KEY>_CHAT_URL            e.g. CODESEEQ_QWIBUS_QWIKK_CHAT_URL
+#   CODESEEQ_<KEY>_TEMPERATURE
+#   CODESEEQ_<KEY>_TOP_P
+#   CODESEEQ_<KEY>_TOP_K
+#   CODESEEQ_<KEY>_MAX_OUTPUT_TOKENS
+#   CODESEEQ_<KEY>_TIMEOUT_SECONDS
+#   CODESEEQ_<KEY>_ENABLE_THINKING
+#   CODESEEQ_<KEY>_SYSTEM_PROMPT
+#
+# where <KEY> is the model slug with non-alphanumerics replaced by "_" and
+# upper-cased (e.g. "qwibus-qwikk" -> "QWIBUS_QWIKK"). If no per-model env
+# override is present, the generic *_BASE_URL fallback order is:
+#   OPENAI_BASE_URL -> DEEPSEEK_BASE_URL -> CODESEEQ_BASE_URL -> built-in default.
+# ---------------------------------------------------------------------------
+
+
+_MODEL_ENV_KEY_RE = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _model_env_key(name: str) -> str:
+    return _MODEL_ENV_KEY_RE.sub("_", name).strip("_").upper()
+
+
+def _env_first(*names: str) -> Optional[str]:
+    for n in names:
+        v = os.environ.get(n)
+        if v is not None and v != "":
+            return v
+    return None
+
+
+def _env_float(*names: str) -> Optional[float]:
+    v = _env_first(*names)
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
+def _env_int(*names: str) -> Optional[int]:
+    v = _env_first(*names)
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        return None
+
+
+# Built-in provider base/chat defaults. The DeepSeek models keep these as
+# their default; the qwibus models override them (localhost gateway).
+_DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
+_DEEPSEEK_DEFAULT_CHAT_URL = "https://api.deepseek.com/chat/completions"
+
+
+class ModelSpec:
+    """Resolved per-model runtime configuration."""
+
+    __slots__ = (
+        "slug",
+        "deepseek_model",
+        "thinking",
+        "enable_thinking",
+        "base_url",
+        "chat_url",
+        "temperature",
+        "top_p",
+        "top_k",
+        "context_window",
+        "max_output_tokens",
+        "timeout_seconds",
+        "system_prompt",
+    )
+
+    def __init__(
+        self,
+        *,
+        slug: str,
+        deepseek_model: str,
+        thinking: bool,
+        base_url: str,
+        chat_url: str,
+        temperature: Optional[float],
+        top_p: Optional[float],
+        top_k: Optional[int],
+        context_window: int,
+        max_output_tokens: int,
+        timeout_seconds: float,
+        system_prompt: Optional[str],
+    ) -> None:
+        self.slug = slug
+        self.deepseek_model = deepseek_model
+        self.thinking = thinking
+        self.enable_thinking = thinking
+        self.base_url = base_url
+        self.chat_url = chat_url
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.context_window = context_window
+        self.max_output_tokens = max_output_tokens
+        self.timeout_seconds = timeout_seconds
+        self.system_prompt = system_prompt
+
+
+# Canonical model slugs -> upstream model name + thinking flag.
 MODEL_ALIASES: Dict[str, Tuple[str, bool]] = {
     "deepseek-v4-flash": ("deepseek-v4-flash", False),
     "deepseek-v4-flash-thinking": ("deepseek-v4-flash", True),
@@ -106,7 +226,252 @@ MODEL_ALIASES: Dict[str, Tuple[str, bool]] = {
     "deepseek@deepseek-v4-flash-thinking": ("deepseek-v4-flash", True),
     "deepseek@deepseek-v4-pro": ("deepseek-v4-pro", False),
     "deepseek@deepseek-v4-pro-thinking": ("deepseek-v4-pro", True),
+    "qwibus-qwikk": ("qwibus-qwikk", False),
+    "qwibus-qmplx": ("qwibus-qmplx", True),
+    "qwibus@qwibus-qwikk": ("qwibus-qwikk", False),
+    "qwibus@qwibus-qmplx": ("qwibus-qmplx", True),
 }
+
+
+def _build_model_specs() -> Dict[str, ModelSpec]:
+    """Build the canonical per-model runtime configuration.
+
+    Defaults encode the current deepseek models plus the two new qwibus
+    models. Per-model env overrides use the CODESEEQ_<KEY>_* naming scheme
+    (see the comment above). Generic base-url fallback order is
+    OPENAI_BASE_URL -> DEEPSEEK_BASE_URL -> CODESEEQ_BASE_URL.
+    """
+    generic_base = _env_first(
+        "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL", "CODESEEQ_BASE_URL"
+    )
+
+    def _spec(
+        slug: str,
+        deepseek_model: str,
+        thinking: bool,
+        *,
+        default_base: str,
+        default_chat_url: Optional[str] = None,
+        default_temperature: Optional[float],
+        default_top_p: Optional[float],
+        default_top_k: Optional[int],
+        context_window: int,
+        max_output_tokens: int,
+        timeout_seconds: float,
+    ) -> ModelSpec:
+        key = _model_env_key(slug)
+        chat_url = _env_first(
+            f"CODESEEQ_{key}_CHAT_URL",
+            "DEEPSEEK_CHAT_URL",
+        ) or (default_chat_url or (default_base.rstrip("/") + "/chat/completions"))
+        base_url = (
+            _env_first(f"CODESEEQ_{key}_BASE_URL")
+            or generic_base
+            or default_base
+        )
+        temperature = _env_float(f"CODESEEQ_{key}_TEMPERATURE")
+        if temperature is None:
+            temperature = default_temperature
+        top_p = _env_float(f"CODESEEQ_{key}_TOP_P")
+        if top_p is None:
+            top_p = default_top_p
+        top_k = _env_int(f"CODESEEQ_{key}_TOP_K")
+        if top_k is None:
+            top_k = default_top_k
+        mt = _env_int(f"CODESEEQ_{key}_MAX_OUTPUT_TOKENS")
+        if mt is None:
+            mt = max_output_tokens
+        to = _env_int(f"CODESEEQ_{key}_TIMEOUT_SECONDS")
+        if to is None:
+            to = int(timeout_seconds)
+        enable_raw = os.environ.get(f"CODESEEQ_{key}_ENABLE_THINKING")
+        if enable_raw is not None:
+            thinking = enable_raw.strip().lower() in {"1", "true", "yes", "on"}
+        sys_prompt = os.environ.get(f"CODESEEQ_{key}_SYSTEM_PROMPT")
+        return ModelSpec(
+            slug=slug,
+            deepseek_model=deepseek_model,
+            thinking=thinking,
+            base_url=base_url,
+            chat_url=chat_url,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            context_window=context_window,
+            max_output_tokens=mt,
+            timeout_seconds=float(to),
+            system_prompt=sys_prompt,
+        )
+
+    return {
+        "deepseek@deepseek-v4-flash": _spec(
+            "deepseek@deepseek-v4-flash",
+            "deepseek-v4-flash",
+            False,
+            default_base=_DEEPSEEK_DEFAULT_BASE_URL,
+            default_temperature=None,
+            default_top_p=None,
+            default_top_k=None,
+            context_window=1000000,
+            max_output_tokens=384000,
+            timeout_seconds=60,
+        ),
+        "deepseek@deepseek-v4-flash-thinking": _spec(
+            "deepseek@deepseek-v4-flash-thinking",
+            "deepseek-v4-flash",
+            True,
+            default_base=_DEEPSEEK_DEFAULT_BASE_URL,
+            default_temperature=None,
+            default_top_p=None,
+            default_top_k=None,
+            context_window=1000000,
+            max_output_tokens=384000,
+            timeout_seconds=600,
+        ),
+        "deepseek@deepseek-v4-pro": _spec(
+            "deepseek@deepseek-v4-pro",
+            "deepseek-v4-pro",
+            False,
+            default_base=_DEEPSEEK_DEFAULT_BASE_URL,
+            default_temperature=None,
+            default_top_p=None,
+            default_top_k=None,
+            context_window=1000000,
+            max_output_tokens=384000,
+            timeout_seconds=120,
+        ),
+        "deepseek@deepseek-v4-pro-thinking": _spec(
+            "deepseek@deepseek-v4-pro-thinking",
+            "deepseek-v4-pro",
+            True,
+            default_base=_DEEPSEEK_DEFAULT_BASE_URL,
+            default_temperature=None,
+            default_top_p=None,
+            default_top_k=None,
+            context_window=1000000,
+            max_output_tokens=384000,
+            timeout_seconds=1200,
+        ),
+        "qwibus@qwibus-qwikk": _spec(
+            "qwibus@qwibus-qwikk",
+            "qwibus-qwikk",
+            False,
+            default_base="http://127.0.0.1:1337",
+            default_chat_url="http://127.0.0.1:1337/v1/chat/completions",
+            default_temperature=0.4,
+            default_top_p=0.92,
+            default_top_k=20,
+            context_window=16384,
+            max_output_tokens=4096,
+            timeout_seconds=60,
+        ),
+        "qwibus@qwibus-qmplx": _spec(
+            "qwibus@qwibus-qmplx",
+            "qwibus-qmplx",
+            True,
+            default_base="http://127.0.0.1:1337",
+            default_chat_url="http://127.0.0.1:1337/v1/chat/completions",
+            default_temperature=0.6,
+            default_top_p=0.95,
+            default_top_k=20,
+            context_window=32768,
+            max_output_tokens=8192,
+            timeout_seconds=600,
+        ),
+    }
+
+
+def _apply_catalog_overrides(specs: Dict[str, ModelSpec]) -> Dict[str, ModelSpec]:
+    """Layer per-model config from the human-facing model catalog JSON on top
+    of the built-in defaults, keeping each entry's spec objects intact.
+
+    The catalog path is CODESEEQ_MODEL_CATALOG_JSON (default
+    /etc/codeseeq/model-catalog.json in the container). This makes the JSON
+    catalog the single source of truth for endpoint/sampling knobs while the
+    hard-coded defaults remain a safe fallback (and cover models that may not
+    yet be listed in the catalog).
+    """
+    path = os.environ.get(
+        "CODESEEQ_MODEL_CATALOG_JSON", "/etc/codeseeq/model-catalog.json"
+    )
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            catalog = json.load(fh)
+    except (OSError, ValueError):
+        return specs
+
+    entries = catalog.get("models") if isinstance(catalog, dict) else None
+    if not isinstance(entries, list):
+        return specs
+
+    def _bool(v: Any, default: Optional[bool]) -> Optional[bool]:
+        if v is None:
+            return default
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.strip().lower() in {"1", "true", "yes", "on"}
+        return default
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        provider_model = entry.get("provider_model") or entry.get("slug")
+        if not isinstance(provider_model, str):
+            continue
+        spec = specs.get(provider_model)
+        if spec is None:
+            continue
+
+        if entry.get("base_url") is not None:
+            spec.base_url = str(entry["base_url"])
+        if entry.get("chat_url") is not None:
+            spec.chat_url = str(entry["chat_url"])
+        if entry.get("temperature") is not None:
+            try:
+                spec.temperature = float(entry["temperature"])
+            except (TypeError, ValueError):
+                pass
+        if entry.get("top_p") is not None:
+            try:
+                spec.top_p = float(entry["top_p"])
+            except (TypeError, ValueError):
+                pass
+        if entry.get("top_k") is not None:
+            try:
+                spec.top_k = int(entry["top_k"])
+            except (TypeError, ValueError):
+                pass
+        if entry.get("max_output_tokens") is not None:
+            try:
+                spec.max_output_tokens = int(entry["max_output_tokens"])
+            except (TypeError, ValueError):
+                pass
+        if entry.get("timeout_seconds") is not None:
+            try:
+                spec.timeout_seconds = float(entry["timeout_seconds"])
+            except (TypeError, ValueError):
+                pass
+        if entry.get("context_window") is not None:
+            try:
+                spec.context_window = int(entry["context_window"])
+            except (TypeError, ValueError):
+                pass
+
+        if "enable_thinking" in entry:
+            spec.enable_thinking = bool(entry["enable_thinking"])
+            spec.thinking = bool(entry["enable_thinking"])
+        elif "thinking" in entry:
+            spec.thinking = bool(entry["thinking"])
+            spec.enable_thinking = bool(entry["thinking"])
+
+        if entry.get("system_prompt") is not None:
+            spec.system_prompt = entry["system_prompt"]
+
+    return specs
+
+
+MODEL_SPECS: Dict[str, ModelSpec] = _apply_catalog_overrides(_build_model_specs())
 
 # ---------------------------------------------------------------------------
 # DSML / inline tool-call extraction
@@ -598,114 +963,6 @@ def _arguments_value_to_json_text(value: Any) -> str:
     return str(value)
 
 
-def _salvage_truncated_json(json_str: str) -> Optional[str]:
-    """
-    Best-effort repair of truncated/incomplete JSON from streaming tool calls.
-
-    DeepSeek's streaming delivery can truncate tool-call argument JSON,
-    especially for complex calls like update_plan with large plan arrays.
-    This attempts progressively more aggressive fixes before giving up.
-    """
-    if not json_str or json_str.isspace():
-        return None
-
-    s = json_str.strip()
-
-    def _needed_closers(text: str) -> str:
-        """Return the sequence of closing brackets needed to balance `text`,
-        ignoring brackets inside quoted strings. The closers are ordered so
-        the innermost unclosed bracket is closed first."""
-        stack: List[str] = []
-        in_string = False
-        string_char = None
-        escape_next = False
-        for ch in text:
-            if escape_next:
-                escape_next = False
-                continue
-            if ch == '\\':
-                escape_next = True
-                continue
-            if ch in ('"', "'") and (not in_string or ch == string_char):
-                in_string = not in_string
-                if in_string:
-                    string_char = ch
-                else:
-                    string_char = None
-                continue
-            if in_string:
-                continue
-            if ch in ('{', '['):
-                stack.append(ch)
-            elif ch == '}':
-                if stack and stack[-1] == '{':
-                    stack.pop()
-            elif ch == ']':
-                if stack and stack[-1] == '[':
-                    stack.pop()
-
-        closers = []
-        for opener in reversed(stack):
-            closers.append('}' if opener == '{' else ']')
-        return ''.join(closers)
-
-    # Strategy 1: The JSON is valid except unclosed brackets.
-    closers = _needed_closers(s)
-    if closers:
-        candidate = s + closers
-        try:
-            json.loads(candidate)
-            return candidate
-        except Exception:
-            pass
-
-    # Strategy 2: The JSON was truncated mid-string. Find the last
-    # unclosed quote, close it, then close unbalanced brackets.
-    in_string = False
-    string_char = None
-    escape_next = False
-    last_string_start = -1
-    for i, ch in enumerate(s):
-        if escape_next:
-            escape_next = False
-            continue
-        if ch == '\\':
-            escape_next = True
-            continue
-        if ch in ('"', "'") and (not in_string or ch == string_char):
-            if not in_string:
-                in_string = True
-                string_char = ch
-                last_string_start = i
-            else:
-                in_string = False
-                string_char = None
-
-    if in_string and last_string_start >= 0:
-        candidate = s + string_char
-        closers2 = _needed_closers(candidate)
-        if closers2:
-            candidate = candidate + closers2
-        try:
-            json.loads(candidate)
-            return candidate
-        except Exception:
-            pass
-
-    # Strategy 3: Trailing comma in array/object — remove then close.
-    if s.rstrip().endswith(','):
-        candidate = s.rstrip().rstrip(',')
-        closers3 = _needed_closers(candidate)
-        if closers3:
-            candidate = candidate + closers3
-        try:
-            json.loads(candidate)
-            return candidate
-        except Exception:
-            pass
-
-    return None
-
 def validate_tool_arguments_json(
     arguments_value: Any,
     *,
@@ -725,17 +982,7 @@ def validate_tool_arguments_json(
     try:
         parsed = json.loads(arguments_json or "{}")
     except Exception as exc:
-        # Try to salvage truncated JSON before giving up.
-        salvaged = _salvage_truncated_json(arguments_json)
-        if salvaged is not None:
-            log(f"salvaged truncated tool arguments: tool={raw_name} "
-                f"original_chars={len(arguments_json)} salvaged_chars={len(salvaged)}")
-            try:
-                parsed = json.loads(salvaged)
-            except Exception:
-                return None, str(exc)
-        else:
-            return None, str(exc)
+        return None, str(exc)
 
     if not isinstance(parsed, dict):
         return None, "tool arguments must be a JSON object"
@@ -828,12 +1075,9 @@ def _validate_special_tool_args(
         log(f"request_user_input forwarded (Codex mode-check will apply): {json.dumps(args, ensure_ascii=False)[:200]}")
         return json.dumps(args, ensure_ascii=False), None
 
-    # update_goal: if the model calls this without first creating a goal
-    # via create_goal, Codex will reject it with "cannot update goal because
-    # this thread has no goal". Instead of letting the opaque Codex error
-    # through, intercept with a clear recovery message that tells the model
-    # to use create_goal first, OR to silently acknowledge the goal is done
-    # if the task is actually complete.
+    # update_goal without an active goal: if we see the model trying to
+    # update_goal, it may not have created one first. Let it through
+    # since Codex will give a clear error that the model can recover from.
     if resolved_name.lower() == "update_goal":
         status_val = str(args.get("status", "")).lower()
         if status_val not in {"complete", "blocked"}:
@@ -844,16 +1088,7 @@ def _validate_special_tool_args(
                 args["status"] = "blocked"
             elif status_val:
                 log(f"update_goal with unrecognized status={status_val!r}; letting through for Codex to reject")
-        # Return a recovery message instead of letting Codex reject it.
-        # The bridge cannot track whether a goal exists (that's Codex state),
-        # so we emit a non-error response that tells the model to either
-        # create_goal first or treat the goal as naturally completed.
-        return None, (
-            "update_goal requires an active goal. If you haven't called "
-            "create_goal yet, call create_goal with the objective first, "
-            "then call update_goal. If the task is naturally done (not a "
-            "tracked goal), just summarize your results without calling "
-            "update_goal.")
+        return json.dumps(args, ensure_ascii=False), None
 
     # write_stdin with a likely-stale session_id: if the session_id is 0
     # or clearly not a real session, block it with a recovery message.
@@ -923,9 +1158,10 @@ def parse_positive_int(value: Any) -> Optional[int]:
     return parsed
 
 
-def resolve_max_tokens(body: Dict[str, Any]) -> int:
+def resolve_max_tokens(body: Dict[str, Any], spec: "ModelSpec") -> int:
     provider_cap = (
         parse_positive_int(os.environ.get("CODESEEQ_MAX_OUTPUT_TOKENS"))
+        or spec.max_output_tokens
         or DEFAULT_DEEPSEEK_MAX_OUTPUT_TOKENS
     )
     requested = parse_positive_int(body.get("max_output_tokens"))
@@ -936,26 +1172,57 @@ def resolve_max_tokens(body: Dict[str, Any]) -> int:
     return min(requested, provider_cap)
 
 
-def normalize_model(model: str) -> Tuple[str, str, bool]:
+def normalize_model(model: str) -> "ModelSpec":
     default_thinking = env_bool("CODESEEQ_THINKING", False)
     raw = (model or "deepseek@deepseek-v4-flash").strip()
+
+    # Resolve aliases to a canonical slug that is present in MODEL_SPECS.
+    # The two bare/wrapper non-thinking deepseek aliases keep the legacy
+    # "CODESEEQ_THINKING" env override for backwards compatibility.
+    canonical = raw
     if raw in MODEL_ALIASES:
         ds_model, thinking = MODEL_ALIASES[raw]
-        if raw in {"deepseek@deepseek-v4-flash", "deepseek@deepseek-v4-pro"}:
-            thinking = default_thinking
-        provider_model = f"deepseek@{ds_model}"
-        return raw, provider_model, thinking
+        if raw.startswith("qwibus"):
+            canonical = f"qwibus@{ds_model}"
+        else:
+            canonical = f"deepseek@{ds_model}"
 
-    if raw.startswith("deepseek@"):
-        tail = raw.split("@", 1)[1]
-        if tail in {"deepseek-v4-flash", "deepseek-v4-pro"}:
-            return raw, f"deepseek@{tail}", default_thinking
+    if canonical not in MODEL_SPECS:
+        # Legacy "deepseek@<tail>" form without a full alias entry.
+        if raw.startswith("deepseek@"):
+            candidate = f"deepseek@{raw.split('@', 1)[1]}"
+            if candidate in MODEL_SPECS:
+                canonical = candidate
+    if canonical not in MODEL_SPECS:
+        raise ValueError(
+            "unsupported model. supported: "
+            + ", ".join(sorted(MODEL_SPECS.keys()))
+        )
 
-    raise ValueError(
-        "unsupported model. supported: "
-        "deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, "
-        "deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro"
+    src = MODEL_SPECS[canonical]
+    spec = ModelSpec(
+        slug=src.slug,
+        deepseek_model=src.deepseek_model,
+        thinking=src.thinking,
+        base_url=src.base_url,
+        chat_url=src.chat_url,
+        temperature=src.temperature,
+        top_p=src.top_p,
+        top_k=src.top_k,
+        context_window=src.context_window,
+        max_output_tokens=src.max_output_tokens,
+        timeout_seconds=src.timeout_seconds,
+        system_prompt=src.system_prompt,
     )
+
+    # Legacy "CODESEEQ_THINKING" global toggle only affects the explicit
+    # *non-thinking* deepseek slugs; thinking variants and qwibus keep their
+    # hard-coded defaults.
+    if canonical in {"deepseek@deepseek-v4-flash", "deepseek@deepseek-v4-pro"}:
+        spec.thinking = default_thinking
+        spec.enable_thinking = default_thinking
+
+    return spec
 
 
 # ---------------------------------------------------------------------------
@@ -1582,16 +1849,35 @@ def collect_registered_tool_names(tools: Any) -> List[str]:
 
 def deepseek_payload(
     body: Dict[str, Any],
-    deepseek_model: str,
-    thinking_enabled: bool,
+    spec: "ModelSpec",
     messages: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    thinking_enabled = spec.thinking
     payload: Dict[str, Any] = {
-        "model": deepseek_model,
+        "model": spec.deepseek_model,
         "messages": messages,
         "stream": bool(body.get("stream", False)),
-        "max_tokens": resolve_max_tokens(body),
+        "max_tokens": resolve_max_tokens(body, spec),
     }
+
+    # Sampling parameters: prefer the request body, then the per-model spec.
+    temperature = body.get("temperature")
+    if temperature is None or not isinstance(temperature, (int, float)):
+        temperature = spec.temperature
+    if temperature is not None:
+        payload["temperature"] = float(temperature)
+
+    top_p = body.get("top_p")
+    if top_p is None or not isinstance(top_p, (int, float)):
+        top_p = spec.top_p
+    if top_p is not None:
+        payload["top_p"] = float(top_p)
+
+    top_k = body.get("top_k")
+    if top_k is None or not isinstance(top_k, int):
+        top_k = spec.top_k
+    if top_k is not None:
+        payload["top_k"] = int(top_k)
 
     tools = body.get("tools")
     if isinstance(tools, list) and tools:
@@ -1801,7 +2087,7 @@ async def health() -> Dict[str, str]:
     effective_backend = image_backend
     if image_backend == "none" and venice_key:
         effective_backend = "venice"
-    info: Dict[str, str] = {"status": "ok", "version": "0.3.7", "image_backend": effective_backend}
+    info: Dict[str, str] = {"status": "ok", "version": "0.3.8", "image_backend": effective_backend}
     if effective_backend == "venice":
         info["venice_api_key_configured"] = str(bool(venice_key))
         info["venice_image_model"] = os.environ.get("CODESEEQ_VENICE_IMAGE_MODEL", "z-image-turbo")
@@ -1810,15 +2096,11 @@ async def health() -> Dict[str, str]:
 
 @app.get("/v1/models")
 async def models() -> Dict[str, Any]:
-    return {
-        "object": "list",
-        "data": [
-            {"id": "deepseek@deepseek-v4-flash", "object": "model", "owned_by": "deepseek"},
-            {"id": "deepseek@deepseek-v4-flash-thinking", "object": "model", "owned_by": "deepseek"},
-            {"id": "deepseek@deepseek-v4-pro", "object": "model", "owned_by": "deepseek"},
-            {"id": "deepseek@deepseek-v4-pro-thinking", "object": "model", "owned_by": "deepseek"},
-        ],
-    }
+    data = []
+    for slug in sorted(MODEL_SPECS.keys()):
+        owner = "qwibus" if slug.startswith("qwibus") else "deepseek"
+        data.append({"id": slug, "object": "model", "owned_by": owner})
+    return {"object": "list", "data": data}
 
 
 @app.post("/v1/responses")
@@ -1828,14 +2110,25 @@ async def responses(request: Request) -> Any:
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=400, detail=f"invalid json: {exc}")
 
-    require_deepseek_key()
-
     model_in = str(body.get("model", "deepseek@deepseek-v4-flash"))
     try:
-        raw_model, provider_model, thinking_enabled = normalize_model(model_in)
+        spec = normalize_model(model_in)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    deepseek_model = provider_model.split("@", 1)[1]
+
+    raw_model = spec.slug
+    provider_model = spec.slug
+    deepseek_model = spec.deepseek_model
+    thinking_enabled = spec.thinking
+    model_chat_url = spec.chat_url
+    model_timeout = spec.timeout_seconds
+
+    # qwibus models run on a local gateway that requires no API key.
+    if spec.slug.startswith("qwibus"):
+        if not env_bool("QWIBUS_NO_API_KEY", True):
+            require_deepseek_key()
+    else:
+        require_deepseek_key()
 
     response_id = f"resp_{uuid.uuid4().hex[:20]}"
 
@@ -1893,17 +2186,27 @@ async def responses(request: Request) -> Any:
                 break
         messages.insert(insert_idx, steering)
 
-    payload = deepseek_payload(body, deepseek_model, thinking_enabled, messages)
+    # Per-model system prompt. All models default to no system prompt for now,
+    # but the wiring is here so a system prompt can be set per model via
+    # CODESEEQ_<KEY>_SYSTEM_PROMPT without changing global config.
+    if spec.system_prompt:
+        messages.insert(0, {"role": "system", "content": spec.system_prompt})
+
+    payload = deepseek_payload(body, spec, messages)
     stream = bool(body.get("stream", False))
 
+    key = os.environ.get("DEEPSEEK_API_KEY", "")
     headers = {
-        "Authorization": f"Bearer {os.environ.get('DEEPSEEK_API_KEY', '')}",
         "Content-Type": "application/json",
     }
+    # qwibus models are keyless; never send an Authorization header for them.
+    if key and not spec.slug.startswith("qwibus"):
+        headers["Authorization"] = f"Bearer {key}"
 
     log(
         f"request model={raw_model} mapped={provider_model} thinking={thinking_enabled} "
-        f"stream={stream} messages={len(messages)} tools_registered={len(registered_set)}"
+        f"stream={stream} messages={len(messages)} tools_registered={len(registered_set)} "
+        f"chat_url={model_chat_url} timeout={model_timeout}"
     )
     if registered_tool_names:
         log(f"registered tool names: {registered_tool_names}")
@@ -1911,8 +2214,8 @@ async def responses(request: Request) -> Any:
     # ---------------- non-streaming path --------------------------------
     if not stream:
         payload["stream"] = False
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            resp = await client.post(DEEPSEEK_CHAT_URL, json=payload, headers=headers)
+        async with httpx.AsyncClient(timeout=model_timeout) as client:
+            resp = await client.post(model_chat_url, json=payload, headers=headers)
             if resp.status_code >= 400:
                 detail = resp.text[:1000]
                 log(f"deepseek error status={resp.status_code} body={detail}")
@@ -2097,9 +2400,9 @@ async def responses(request: Request) -> Any:
             return out
 
         try:
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=model_timeout) as client:
                 async with client.stream(
-                    "POST", DEEPSEEK_CHAT_URL, json=payload, headers=headers
+                    "POST", model_chat_url, json=payload, headers=headers
                 ) as resp:
                     if resp.status_code >= 400:
                         detail = (await resp.aread()).decode("utf-8", errors="replace")[:1000]

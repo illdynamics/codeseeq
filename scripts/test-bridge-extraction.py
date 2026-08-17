@@ -169,8 +169,7 @@ def main() -> None:
                 ],
                 "tool_choice": {"type": "function", "name": "exec_command"},
             },
-            "deepseek-v4-flash",
-            False,
+            bridge.normalize_model("deepseek@deepseek-v4-flash"),
             [{"role": "user", "content": "pwd"}],
         )
         assert payload["tools"][0]["function"]["name"] == "exec_command"
@@ -180,8 +179,7 @@ def main() -> None:
 
         capped_payload = bridge.deepseek_payload(
             {"stream": False, "max_output_tokens": 999999},
-            "deepseek-v4-flash",
-            False,
+            bridge.normalize_model("deepseek@deepseek-v4-flash"),
             [{"role": "user", "content": "pwd"}],
         )
         assert capped_payload["max_tokens"] == 384000

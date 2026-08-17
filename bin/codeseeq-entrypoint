@@ -214,6 +214,9 @@ normalize_model() {
   if [[ "$model" == deepseek/deepseek-v4-* ]]; then
     model="${model/deepseek\//deepseek@}"
   fi
+  if [[ "$model" == qwibus/qwibus-* ]]; then
+    model="${model/qwibus\//qwibus@}"
+  fi
 
   case "$model" in
     deepseek-v4-flash)
@@ -248,8 +251,24 @@ normalize_model() {
       PROVIDER_MODEL="deepseek@deepseek-v4-pro"
       alias_thinking="true"
       ;;
+    qwibus-qwikk)
+      PROVIDER_MODEL="qwibus@qwibus-qwikk"
+      alias_thinking="false"
+      ;;
+    qwibus-qmplx)
+      PROVIDER_MODEL="qwibus@qwibus-qmplx"
+      alias_thinking="true"
+      ;;
+    qwibus@qwibus-qwikk)
+      PROVIDER_MODEL="qwibus@qwibus-qwikk"
+      alias_thinking="false"
+      ;;
+    qwibus@qwibus-qmplx)
+      PROVIDER_MODEL="qwibus@qwibus-qmplx"
+      alias_thinking="true"
+      ;;
     *)
-      die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro"
+      die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx"
       ;;
   esac
 
@@ -387,6 +406,10 @@ print_config() {
 }
 
 require_deepseek_key() {
+  # qwibus models run on a local gateway and require no API key.
+  if [[ "${PROVIDER_MODEL:-}" == qwibus@* ]]; then
+    return 0
+  fi
   [[ -n "${DEEPSEEK_API_KEY:-}" ]] || die "DEEPSEEK_API_KEY is required"
   # CodeSeeq privacy hardening: OPENAI_API_KEY is no longer auto-populated from DEEPSEEK_API_KEY
   # (removed per privacy hardening)

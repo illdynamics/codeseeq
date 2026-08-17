@@ -1,3 +1,29 @@
+## v0.3.8 - 2026-08-17
+
+### Added
+- **Two new qwibus models.** `qwibus-qwikk` (quick, no reasoning) and
+  `qwibus-qmplx` (heavy reasoning/thinking) run against a local
+  OpenAI-compatible gateway (default `http://127.0.0.1:1337`) and require no
+  API key.
+- **Per-model endpoint + sampling configuration.** The bridge now supports
+  per-model `base_url`, `chat_url`, `temperature`, `top_p`, `top_k`,
+  `context_window`, `max_output_tokens`, `timeout_seconds`, `enable_thinking`,
+  and `system_prompt`. Defaults are sourced from `config/model-catalog.json`
+  (single source of truth), with per-model `CODESEEQ_<KEY>_*` env overrides and
+  generic `OPENAI_BASE_URL` / `DEEPSEEK_BASE_URL` / `CODESEEQ_BASE_URL`
+  fallbacks.
+- **DeepSeek per-model defaults.** `deepseek-v4-flash` timeout 60s,
+  `deepseek-v4-pro` 120s, `deepseek-v4-flash-thinking` 600s, and
+  `deepseek-v4-pro-thinking` 1200s, all with 1M context and 384K max output.
+  `enable_thinking` is `true` on the two thinking variants.
+
+### Changed
+- **Health endpoint** reports version `0.3.8`.
+- **Version bump to v0.3.8.** All docs, configs, and internal version strings
+  updated.
+
+---
+
 ## v0.3.7 - 2026-07-14
 
 ### Changed

@@ -4,8 +4,12 @@
       "slug": "deepseek@deepseek-v4-flash",
       "display_name": "DeepSeek V4 Flash",
       "description": "DeepSeek V4 Flash (non-thinking)",
+      "base_instructions": "",
+      "enable_thinking": false,
       "context_window": 1000000,
       "max_context_window": 1000000,
+      "max_output_tokens": 384000,
+      "timeout_seconds": 60,
       "supports_reasoning_summaries": false,
       "supported_in_api": true,
       "visibility": "list",
@@ -17,7 +21,6 @@
       },
       "supports_parallel_tool_calls": true,
       "priority": 10,
-      "base_instructions": "You are a coding assistant.",
       "supported_reasoning_levels": [],
       "input_modalities": [
         "text"
@@ -30,8 +33,12 @@
       "slug": "deepseek@deepseek-v4-flash-thinking",
       "display_name": "DeepSeek V4 Flash (Thinking)",
       "description": "DeepSeek V4 Flash with thinking enabled",
+      "base_instructions": "",
+      "enable_thinking": true,
       "context_window": 1000000,
       "max_context_window": 1000000,
+      "max_output_tokens": 384000,
+      "timeout_seconds": 600,
       "supports_reasoning_summaries": true,
       "supported_in_api": true,
       "visibility": "list",
@@ -43,7 +50,6 @@
       },
       "supports_parallel_tool_calls": true,
       "priority": 11,
-      "base_instructions": "You are a coding assistant.",
       "supported_reasoning_levels": [
         {
           "level": "high",
@@ -68,8 +74,12 @@
       "slug": "deepseek@deepseek-v4-pro",
       "display_name": "DeepSeek V4 Pro",
       "description": "DeepSeek V4 Pro (non-thinking)",
+      "base_instructions": "",
+      "enable_thinking": false,
       "context_window": 1000000,
       "max_context_window": 1000000,
+      "max_output_tokens": 384000,
+      "timeout_seconds": 120,
       "supports_reasoning_summaries": false,
       "supported_in_api": true,
       "visibility": "list",
@@ -81,7 +91,6 @@
       },
       "supports_parallel_tool_calls": true,
       "priority": 20,
-      "base_instructions": "You are a coding assistant.",
       "supported_reasoning_levels": [],
       "input_modalities": [
         "text"
@@ -94,8 +103,12 @@
       "slug": "deepseek@deepseek-v4-pro-thinking",
       "display_name": "DeepSeek V4 Pro (Thinking)",
       "description": "DeepSeek V4 Pro with thinking enabled",
+      "base_instructions": "",
+      "enable_thinking": true,
       "context_window": 1000000,
       "max_context_window": 1000000,
+      "max_output_tokens": 384000,
+      "timeout_seconds": 1200,
       "supports_reasoning_summaries": true,
       "supported_in_api": true,
       "visibility": "list",
@@ -107,7 +120,88 @@
       },
       "supports_parallel_tool_calls": true,
       "priority": 21,
-      "base_instructions": "You are a coding assistant.",
+      "supported_reasoning_levels": [
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "high",
+          "description": "Maximum reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": [],
+      "reasoning_summary": "auto"
+    },
+    {
+      "slug": "qwibus@qwibus-qwikk",
+      "display_name": "Qwibus Qwikk",
+      "description": "Qwibus quick variant (no reasoning/thinking)",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "http://127.0.0.1:1337",
+      "chat_url": "http://127.0.0.1:1337/v1/chat/completions",
+      "temperature": 0.4,
+      "top_p": 0.92,
+      "top_k": 20,
+      "api_key_required": false,
+      "context_window": 16384,
+      "max_context_window": 16384,
+      "max_output_tokens": 4096,
+      "timeout_seconds": 60,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 16384
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 30,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "qwibus@qwibus-qmplx",
+      "display_name": "Qwibus Qmplx",
+      "description": "Qwibus heavy reasoning/thinking variant",
+      "base_instructions": "",
+      "enable_thinking": true,
+      "base_url": "http://127.0.0.1:1337",
+      "chat_url": "http://127.0.0.1:1337/v1/chat/completions",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "api_key_required": false,
+      "context_window": 32768,
+      "max_context_window": 32768,
+      "max_output_tokens": 8192,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 32768
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 31,
       "supported_reasoning_levels": [
         {
           "level": "high",

@@ -447,6 +447,9 @@ normalize_model() {
   if [[ "$model" == deepseek/deepseek-v4-* ]]; then
     model="${model/deepseek\//deepseek@}"
   fi
+  if [[ "$model" == qwibus/qwibus-* ]]; then
+    model="${model/qwibus\//qwibus@}"
+  fi
 
   case "$model" in
     deepseek-v4-flash)
@@ -481,8 +484,24 @@ normalize_model() {
       PROVIDER_MODEL="deepseek@deepseek-v4-pro"
       alias_thinking="true"
       ;;
+    qwibus-qwikk)
+      PROVIDER_MODEL="qwibus@qwibus-qwikk"
+      alias_thinking="false"
+      ;;
+    qwibus-qmplx)
+      PROVIDER_MODEL="qwibus@qwibus-qmplx"
+      alias_thinking="true"
+      ;;
+    qwibus@qwibus-qwikk)
+      PROVIDER_MODEL="qwibus@qwibus-qwikk"
+      alias_thinking="false"
+      ;;
+    qwibus@qwibus-qmplx)
+      PROVIDER_MODEL="qwibus@qwibus-qmplx"
+      alias_thinking="true"
+      ;;
     *)
-      die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro"
+      die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx"
       ;;
   esac
 
@@ -662,6 +681,10 @@ split_direct_prompt_args() {
 }
 
 require_deepseek_key() {
+  # qwibus models run on a local gateway and require no API key.
+  if [[ "${PROVIDER_MODEL:-}" == qwibus@* ]]; then
+    return 0
+  fi
   [[ -n "${DEEPSEEK_API_KEY:-}" ]] || die "DEEPSEEK_API_KEY is required"
   # CodeSeeq privacy hardening: OPENAI_API_KEY is no longer auto-populated from DEEPSEEK_API_KEY
 }
@@ -802,7 +825,7 @@ start_bridge_container() {
     -e "CODESEEQ_OPENRESPONSES_PORT=${CODESEEQ_OPENRESPONSES_PORT}"
   )
   local env_name
-  for env_name in DEEPSEEK_API_KEY BRAVE_API_KEY UNSTRUCTURED_API_KEY DEEPSEEK_CHAT_URL CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL CODESEEQ_BRIDGE_TIMEOUT_SECONDS CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING; do
+  for env_name in DEEPSEEK_API_KEY BRAVE_API_KEY UNSTRUCTURED_API_KEY DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL CODESEEQ_BRIDGE_TIMEOUT_SECONDS CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING CODESEEQ_QWIBUS_QWIKK_BASE_URL CODESEEQ_QWIBUS_QWIKK_CHAT_URL CODESEEQ_QWIBUS_QWIKK_TEMPERATURE CODESEEQ_QWIBUS_QWIKK_TOP_P CODESEEQ_QWIBUS_QWIKK_TOP_K CODESEEQ_QWIBUS_QWIKK_MAX_OUTPUT_TOKENS CODESEEQ_QWIBUS_QWIKK_TIMEOUT_SECONDS CODESEEQ_QWIBUS_QWIKK_ENABLE_THINKING CODESEEQ_QWIBUS_QWIKK_SYSTEM_PROMPT CODESEEQ_QWIBUS_QMPLX_BASE_URL CODESEEQ_QWIBUS_QMPLX_CHAT_URL CODESEEQ_QWIBUS_QMPLX_TEMPERATURE CODESEEQ_QWIBUS_QMPLX_TOP_P CODESEEQ_QWIBUS_QMPLX_TOP_K CODESEEQ_QWIBUS_QMPLX_MAX_OUTPUT_TOKENS CODESEEQ_QWIBUS_QMPLX_TIMEOUT_SECONDS CODESEEQ_QWIBUS_QMPLX_ENABLE_THINKING CODESEEQ_QWIBUS_QMPLX_SYSTEM_PROMPT; do
     if [[ -n "${!env_name:-}" ]]; then
       run_args+=(-e "$env_name")
     fi
