@@ -631,6 +631,26 @@ if ! _rg -n "system-prompt.md" scripts/install-local.sh >/dev/null 2>&1; then
   fail "installer does not preserve user-config system-prompt.md"
 fi
 
+note "checking build/install use the script dir, not an overridable INSTALL_ROOT"
+# Regression: a stale CODESEEQ_INSTALL_ROOT (e.g. pointing at
+# ~/.config/codeseeq) made `codeseeq build` look for the Dockerfile in the
+# config dir and made `codeseeq install` die with "CODESEEQ_INSTALL_DIR cannot
+# be inside source repo". The source repo must always be derived from the
+# running script's own location (SCRIPT_DIR); CODESEEQ_BUILD_CONTEXT remains
+# the explicit override for the build context.
+if grep -Fq 'BUILD_CONTEXT="${CODESEEQ_BUILD_CONTEXT:-$CODESEEQ_INSTALL_ROOT}"' codeseeq; then
+  fail "codeseeq build context still defaults to CODESEEQ_INSTALL_ROOT instead of SCRIPT_DIR"
+fi
+if ! grep -Fq 'BUILD_CONTEXT="${CODESEEQ_BUILD_CONTEXT:-$SCRIPT_DIR}"' codeseeq; then
+  fail "codeseeq build context does not default to SCRIPT_DIR"
+fi
+if grep -Fq '"$CODESEEQ_INSTALL_ROOT/" "$CODESEEQ_INSTALL_DIR/"' codeseeq; then
+  fail "codeseeq install still copies from CODESEEQ_INSTALL_ROOT instead of SCRIPT_DIR"
+fi
+if grep -Fq '"${CODESEEQ_INSTALL_ROOT}/"*)' codeseeq; then
+  fail "codeseeq install guard still checks CODESEEQ_INSTALL_ROOT instead of SCRIPT_DIR"
+fi
+
 note "checking root wrapper fake runtime env and CLI passthrough"
 runtimebin="${tmp_check_dir}/runtimebin"
 mkdir -p "$runtimebin"

@@ -122,7 +122,12 @@ SCRIPT_DIR="$(cd -P "$(dirname "$SELF_PATH")" && pwd)"
 IMAGE="${IMAGE:-codeseeq:dev}"
 WORKDIR_HOST="${CODESEEQ_WORKDIR_HOST:-$(pwd -P)}"
 WORKDIR_CONTAINER="${CODESEEQ_WORKDIR:-/workspace}"
-BUILD_CONTEXT="${CODESEEQ_BUILD_CONTEXT:-$CODESEEQ_INSTALL_ROOT}"
+# Build context is the directory the running script actually lives in
+# (repo checkout or installed snapshot), never an overridable
+# CODESEEQ_INSTALL_ROOT: a stale/pointed-at-config-dir value made `codeseeq
+# build` look for the Dockerfile in ~/.config/codeseeq (which has none until
+# install copies it). CODESEEQ_BUILD_CONTEXT remains the explicit override.
+BUILD_CONTEXT="${CODESEEQ_BUILD_CONTEXT:-$SCRIPT_DIR}"
 AUTO_BUILD="${CODESEEQ_AUTO_BUILD:-true}"
 HOST_CODEX_HOME="${CODESEEQ_HOST_CODEX_HOME:-${WORKDIR_HOST}/.codeseeq}"
 HOST_CONFIG_ROOT="${XDG_CONFIG_HOME:-${HOME:-${WORKDIR_HOST}}/.config}"
@@ -2455,13 +2460,13 @@ cmd_install() {
   local CODESEEQ_BIN_DIR="${CODESEEQ_BIN_DIR:-${HOME}/bin}"
 
   case "${CODESEEQ_INSTALL_DIR}/" in
-    "${CODESEEQ_INSTALL_ROOT}/"*)
+    "${SCRIPT_DIR}/"*)
       die "CODESEEQ_INSTALL_DIR cannot be inside source repo: ${CODESEEQ_INSTALL_DIR}"
       ;;
   esac
 
   case "${CODESEEQ_BIN_DIR}/" in
-    "${CODESEEQ_INSTALL_ROOT}/"*)
+    "${SCRIPT_DIR}/"*)
       die "CODESEEQ_BIN_DIR cannot be inside source repo: ${CODESEEQ_BIN_DIR}"
       ;;
   esac
@@ -2486,9 +2491,9 @@ cmd_install() {
       --exclude 'venice-image.md' \
       --exclude 'package.json' \
       --exclude 'package-lock.json' \
-      "$CODESEEQ_INSTALL_ROOT/" "$CODESEEQ_INSTALL_DIR/"
+      "$SCRIPT_DIR/" "$CODESEEQ_INSTALL_DIR/"
   else
-    tar -C "$CODESEEQ_INSTALL_ROOT" \
+    tar -C "$SCRIPT_DIR" \
       --exclude '.git' \
       --exclude '.codeseeq' \
       --exclude 'system-prompt.md' \
@@ -2546,7 +2551,7 @@ LEOF
     fi
   fi
 
-  log "installed repo snapshot to ${CODESEEQ_INSTALL_DIR}"
+  log "installed repo snapshot from ${SCRIPT_DIR} to ${CODESEEQ_INSTALL_DIR}"
   log "installed launcher to ${launcher}"
 
   case ":${PATH}:" in

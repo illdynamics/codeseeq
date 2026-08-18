@@ -55,6 +55,14 @@
   the overridden provider (key env + base URL) and the wrapper/entrypoint
   require the matching key, so the two can never disagree. `/health` reports
   the effective provider of the configured model.
+- **`codeseeq build` / `codeseeq install` no longer trust a stale `CODESEEQ_INSTALL_ROOT`.**
+  The build context and the install source are now always derived from the
+  running script's own directory (`SCRIPT_DIR`), so a `CODESEEQ_INSTALL_ROOT`
+  that points at `~/.config/codeseeq` (e.g. left over from an older shell or
+  harness) can no longer make `codeseeq build` hunt for the Dockerfile in the
+  config dir or make `codeseeq install` die with "CODESEEQ_INSTALL_DIR cannot
+  be inside source repo". `CODESEEQ_BUILD_CONTEXT` remains the explicit
+  override for the image build context.
 - **Config wizard jq fallback lists DeepSeek models.** Without python3 the
   numbered model menu now includes the DeepSeek models (the previous jq query
   only used the `providers.<p>.models` list, which is empty for deepseek).

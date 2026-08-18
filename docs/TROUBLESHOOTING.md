@@ -51,6 +51,40 @@ Disable auto-build only when you want a hard failure:
 CODESEEQ_AUTO_BUILD=false ./codeseeq models
 ```
 
+## `codeseeq build` Looks for the Dockerfile in `~/.config/codeseeq`
+
+If `codeseeq build` fails with something like:
+
+```
+Error: no Containerfile or Dockerfile specified or found in context directory,
+~/.config/codeseeq: no such file or directory
+```
+
+…and `codeseeq install` fails with:
+
+```
+[codeseeq:error] CODESEEQ_INSTALL_DIR cannot be inside source repo: ~/.config/codeseeq
+```
+
+…then a stale `CODESEEQ_INSTALL_ROOT` in your environment is pointing the
+wrapper at the *config/install* directory instead of the repo checkout you are
+running from. The build context and the install source are derived from the
+directory the running `codeseeq` script lives in (`SCRIPT_DIR`), never from an
+overridable `CODESEEQ_INSTALL_ROOT`, so unset/remove that variable (or any
+`CODESEEQ_BUILD_CONTEXT` pointing at the config dir):
+
+```bash
+unset CODESEEQ_INSTALL_ROOT CODESEEQ_BUILD_CONTEXT
+./codeseeq build
+./codeseeq install
+```
+
+`CODESEEQ_BUILD_CONTEXT` is still honored when you deliberately want to build
+from a different checkout. `codeseeq install` copies the repo that the running
+script came from (repo checkout or release zip) into `~/.config/codeseeq` and
+writes the `~/bin/codeseeq` launcher; running `install` again from an
+installed copy is refused to avoid copying the snapshot into itself.
+
 ## `.env` Handling
 
 Load `.env` before live tests without modifying it:
