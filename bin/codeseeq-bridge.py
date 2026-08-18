@@ -2,6 +2,15 @@
 """
 codeseeq-bridge: OpenAI Responses API <-> DeepSeek Chat Completions translation bridge.
 
+v0.4.1 patches:
+- Parent-death watchdog: the bridge shuts itself down and releases its port
+  the moment its parent process disappears (even under SIGKILL), so
+  hard-killed `codeseeq run` invocations can no longer orphan bridges and
+  leak ports (previously the auto-select port range could fill up).
+- Stale-bridge reaping on startup: before starting a process bridge, orphaned
+  codeseeq-bridge.py processes writing to the same bridge log are terminated
+  so ports leaked by older versions are reclaimed.
+
 v0.3.9 patches:
 - JSON config fallback (CODESEEQ_CONFIG_JSON) with env > JSON > built-in
   precedence; every CODESEEQ_* variable plus provider/credential names is
@@ -2191,7 +2200,7 @@ async def health() -> Dict[str, str]:
     effective_backend = image_backend
     if image_backend == "none" and venice_key:
         effective_backend = "venice"
-    info: Dict[str, str] = {"status": "ok", "version": "0.3.9", "image_backend": effective_backend}
+    info: Dict[str, str] = {"status": "ok", "version": "0.4.1", "image_backend": effective_backend}
     if effective_backend == "venice":
         info["venice_api_key_configured"] = str(bool(venice_key))
         info["venice_image_model"] = os.environ.get("CODESEEQ_VENICE_IMAGE_MODEL", "z-image-turbo")
