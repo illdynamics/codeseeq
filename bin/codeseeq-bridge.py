@@ -369,15 +369,16 @@ OPENAI_COMPAT_PROVIDERS = frozenset(
 )
 
 # Provider -> environment variable holding the API key. Local gateways are
-# keyless (None). The configured provider is chosen by the slug prefix or the
-# CODESEEQ_PROVIDER override (see resolve_provider_for_slug).
+# keyless by default; an optional LOCAL_API_KEY is honoured when set. The
+# configured provider is chosen by the slug prefix or the CODESEEQ_PROVIDER
+# override (see resolve_provider_for_slug).
 PROVIDER_API_KEY_ENV = {
     PROVIDER_DEEPSEEK: "DEEPSEEK_API_KEY",
     PROVIDER_ANTHROPIC: "ANTHROPIC_API_KEY",
     PROVIDER_GOOGLE: "GOOGLE_API_KEY",
     PROVIDER_GROK: "GROK_API_KEY",
     PROVIDER_VENICE: "VENICE_API_KEY",
-    PROVIDER_LOCAL: None,
+    PROVIDER_LOCAL: "LOCAL_API_KEY",
 }
 
 # Generic provider base-URL override env vars, checked in order per provider.
@@ -445,9 +446,11 @@ def require_provider_key(provider: str) -> Optional[str]:
     """
     env_name = provider_api_key_env(provider)
     if not env_name:
-        return None  # keyless provider (local gateway)
+        return None
     key = os.environ.get(env_name, "").strip()
     if not key:
+        if provider == PROVIDER_LOCAL:
+            return None  # local gateways: API key is optional
         raise HTTPException(
             status_code=400,
             detail=(
@@ -3379,7 +3382,8 @@ async def responses(request: Request) -> Any:
     model_timeout = spec.timeout_seconds
 
     # Resolve the API key for the configured provider. qwibus and local
-    # gateways are keyless; every hosted provider requires its own key env.
+    # gateways are keyless by default (local honours an optional
+    # LOCAL_API_KEY); every hosted provider requires its own key env.
     if spec.slug.startswith("qwibus"):
         if not env_bool("QWIBUS_NO_API_KEY", True):
             require_provider_key(provider)

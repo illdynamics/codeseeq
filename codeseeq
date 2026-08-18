@@ -46,7 +46,7 @@ load_config_json() {
 
   local parsed=""
   if command -v python3 >/dev/null 2>&1; then
-    parsed="$(python3 - "$path" <<'INNERCFG'
+    parsed="$(python3 - "$path" 2>/dev/null <<'INNERCFG'
 import json, os, sys
 try:
     with open(sys.argv[1], "r", encoding="utf-8") as fh:
@@ -58,7 +58,8 @@ if not isinstance(data, dict):
 allowlist = {
     "DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
     "GROK_API_KEY", "BRAVE_API_KEY", "UNSTRUCTURED_API_KEY",
-    "RESPONSES_API_KEY", "VENICE_API_KEY", "CONTAINER", "IMAGE",
+    "RESPONSES_API_KEY", "VENICE_API_KEY", "LOCAL_API_KEY",
+    "CONTAINER", "IMAGE",
     "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL", "DEEPSEEK_CHAT_URL",
     "ANTHROPIC_BASE_URL", "GOOGLE_BASE_URL", "GROK_BASE_URL",
     "VENICE_BASE_URL", "LOCAL_BASE_URL",
@@ -77,9 +78,9 @@ for k, v in data.items():
     elif isinstance(v, (str, int, float)):
         sys.stdout.write("%s=%s\n" % (k, v))
 INNERCFG
-)"
+)" || parsed=""
   elif command -v jq >/dev/null 2>&1; then
-    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GROK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","ANTHROPIC_BASE_URL","GOOGLE_BASE_URL","GROK_BASE_URL","VENICE_BASE_URL","LOCAL_BASE_URL","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
+    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GROK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","LOCAL_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","ANTHROPIC_BASE_URL","GOOGLE_BASE_URL","GROK_BASE_URL","VENICE_BASE_URL","LOCAL_BASE_URL","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
   else
     warn "CODESEEQ_CONFIG_JSON/JSON config configured but neither python3 nor jq is available; skipping JSON config"
     return 0
@@ -1032,7 +1033,7 @@ select_host_bridge_port() {
 # standalone bridge container and the Codex container. Per-model keys use the
 # documented CODESEEQ_<MODEL>_<SUFFIX> scheme (provider prefix stripped).
 codeseeq_bridge_env_names() {
-  printf '%s\n'     DEEPSEEK_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GROK_API_KEY     BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY VENICE_API_KEY     DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     ANTHROPIC_BASE_URL GOOGLE_BASE_URL GROK_BASE_URL VENICE_BASE_URL LOCAL_BASE_URL     CODESEEQ_PROVIDER CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS QWIBUS_NO_API_KEY
+  printf '%s\n'     DEEPSEEK_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GROK_API_KEY     BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY VENICE_API_KEY     LOCAL_API_KEY DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     ANTHROPIC_BASE_URL GOOGLE_BASE_URL GROK_BASE_URL VENICE_BASE_URL LOCAL_BASE_URL     CODESEEQ_PROVIDER CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS QWIBUS_NO_API_KEY
 
   local key suffix
   # Per-model keys use the CODESEEQ_<MODEL>_<SUFFIX> scheme: the bridge's
@@ -1236,10 +1237,42 @@ bridge_start_process() {
   # otherwise the bridge performs a true bind + increment (eliminating the
   # previous connect-probe TOCTOU race) and writes its chosen port to the
   # discovery file so we can learn the real port after it is up.
+  #
+  # The bridge must become a direct child of THIS shell so that (a) the EXIT
+  # trap can stop it and (b) the bridge's parent-watchdog sees this shell as
+  # its parent and shuts down when the wrapper is SIGKILLed. Two things are
+  # required for that:
+  #   1. Launch through a subshell + `exec` (a backgrounded simple command
+  #      that carries temporary assignments AND redirections makes bash fork
+  #      an intermediate subshell which then forks the command).
+  #   2. Use the REAL python3 binary, not a version-manager shim: asdf/pyenv
+  #      shims fork the real interpreter as a child, so the bridge's parent
+  #      would be the shim process, which survives a SIGKILLed wrapper and
+  #      would keep the bridge alive (port leak) because the watchdog still
+  #      sees a live parent.
+  local bridge_python="${CODESEEQ_BRIDGE_PYTHON:-}"
+  if [[ -z "$bridge_python" ]]; then
+    bridge_python="$(command -v python3 2>/dev/null || true)"
+    if [[ -n "$bridge_python" ]]; then
+      local resolved_py=""
+      resolved_py="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))' 2>/dev/null || true)"
+      [[ -n "$resolved_py" ]] && bridge_python="$resolved_py"
+    fi
+  fi
+  [[ -n "$bridge_python" ]] || die "python3 is required for process bridge mode"
   if [[ -n "$fixed_port" ]]; then
-    CODESEEQ_BRIDGE_HOST="$host"       CODESEEQ_BRIDGE_PORT="$fixed_port"       CODESEEQ_BRIDGE_PORT_FILE="$port_file"       python3 "${CODESEEQ_INSTALL_ROOT}/bin/codeseeq-bridge.py" >> "$CODESEEQ_BRIDGE_LOG" 2>&1 &
+    (
+      export CODESEEQ_BRIDGE_HOST="$host"
+      export CODESEEQ_BRIDGE_PORT="$fixed_port"
+      export CODESEEQ_BRIDGE_PORT_FILE="$port_file"
+      exec "$bridge_python" "${CODESEEQ_INSTALL_ROOT}/bin/codeseeq-bridge.py"
+    ) >> "$CODESEEQ_BRIDGE_LOG" 2>&1 &
   else
-    CODESEEQ_BRIDGE_HOST="$host"       CODESEEQ_BRIDGE_PORT_FILE="$port_file"       python3 "${CODESEEQ_INSTALL_ROOT}/bin/codeseeq-bridge.py" >> "$CODESEEQ_BRIDGE_LOG" 2>&1 &
+    (
+      export CODESEEQ_BRIDGE_HOST="$host"
+      export CODESEEQ_BRIDGE_PORT_FILE="$port_file"
+      exec "$bridge_python" "${CODESEEQ_INSTALL_ROOT}/bin/codeseeq-bridge.py"
+    ) >> "$CODESEEQ_BRIDGE_LOG" 2>&1 &
   fi
 
   BRIDGE_PID=$!
@@ -2031,7 +2064,8 @@ config_provider_model_items() {
   local catalog
   catalog="$(config_catalog_path)"
   if [[ -f "$catalog" ]] && command -v python3 >/dev/null 2>&1; then
-    python3 - "$provider" "$catalog" <<'PYCFG'
+    local py_out=""
+    if py_out="$(python3 - "$provider" "$catalog" 2>/dev/null <<'PYCFG'
 import json, sys
 provider, path = sys.argv[1], sys.argv[2]
 try:
@@ -2059,11 +2093,17 @@ for m in cat.get("models", []) or []:
         label = label + " (thinking)"
     print(f"{slug}|{label}")
 PYCFG
-    return 0
+    )" && [[ -n "$py_out" ]]; then
+      printf '%s\n' "$py_out"
+      return 0
+    fi
   fi
   if [[ -f "$catalog" ]] && command -v jq >/dev/null 2>&1; then
-    jq -r --arg p "$provider" '(.providers[$p].models // []) as $ids | [.models[] | select((.id | IN($ids[])) or (.provider == $p))] | unique_by(.id)[] | (.provider_model // .id) + "|" + .id + (if .thinking then " (thinking)" else "" end)' "$catalog" 2>/dev/null
-    return 0
+    local jq_out=""
+    if jq_out="$(jq -r --arg p "$provider" '(.providers[$p].models // []) as $ids | [.models[] | select((.id | IN($ids[])) or (.provider == $p))] | unique_by(.id)[] | (.provider_model // .id) + "|" + .id + (if .thinking then " (thinking)" else "" end)' "$catalog" 2>/dev/null)" && [[ -n "$jq_out" ]]; then
+      printf '%s\n' "$jq_out"
+      return 0
+    fi
   fi
   # Static fallback (no python3/jq).
   case "$provider" in
@@ -2084,16 +2124,20 @@ config_write_json() {
   mkdir -p "$(dirname "$path")"
   local tmp
   tmp="$(mktemp "${path}.XXXXXX")"
-  CODESEEQ_CONFIG_WRITE_PATH="$path" \
-  CODESEEQ_CONFIG_WRITE_PROVIDER="$provider" \
-  CODESEEQ_CONFIG_WRITE_MODEL="$model" \
-  CODESEEQ_CONFIG_WRITE_KEY_ENV="$key_env" \
-  CODESEEQ_CONFIG_WRITE_KEY="$key" \
-  CODESEEQ_CONFIG_WRITE_BASE_URL_ENV="$base_url_env" \
-  CODESEEQ_CONFIG_WRITE_BASE_URL="$base_url" \
-  python3 - "$tmp" <<'PYCFG'
+  local wrote=false
+  if command -v python3 >/dev/null 2>&1; then
+    # Read the EXISTING config from $path (argv[2]) so unrelated keys survive,
+    # and write the merged result to the temp file (argv[1]); mv is atomic.
+    if CODESEEQ_CONFIG_WRITE_PATH="$path" \
+         CODESEEQ_CONFIG_WRITE_PROVIDER="$provider" \
+         CODESEEQ_CONFIG_WRITE_MODEL="$model" \
+         CODESEEQ_CONFIG_WRITE_KEY_ENV="$key_env" \
+         CODESEEQ_CONFIG_WRITE_KEY="$key" \
+         CODESEEQ_CONFIG_WRITE_BASE_URL_ENV="$base_url_env" \
+         CODESEEQ_CONFIG_WRITE_BASE_URL="$base_url" \
+         python3 - "$tmp" "$path" <<'PYCFG'
 import json, os, sys
-path = sys.argv[1]
+out_path, in_path = sys.argv[1], sys.argv[2]
 provider = os.environ.get("CODESEEQ_CONFIG_WRITE_PROVIDER", "")
 model = os.environ.get("CODESEEQ_CONFIG_WRITE_MODEL", "")
 key_env = os.environ.get("CODESEEQ_CONFIG_WRITE_KEY_ENV", "")
@@ -2103,7 +2147,7 @@ base_url = os.environ.get("CODESEEQ_CONFIG_WRITE_BASE_URL", "")
 
 data = {}
 try:
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(in_path, "r", encoding="utf-8") as fh:
         data = json.load(fh)
 except Exception:
     data = {}
@@ -2112,7 +2156,7 @@ if not isinstance(data, dict):
 
 # Keep unrelated keys, but clear stale provider keys when switching providers.
 stale = {"ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GROK_API_KEY",
-         "DEEPSEEK_API_KEY", "VENICE_API_KEY",
+         "DEEPSEEK_API_KEY", "VENICE_API_KEY", "LOCAL_API_KEY",
          "ANTHROPIC_BASE_URL", "GOOGLE_BASE_URL", "GROK_BASE_URL",
          "DEEPSEEK_BASE_URL", "VENICE_BASE_URL", "LOCAL_BASE_URL"}
 for k in stale:
@@ -2130,14 +2174,53 @@ if base_url_env and base_url:
 elif base_url_env:
     data.pop(base_url_env, None)
 
-with open(path, "w", encoding="utf-8") as fh:
+with open(out_path, "w", encoding="utf-8") as fh:
     json.dump(data, fh, indent=2, ensure_ascii=False)
     fh.write("\n")
 try:
-    os.chmod(path, 0o600)
+    os.chmod(out_path, 0o600)
 except OSError:
     pass
 PYCFG
+    then
+      wrote=true
+    fi
+  fi
+  if [[ "$wrote" != "true" ]] && command -v jq >/dev/null 2>&1; then
+    # jq fallback (python3 missing or broken): same merge semantics.
+    : > "$tmp"
+    local -a jq_base=(jq -n \
+      --arg provider "$provider" --arg model "$model" \
+      --arg key_env "$key_env" --arg key "$key" \
+      --arg base_url_env "$base_url_env" --arg base_url "$base_url")
+    if [[ -f "$path" ]]; then
+      if "${jq_base[@]}" --slurpfile keep "$path" '
+        ($keep[0] // {})
+        | del(.ANTHROPIC_API_KEY, .GOOGLE_API_KEY, .GROK_API_KEY,
+              .DEEPSEEK_API_KEY, .VENICE_API_KEY, .LOCAL_API_KEY,
+              .ANTHROPIC_BASE_URL, .GOOGLE_BASE_URL, .GROK_BASE_URL,
+              .DEEPSEEK_BASE_URL, .VENICE_BASE_URL, .LOCAL_BASE_URL)
+        | .CODESEEQ_MODEL = $model
+        | .CODESEEQ_PROVIDER = $provider
+        | if ($key_env != "" and $key != "") then .[$key_env] = $key else . end
+        | if ($base_url_env != "" and $base_url != "") then .[$base_url_env] = $base_url else . end' \
+        > "$tmp" 2>/dev/null; then
+        wrote=true
+      fi
+    else
+      if "${jq_base[@]}" '
+        {CODESEEQ_MODEL: $model, CODESEEQ_PROVIDER: $provider}
+        | if ($key_env != "" and $key != "") then .[$key_env] = $key else . end
+        | if ($base_url_env != "" and $base_url != "") then .[$base_url_env] = $base_url else . end' \
+        > "$tmp" 2>/dev/null; then
+        wrote=true
+      fi
+    fi
+  fi
+  if [[ "$wrote" != "true" ]]; then
+    rm -f "$tmp"
+    die "config save requires a working python3 or jq (neither found)"
+  fi
   mv "$tmp" "$path"
   chmod 600 "$path" 2>/dev/null || true
 }
@@ -2152,7 +2235,7 @@ config_print_status() {
     return 0
   fi
   if command -v python3 >/dev/null 2>&1; then
-    python3 - "$path" <<'PYCFG'
+    python3 - "$path" <<'PYCFG' || true
 import json, os, sys
 path = sys.argv[1]
 try:
@@ -2167,9 +2250,12 @@ if not provider and "@" in model:
     provider = model.split("@", 1)[0]
 key_envs = {"anthropic": "ANTHROPIC_API_KEY", "google": "GOOGLE_API_KEY",
             "grok": "GROK_API_KEY", "deepseek": "DEEPSEEK_API_KEY",
-            "venice": "VENICE_API_KEY"}
+            "venice": "VENICE_API_KEY", "local": "LOCAL_API_KEY"}
 key_env = key_envs.get(provider, "")
-key_state = "set" if (key_env and data.get(key_env)) else ("not required" if not key_env else "missing")
+if provider == "local":
+    key_state = "set" if data.get("LOCAL_API_KEY") else "not required (local gateway)"
+else:
+    key_state = "set" if (key_env and data.get(key_env)) else ("not required" if not key_env else "missing")
 print(f"Provider: {provider or '(unset)'}")
 print(f"Model: {model or '(unset)'}")
 if key_env:
@@ -2228,7 +2314,7 @@ cmd_config() {
     printf '\n'
     model="$(cfg_prompt "Local model name (e.g. llama-4-maverick)" "")"
     [[ -n "$model" ]] || { printf 'Model name is required.\n' >&2; return 1; }
-    model="local@${model}"
+    [[ "$model" == local@* ]] || model="local@${model}"
   else
     local -a model_items=()
     local line
@@ -2247,11 +2333,17 @@ cmd_config() {
   base_url_env="$(config_provider_base_url_env "$provider")"
   base_url="$(config_provider_default_base_url "$provider")"
   printf '\n'
-  if [[ -n "$key_env" ]]; then
+  if [[ "$provider" == "local" ]]; then
+    # Local gateways: optional API key (Enter to skip), then base URL.
+    key_env="LOCAL_API_KEY"
+    key="$(cfg_prompt "API key (optional for local gateways, Enter to skip)" "")"
+    base_url="$(cfg_prompt "Local gateway base URL" "$base_url")"
+  else
+    [[ -n "$key_env" ]] || die "internal error: no API-key env for provider ${provider}"
     local existing=""
     existing="$(config_json_path)"
     if command -v python3 >/dev/null 2>&1 && [[ -f "$existing" ]]; then
-      existing="$(python3 - "$existing" "$key_env" <<'PYCFG'
+      existing="$(python3 - "$existing" "$key_env" 2>/dev/null <<'PYCFG'
 import json, sys
 try:
     with open(sys.argv[1], "r", encoding="utf-8") as fh:
@@ -2260,7 +2352,7 @@ try:
 except Exception:
     print("")
 PYCFG
-      )"
+      )" || existing=""
     else
       existing=""
     fi
@@ -2269,9 +2361,6 @@ PYCFG
       key="$existing"
     fi
     [[ -n "$key" ]] || { printf 'API key is required for provider %s.\n' "$provider" >&2; return 1; }
-  else
-    # Local provider: optional base URL override.
-    base_url="$(cfg_prompt "Local gateway base URL" "$base_url")"
   fi
 
   config_write_json "$provider" "$model" "$key_env" "$key" "$base_url_env" "$base_url"
@@ -2280,8 +2369,10 @@ PYCFG
   printf 'CodeSeeq configuration saved:\n'
   printf '  Provider: %s (%s)\n' "$provider" "$(config_provider_label "$provider")"
   printf '  Model:    %s\n' "$model"
-  if [[ -n "$key_env" ]]; then
+  if [[ -n "$key_env" && -n "$key" ]]; then
     printf '  API key:  %s set in %s\n' "$key_env" "$(config_json_path)"
+  elif [[ "$provider" == "local" ]]; then
+    printf '  API key:  none (local gateway)\n'
   fi
   if [[ -n "$base_url_env" && -n "$base_url" ]]; then
     printf '  Base URL: %s=%s\n' "$base_url_env" "$base_url"

@@ -36,6 +36,7 @@ unset CODESEEQ_RUNTIME_MODE CODESEEQ_HOST_MODE CODESEEQ_AUTO_BUILD 2>/dev/null |
 unset CODESEEQ_MODEL CODESEEQ_THINKING 2>/dev/null || true
 unset CODESEEQ_APPROVAL_POLICY CODESEEQ_SANDBOX_MODE 2>/dev/null || true
 unset CODESEEQ_BRIDGE_MODE CODESEEQ_RUNTIME_DIR CODESEEQ_LOG_DIR 2>/dev/null || true
+unset CODESEEQ_CONFIG_HOME CODESEEQ_CONFIG_JSON LOCAL_API_KEY 2>/dev/null || true
 unset CODESEEQ_OPENRESPONSES_PORT CODESEEQ_OPENRESPONSES_URL 2>/dev/null || true
 unset CODESEEQ_WORKDIR_HOST CODESEEQ_WORKDIR 2>/dev/null || true
 unset DEEPSEEK_API_KEY DEEPSEEK_BASE_URL DEEPSEEK_CHAT_URL 2>/dev/null || true
@@ -131,6 +132,60 @@ if command -v jq >/dev/null 2>&1; then
   done
 else
   note "jq not available; skipping config wizard jq fallback check"
+fi
+
+note "checking config wizard write preserves unrelated keys and local key screen"
+if command -v python3 >/dev/null 2>&1; then
+  cfg_tmp="$(mktemp -d)"
+  mkdir -p "${cfg_tmp}/config"
+  cat > "${cfg_tmp}/config/config.json" <<'CFGEOF'
+{
+  "BRAVE_API_KEY": "keep-me",
+  "UNSTRUCTURED_API_URL": "https://unstructured.example",
+  "CODESEEQ_MODEL": "deepseek@deepseek-v4-pro",
+  "DEEPSEEK_API_KEY": "old-key"
+}
+CFGEOF
+  # Local provider: typed model name, EMPTY API key, custom base URL.
+  if printf '6\ncfg-local-model\n\nhttp://127.0.0.1:9999\n' | CODESEEQ_CONFIG_HOME="${cfg_tmp}/config" ./codeseeq config >/dev/null 2>&1; then
+    if ! _rg -n '"BRAVE_API_KEY": "keep-me"' "${cfg_tmp}/config/config.json" >/dev/null 2>&1; then
+      fail "config wizard dropped unrelated key (BRAVE_API_KEY)"
+    fi
+    if ! _rg -n '"CODESEEQ_MODEL": "local@cfg-local-model"' "${cfg_tmp}/config/config.json" >/dev/null 2>&1; then
+      fail "config wizard did not save typed local model name"
+    fi
+    if ! _rg -n '"LOCAL_BASE_URL": "http://127.0.0.1:9999"' "${cfg_tmp}/config/config.json" >/dev/null 2>&1; then
+      fail "config wizard did not save local base URL"
+    fi
+    if _rg -n 'DEEPSEEK_API_KEY' "${cfg_tmp}/config/config.json" >/dev/null 2>&1; then
+      fail "config wizard kept stale DEEPSEEK_API_KEY after provider switch"
+    fi
+    if _rg -n '"LOCAL_API_KEY"' "${cfg_tmp}/config/config.json" >/dev/null 2>&1; then
+      fail "config wizard stored an empty LOCAL_API_KEY"
+    fi
+  else
+    fail "config wizard (local provider) failed"
+  fi
+  # Hosted provider re-run: unrelated keys must survive; provider must switch.
+  if printf '1\n1\nsk-ant-rerun\n' | CODESEEQ_CONFIG_HOME="${cfg_tmp}/config" ./codeseeq config >/dev/null 2>&1; then
+    if ! _rg -n '"BRAVE_API_KEY": "keep-me"' "${cfg_tmp}/config/config.json" >/dev/null 2>&1; then
+      fail "config wizard re-run dropped unrelated key (BRAVE_API_KEY)"
+    fi
+    if ! _rg -n '"UNSTRUCTURED_API_URL"' "${cfg_tmp}/config/config.json" >/dev/null 2>&1; then
+      fail "config wizard re-run dropped unrelated URL (UNSTRUCTURED_API_URL)"
+    fi
+    if ! _rg -n '"CODESEEQ_PROVIDER": "anthropic"' "${cfg_tmp}/config/config.json" >/dev/null 2>&1; then
+      fail "config wizard re-run did not switch provider to anthropic"
+    fi
+    if ! _rg -n '"ANTHROPIC_API_KEY": "sk-ant-rerun"' "${cfg_tmp}/config/config.json" >/dev/null 2>&1; then
+      fail "config wizard re-run did not save the new API key"
+    fi
+  else
+    fail "config wizard (hosted provider) failed"
+  fi
+  rm -rf "${cfg_tmp}"
+else
+  note "python3 not available; skipping config wizard write check"
 fi
 
 note "checking version documentation"
@@ -976,6 +1031,62 @@ else
   note "bridge startup smoke skipped (Python deps may be missing)"
 fi
 rm -rf "${tmp_bridge_smoke}"
+
+note "checking bridge parent watchdog shuts down on SIGKILLed launcher"
+if command -v python3 >/dev/null 2>&1; then
+  wd_tmp="$(mktemp -d)"
+  wd_port=19902
+  wd_real_py="$(python3 -c 'import os,sys; print(os.path.realpath(sys.executable))' 2>/dev/null || printf 'python3')"
+  cat > "${wd_tmp}/launch.sh" <<WDEOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+(
+  export CODESEEQ_BRIDGE_HOST=127.0.0.1
+  export CODESEEQ_BRIDGE_PORT=${wd_port}
+  exec "${wd_real_py}" "${repo_root}/bin/codeseeq-bridge.py"
+) >> "${wd_tmp}/bridge.log" 2>&1 &
+echo $! > "${wd_tmp}/bridge.pid"
+sleep 60
+WDEOF
+  chmod +x "${wd_tmp}/launch.sh"
+  bash "${wd_tmp}/launch.sh" &
+  wd_launcher=$!
+  wd_healthy=0
+  wd_deadline=$((SECONDS + 10))
+  while (( SECONDS < wd_deadline )); do
+    if curl --silent --show-error --fail --max-time 2 "http://127.0.0.1:${wd_port}/health" >/dev/null 2>&1; then
+      wd_healthy=1
+      break
+    fi
+    if ! kill -0 "${wd_launcher}" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  if (( wd_healthy )); then
+    wd_bridge="$(cat "${wd_tmp}/bridge.pid")"
+    kill -9 "${wd_launcher}" 2>/dev/null || true
+    wd_gone=0
+    for (( i = 0; i < 10; i++ )); do
+      if ! kill -0 "${wd_bridge}" >/dev/null 2>&1; then
+        wd_gone=1
+        break
+      fi
+      sleep 1
+    done
+    if (( wd_gone )); then
+      note "bridge parent watchdog stopped bridge ${wd_bridge} after launcher SIGKILL"
+    else
+      fail "bridge parent watchdog did not stop bridge after launcher SIGKILL"
+      kill -9 "${wd_bridge}" 2>/dev/null || true
+    fi
+  else
+    note "bridge parent watchdog test skipped (bridge not healthy; deps may be missing)"
+  fi
+  rm -rf "${wd_tmp}"
+else
+  note "python3 not available; skipping bridge parent watchdog check"
+fi
 
 
 note "checking privacy hardening: generated config assertions"

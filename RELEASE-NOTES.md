@@ -6,8 +6,11 @@
   `venice`, `local`) → model selection → API key, then writes
   `~/.config/codeseeq/config.json` so CodeSeeq is ready to use. API providers
   get a live model list from the catalog; the local provider accepts any typed
-  model name (plus an optional gateway base URL). `codeseeq config status`
-  prints the current configuration without revealing keys.
+  model name. The API-key screen is required for hosted providers and can be
+  left empty for local gateways (an optional `LOCAL_API_KEY` is stored and
+  honoured by the bridge when set; the local gateway base URL is also
+  configurable). `codeseeq config status` prints the current configuration
+  without revealing keys.
 - **Multi-provider bridge.** The bridge now routes requests to DeepSeek
   (OpenAI-compatible), Anthropic Claude (native Messages API, including
   extended thinking and tool use), Google Gemini (OpenAI-compatible endpoint),
@@ -55,6 +58,22 @@
 - **Config wizard jq fallback lists DeepSeek models.** Without python3 the
   numbered model menu now includes the DeepSeek models (the previous jq query
   only used the `providers.<p>.models` list, which is empty for deepseek).
+- **Config wizard never drops unrelated config keys.** Re-running `codeseeq
+  config` (e.g. switching providers) previously read the freshly-created temp
+  file instead of the existing `config.json`, silently discarding every
+  unrelated key (`BRAVE_API_KEY`, `UNSTRUCTURED_API_URL`, ...). The merge now
+  reads the existing file and only clears stale provider keys.
+- **Config wizard model list falls back gracefully.** A python3/jq failure no
+  longer yields an empty model menu ("no models found ..."); the wizard now
+  falls through to the next available source (python3 → jq → static list).
+- **Check suite sanitizes the new config env vars.** The deterministic-env
+  sanitization now also clears `CODESEEQ_CONFIG_HOME`, `CODESEEQ_CONFIG_JSON`
+  and the new `LOCAL_API_KEY`, so the config-wizard checks cannot be skewed by
+  an ambient environment.
+- **Docs/examples pinned to v0.4.2.** README pinned-install examples and the
+  install.sh error hint now reference v0.4.2, and the `.env.example` documents
+  the per-model key for `local@<model>` correctly
+  (`CODESEEQ_LLAMA_4_MAVERICK_BASE_URL`, not `CODESEEQ_LOCAL_BASE_URL`).
 
 ### Changed
 - **Provider keys are per-provider.** `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`,

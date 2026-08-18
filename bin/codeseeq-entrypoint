@@ -52,7 +52,7 @@ load_config_json() {
 
   local parsed=""
   if command -v python3 >/dev/null 2>&1; then
-    parsed="$(python3 - "$path" <<'INNERCFG'
+    parsed="$(python3 - "$path" 2>/dev/null <<'INNERCFG'
 import json, os, sys
 try:
     with open(sys.argv[1], "r", encoding="utf-8") as fh:
@@ -64,7 +64,8 @@ if not isinstance(data, dict):
 allowlist = {
     "DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
     "GROK_API_KEY", "BRAVE_API_KEY", "UNSTRUCTURED_API_KEY",
-    "RESPONSES_API_KEY", "VENICE_API_KEY", "CONTAINER", "IMAGE",
+    "RESPONSES_API_KEY", "VENICE_API_KEY", "LOCAL_API_KEY",
+    "CONTAINER", "IMAGE",
     "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL", "DEEPSEEK_CHAT_URL",
     "ANTHROPIC_BASE_URL", "GOOGLE_BASE_URL", "GROK_BASE_URL",
     "VENICE_BASE_URL", "LOCAL_BASE_URL",
@@ -83,9 +84,9 @@ for k, v in data.items():
     elif isinstance(v, (str, int, float)):
         sys.stdout.write("%s=%s\n" % (k, v))
 INNERCFG
-)"
+)" || parsed=""
   elif command -v jq >/dev/null 2>&1; then
-    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GROK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","ANTHROPIC_BASE_URL","GOOGLE_BASE_URL","GROK_BASE_URL","VENICE_BASE_URL","LOCAL_BASE_URL","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
+    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GROK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","LOCAL_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","ANTHROPIC_BASE_URL","GOOGLE_BASE_URL","GROK_BASE_URL","VENICE_BASE_URL","LOCAL_BASE_URL","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
   else
     warn "CODESEEQ_CONFIG_JSON/JSON config configured but neither python3 nor jq is available; skipping JSON config"
     return 0

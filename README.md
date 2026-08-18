@@ -73,8 +73,11 @@ codeseeq config
 
 `codeseeq config` walks you through three screens: provider (anthropic, google,
 grok, deepseek, venice, local) → model → API key, and writes
-`~/.config/codeseeq/config.json`. You can also copy the env template and set keys
-manually:
+`~/.config/codeseeq/config.json`. Non-local providers pick a model from the
+catalog on screen two; the local provider takes any model name you type. The
+API-key screen is required for hosted providers and can be left empty for
+local gateways (an optional `LOCAL_API_KEY` is honoured when set). You can also
+copy the env template and set keys manually:
 
 ```bash
 cp .env.example .env
@@ -398,7 +401,7 @@ JSON config is read from `CODESEEQ_CONFIG_JSON` if set, otherwise
 The full list of supported keys corresponds one-to-one with the environment
 variables documented in [`.env.example`](./.env.example) (any `CODESEEQ_*`
 variable plus the provider keys `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`,
-`GOOGLE_API_KEY`, `GROK_API_KEY`, `VENICE_API_KEY`, `BRAVE_API_KEY`,
+`GOOGLE_API_KEY`, `GROK_API_KEY`, `VENICE_API_KEY`, `LOCAL_API_KEY`, `BRAVE_API_KEY`,
 `UNSTRUCTURED_API_KEY`, `RESPONSES_API_KEY`, `CONTAINER`, `IMAGE`,
 `OPENAI_BASE_URL`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_CHAT_URL`,
 `ANTHROPIC_BASE_URL`, `GOOGLE_BASE_URL`, `GROK_BASE_URL`, `VENICE_BASE_URL`,
@@ -479,7 +482,7 @@ CodeSeeq supports these providers (choose them with `codeseeq config`):
 | Google | `GOOGLE_API_KEY` | `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-1.5-pro` |
 | Grok (xAI) | `GROK_API_KEY` | `grok-4`, `grok-3`, `grok-3-mini`, `grok-3-fast` (+ thinking variants) |
 | Venice.ai | `VENICE_API_KEY` | `venice-qwen-3-32b`, `venice-qwen-3-14b`, `venice-deepseek-r1-0528`, `venice-llama-3.3-70b`, `venice-qwen-2.5-coder-32b` |
-| Local | none | any OpenAI-compatible model name typed manually, e.g. `local@llama-4-maverick` |
+| Local | none (optional `LOCAL_API_KEY`) | any OpenAI-compatible model name typed manually, e.g. `local@llama-4-maverick` |
 | Qwibus | none | `qwibus-qwikk`, `qwibus-qmplx` (legacy local gateway) |
 
 Model slugs use the `provider@model` form (`deepseek@deepseek-v4-flash`,
@@ -622,8 +625,8 @@ To pin an exact release, set `CODESEEQ_RELEASE_TAG`. To forbid auto-fetching ent
 set `CODESEEQ_ALLOW_LATEST_RELEASE=false` (a pinned `CODESEEQ_RELEASE_TAG` is then required):
 
 ```bash
-CODESEEQ_RELEASE_TAG=v0.4.0 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
-CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.4.0 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_RELEASE_TAG=v0.4.2 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.4.2 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
 ```
 
 ### Uncensored Mode

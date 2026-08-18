@@ -19,7 +19,7 @@ esac
 
 if [ -z "${CODESEEQ_RELEASE_TAG+x}" ]; then
   if [ "$ALLOW_LATEST" != "true" ]; then
-    die "CODESEEQ_ALLOW_LATEST_RELEASE is not true and CODESEEQ_RELEASE_TAG is unset; set CODESEEQ_RELEASE_TAG to a pinned release (e.g. v0.4.0) or set CODESEEQ_ALLOW_LATEST_RELEASE=true"
+    die "CODESEEQ_ALLOW_LATEST_RELEASE is not true and CODESEEQ_RELEASE_TAG is unset; set CODESEEQ_RELEASE_TAG to a pinned release (e.g. v0.4.2) or set CODESEEQ_ALLOW_LATEST_RELEASE=true"
   fi
   # Fetch the latest version from the VERSION file on the default branch
   # (single source of truth).
