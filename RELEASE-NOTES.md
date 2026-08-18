@@ -74,6 +74,41 @@
   install.sh error hint now reference v0.4.2, and the `.env.example` documents
   the per-model key for `local@<model>` correctly
   (`CODESEEQ_LLAMA_4_MAVERICK_BASE_URL`, not `CODESEEQ_LOCAL_BASE_URL`).
+- **Local gateway chat endpoint now correct under `LOCAL_BASE_URL`.** The
+  bridge previously derived the chat URL as `<base>/chat/completions` whenever
+  a provider base-URL override was set, so a wizard-configured local provider
+  (`codeseeq config` → local → typed model → `LOCAL_BASE_URL`) called
+  `<base>/chat/completions` instead of `<base>/v1/chat/completions` — a 404 on
+  Ollama/LM Studio/vLLM. Chat endpoints are now derived per provider
+  (local `/v1/chat/completions`, grok `/v1/chat/completions`, venice
+  `/api/v1/chat/completions`, google `/v1beta/openai/chat/completions`,
+  anthropic `/v1/messages`, deepseek `/chat/completions`) for both catalog
+  models and arbitrary `<provider>@<model>` slugs, including under
+  `CODESEEQ_PROVIDER` overrides.
+- **Per-model overrides now work for arbitrary `local@<model>` slugs.** The
+  bridge's generic `<provider>@<model>` path (any model typed in the wizard)
+  now honours `CODESEEQ_<MODEL>_*` overrides
+  (`CODESEEQ_LLAMA_4_MAVERICK_BASE_URL`, `_CHAT_URL`, `_TEMPERATURE`,
+  `_TOP_P`, `_TOP_K`, `_MAX_OUTPUT_TOKENS`, `_TIMEOUT_SECONDS`,
+  `_ENABLE_THINKING`, `_SYSTEM_PROMPT`) exactly like catalog models, and the
+  wrapper forwards them into containers/standalone bridges for the configured
+  model.
+- **Config wizard keeps an env-only API key on empty Enter.** Re-running
+  `codeseeq config` with the provider key set only in the environment (which
+  always overrides the config at runtime) previously failed with "API key is
+  required" when Enter was pressed; the env key is now treated as the existing
+  key and stored.
+- **Bridge returns 502 (not 500) when an upstream is unreachable.** A dead
+  local gateway (or any connect failure to the provider) now yields a clean
+  `502 cannot reach upstream at <url>` response — and a `response.failed`
+  SSE event on streaming requests — instead of an unhandled 500 traceback.
+- **Orphaned bridge containers are reaped on startup.** A SIGKILLed wrapper
+  in container-bridge mode previously leaked the standalone bridge container,
+  which held its host-port mapping forever and exhausted the auto-select range
+  exactly like the orphaned processes v0.4.1 fixed. `start_bridge_container`
+  now removes `codeseeq-bridge-<port>-<owner-pid>` containers whose owner PID
+  is gone (never touching live owners, and disabled entirely by
+  `CODESEEQ_KEEP_BRIDGE_CONTAINER=true`).
 
 ### Changed
 - **Provider keys are per-provider.** `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`,

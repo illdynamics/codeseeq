@@ -10,6 +10,7 @@ every model slug in the bridge's MODEL_SPECS.
 import importlib.util
 import os
 import re
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -57,6 +58,30 @@ else:
     if suffixes != expected_suffixes:
         failures += 1
         print(f"[test-bridge-env-names] FAIL wrapper suffix set {sorted(suffixes)} != {sorted(expected_suffixes)}")
+
+# The wrapper must also forward per-model overrides for the CURRENTLY
+# configured model when it is an arbitrary <provider>@<model> slug (e.g.
+# local@llama-4-maverick typed in `codeseeq config`), not just for catalog
+# models. Extract the real function and run it under bash.
+func_start = wrapper.index("codeseeq_bridge_env_names() {")
+func_end = wrapper.index("start_bridge_container() {", func_start)
+func_src = wrapper[func_start:func_end]
+r = subprocess.run(
+    ["bash", "-c", func_src + '\nCODESEEQ_MODEL="local@llama-4-maverick" codeseeq_bridge_env_names\n'],
+    capture_output=True,
+    text=True,
+)
+if r.returncode != 0:
+    failures += 1
+    print("[test-bridge-env-names] FAIL dynamic env forwarding crashed: " + r.stderr.strip()[:200])
+else:
+    dyn_lines = [ln for ln in r.stdout.splitlines() if "CODESEEQ_LLAMA_4_MAVERICK_" in ln]
+    if len(dyn_lines) != len(expected_suffixes):
+        failures += 1
+        print(
+            f"[test-bridge-env-names] FAIL dynamic per-model forwarding "
+            f"({len(dyn_lines)} lines, expected {len(expected_suffixes)}): {dyn_lines}"
+        )
 
 if failures:
     print(f"[test-bridge-env-names] {failures} failure(s)")

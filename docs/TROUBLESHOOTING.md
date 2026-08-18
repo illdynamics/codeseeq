@@ -161,16 +161,22 @@ CODESEEQ_OPENRESPONSES_PORT=18080 ./codeseeq -y "say hi"
 ```
 
 If startup fails with `no free bridge port found in range 8080-8179`, every
-port in the auto-select range is already taken by a **leaked bridge process**.
-This happens when a `codeseeq` owner was killed hard (SIGKILL / pipeline
-timeout, e.g. an agent-call teardown) before its EXIT trap could stop the
-bridge; the orphaned bridge keeps its port forever. Since v0.4.1 the bridge
-self-terminates when its parent disappears, and CodeSeeq also reaps stale
-orphaned bridges from the same bridge home on startup, so the range recovers
-automatically. To reclaim ports from older versions immediately:
+port in the auto-select range is already taken by a **leaked bridge process**
+or a **leaked bridge container**. This happens when a `codeseeq` owner was
+killed hard (SIGKILL / pipeline timeout, e.g. an agent-call teardown) before
+its EXIT trap could stop the bridge; the orphaned bridge keeps its port
+forever. Since v0.4.1 the process bridge self-terminates when its parent
+disappears, and CodeSeeq reaps stale orphaned bridge processes on startup;
+since v0.4.2 it also reaps orphaned standalone bridge containers
+(`codeseeq-bridge-<port>-<owner-pid>` whose owner PID is gone) before picking
+a new port, so the range recovers automatically. Reaping is disabled entirely
+by `CODESEEQ_KEEP_BRIDGE_CONTAINER=true` (for users who intentionally keep a
+bridge for external-mode reuse). To reclaim ports from older versions
+immediately:
 
 ```bash
 pkill -f codeseeq-bridge.py   # stop all leftover bridge processes
+podman ps --filter name=codeseeq-bridge -q | xargs -r podman rm -f   # leftover containers
 ss -tlnp | grep -E ':80[0-9]{2}|:81[0-7][0-9]'   # verify ports are free
 ```
 

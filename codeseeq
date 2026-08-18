@@ -1055,11 +1055,36 @@ codeseeq_bridge_env_names() {
       printf '%s\n' "CODESEEQ_${key}_${suffix}"
     done
   done
+
+  # Also forward per-model overrides for the currently configured model, so
+  # arbitrary <provider>@<model> slugs (e.g. local@llama-4-maverick typed in
+  # `codeseeq config`) get the same CODESEEQ_<MODEL>_* treatment as catalog
+  # models. The bridge strips the "provider@" prefix the same way, so the
+  # generated names must not repeat it.
+  if [[ -n "${CODESEEQ_MODEL:-}" && "$CODESEEQ_MODEL" == *@* ]]; then
+    local dyn_key
+    # Strip the "provider@" prefix, normalize non-alnum runs to "_" and
+    # trim edge separators, matching the bridge's _model_env_key().
+    dyn_key="$(printf '%s' "${CODESEEQ_MODEL#*@}" | tr -c '[:alnum:]' '_' | tr '[:lower:]' '[:upper:]')"
+    while [[ "$dyn_key" == _* || "$dyn_key" == *_ ]]; do
+      dyn_key="${dyn_key#_}"
+      dyn_key="${dyn_key%_}"
+    done
+    if [[ -n "$dyn_key" ]]; then
+      for suffix in BASE_URL CHAT_URL TEMPERATURE TOP_P TOP_K MAX_OUTPUT_TOKENS \
+                    TIMEOUT_SECONDS ENABLE_THINKING SYSTEM_PROMPT; do
+        printf '%s\n' "CODESEEQ_${dyn_key}_${suffix}"
+      done
+    fi
+  fi
 }
 
 start_bridge_container() {
   ensure_container_runtime
   ensure_image
+  # Free host ports held by orphaned bridge containers from hard-killed runs
+  # before picking a new port, so the auto-select range cannot be exhausted.
+  bridge_reap_orphan_containers
   select_host_bridge_port
 
   local name="${CODESEEQ_BRIDGE_CONTAINER_NAME:-codeseeq-bridge-${CODESEEQ_OPENRESPONSES_PORT}-$$}"
@@ -1183,6 +1208,40 @@ bridge_reap_orphans() {
   # Remove stale discovery files left behind by dead owners.
   rm -f "${CODESEEQ_BRIDGE_PID_FILE}" 2>/dev/null || true
   rm -f "${CODESEEQ_BRIDGE_PORT_FILE:-${CODESEEQ_BRIDGE_PID_FILE}.port}" 2>/dev/null || true
+}
+
+bridge_reap_orphan_containers() {
+  # Reap standalone bridge containers left behind by hard-killed owners
+  # (SIGKILL / pipeline teardown), mirroring bridge_reap_orphans for process
+  # mode. A leaked bridge container keeps its host-port mapping forever,
+  # which would otherwise fill the auto-select range with "no free bridge
+  # port found in range ..." exactly like orphaned processes used to.
+  #
+  # Only containers whose auto-generated name embeds a DEAD owner PID
+  # (codeseeq-bridge-<port>-<pid>) are removed, so a bridge a concurrent
+  # invocation owns is never touched. CODESEEQ_KEEP_BRIDGE_CONTAINER=true
+  # disables reaping for users who intentionally keep a bridge alive for
+  # external-mode reuse.
+  if is_truthy "${CODESEEQ_KEEP_BRIDGE_CONTAINER:-false}"; then
+    return 0
+  fi
+  local names name owner_pid
+  names="$("$CONTAINER" ps -a --format '{{.Names}}' 2>/dev/null || true)"
+  [[ -n "$names" ]] || return 0
+  while IFS= read -r name; do
+    [[ "$name" == codeseeq-bridge-*-* ]] || continue
+    owner_pid="${name##*-}"
+    [[ "$owner_pid" =~ ^[0-9]+$ ]] || continue
+    # Never reap a container whose owner process is still alive (could be a
+    # concurrent invocation). PID reuse is a theoretical race, identical to
+    # the process reaper's heuristic.
+    if kill -0 "$owner_pid" >/dev/null 2>&1; then
+      continue
+    fi
+    warn "reaping orphaned bridge container ${name} (owner pid ${owner_pid} gone)"
+    "$CONTAINER" rm -f "$name" >/dev/null 2>&1 || true
+  done <<< "$names"
+  return 0
 }
 
 bridge_resolve_log_pid_paths() {
@@ -2355,6 +2414,13 @@ PYCFG
       )" || existing=""
     else
       existing=""
+    fi
+    # The environment always overrides the config file at runtime, so a key
+    # that is only set in the environment counts as "existing": pressing
+    # Enter keeps it (and stores it in the config for completeness) instead
+    # of failing with a confusing "API key is required" error.
+    if [[ -z "$existing" && -n "${!key_env:-}" ]]; then
+      existing="${!key_env}"
     fi
     key="$(cfg_prompt_secret "Paste your ${key_env} (Enter keeps existing${existing:+ '${existing:0:4}…'})")"
     if [[ -z "$key" ]]; then

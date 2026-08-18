@@ -18,6 +18,20 @@ v0.4.2 patches:
 - CODESEEQ_PROVIDER override is honored for routing and key selection
   (wrapper and bridge stay in sync), and /health reports the effective
   provider of the configured model.
+- Per-provider chat-endpoint derivation: when a base-URL override is set
+  (e.g. LOCAL_BASE_URL saved by `codeseeq config`), the chat URL now follows
+  the provider's real path (local/grok /v1/chat/completions, venice
+  /api/v1/chat/completions, google /v1beta/openai/chat/completions,
+  anthropic /v1/messages, deepseek /chat/completions) instead of a guessed
+  "<base>/chat/completions" 404. Applies to catalog models, arbitrary
+  <provider>@<model> slugs and CODESEEQ_PROVIDER overrides.
+- Generic <provider>@<model> slugs (any model typed in the wizard, e.g.
+  local@llama-4-maverick) now honour per-model CODESEEQ_<MODEL>_* overrides
+  (BASE_URL/CHAT_URL/TEMPERATURE/TOP_P/TOP_K/MAX_OUTPUT_TOKENS/
+  TIMEOUT_SECONDS/ENABLE_THINKING/SYSTEM_PROMPT).
+- Unreachable upstreams return a clean 502 "cannot reach upstream at <url>"
+  (non-streaming) or a response.failed SSE event (streaming) instead of an
+  unhandled 500 traceback (e.g. when a local gateway is not running).
 
 v0.4.1 patches:
 - Parent-death watchdog: the bridge shuts itself down and releases its port
@@ -402,6 +416,30 @@ PROVIDER_DEFAULT_BASE_URL = {
 }
 
 
+def _derive_chat_url(provider: str, base_url: str) -> str:
+    """Map a provider base URL to its chat-completions endpoint.
+
+    The chat path cannot always be guessed from the bare base URL: google
+    serves the OpenAI-compatible API under /v1beta/openai, grok under /v1,
+    venice under /api/v1 and local gateways (Ollama/LM Studio/vLLM) under
+    /v1. Using a uniform "<base>/chat/completions" here (as older code did
+    whenever a base-URL override was present) silently pointed every
+    overridden provider at a 404 endpoint.
+    """
+    base = base_url.rstrip("/")
+    if provider == PROVIDER_ANTHROPIC:
+        return f"{base}/v1/messages"
+    if provider == PROVIDER_GOOGLE:
+        return f"{base}/v1beta/openai/chat/completions"
+    if provider == PROVIDER_GROK:
+        return f"{base}/v1/chat/completions"
+    if provider == PROVIDER_VENICE:
+        return f"{base}/api/v1/chat/completions"
+    if provider == PROVIDER_LOCAL:
+        return f"{base}/v1/chat/completions"
+    return f"{base}/chat/completions"  # deepseek
+
+
 def resolve_provider_for_slug(slug: str) -> str:
     """Map a canonical model slug to a provider id.
 
@@ -508,17 +546,11 @@ def _build_model_specs() -> Dict[str, ModelSpec]:
         elif provider == PROVIDER_DEEPSEEK and _env_first("DEEPSEEK_CHAT_URL"):
             chat_url = _env_first("DEEPSEEK_CHAT_URL")  # type: ignore[assignment]
         elif per_model_base or generic_base:
-            chat_url = (
-                f"{base_url.rstrip('/')}/v1/messages"
-                if provider == PROVIDER_ANTHROPIC
-                else f"{base_url.rstrip('/')}/chat/completions"
-            )
+            chat_url = _derive_chat_url(provider, base_url)
         elif default_chat_url:
             chat_url = default_chat_url
-        elif provider == PROVIDER_ANTHROPIC:
-            chat_url = f"{base_url.rstrip('/')}/v1/messages"
         else:
-            chat_url = f"{base_url.rstrip('/')}/chat/completions"
+            chat_url = _derive_chat_url(provider, base_url)
         temperature = _env_float(f"CODESEEQ_{key}_TEMPERATURE")
         if temperature is None:
             temperature = default_temperature
@@ -1739,29 +1771,46 @@ def normalize_model(model: str) -> "ModelSpec":
             owner, _, upstream = raw.partition("@")
             owner = owner.lower()
             if owner in PROVIDER_API_KEY_ENV and upstream:
-                spec = MODEL_SPECS.get("local@local")
-                base = (
-                    _env_first(*PROVIDER_BASE_URL_ENV.get(owner, ()))
-                    or PROVIDER_DEFAULT_BASE_URL[owner]
-                )
-                chat_url = f"{base.rstrip('/')}/chat/completions"
-                if owner == PROVIDER_ANTHROPIC:
-                    chat_url = f"{base.rstrip('/')}/v1/messages"
+                # Per-model CODESEEQ_<MODEL>_* overrides work for arbitrary
+                # <provider>@<model> slugs exactly as they do for catalog
+                # models (e.g. local@llama-4-maverick ->
+                # CODESEEQ_LLAMA_4_MAVERICK_BASE_URL), and the chat endpoint
+                # is derived per provider so base-URL overrides re-point the
+                # real request instead of a guessed 404 path.
+                key = _model_env_key(raw)
+                per_model_base = _env_first(f"CODESEEQ_{key}_BASE_URL")
+                generic_base = _env_first(*PROVIDER_BASE_URL_ENV.get(owner, ()))
+                base = per_model_base or generic_base or PROVIDER_DEFAULT_BASE_URL[owner]
+                per_model_chat = _env_first(f"CODESEEQ_{key}_CHAT_URL")
+                if per_model_chat:
+                    chat_url = per_model_chat
+                else:
+                    chat_url = _derive_chat_url(owner, base)
                 thinking = env_bool("CODESEEQ_THINKING", False)
-                if spec is not None:
+                enable_raw = os.environ.get(f"CODESEEQ_{key}_ENABLE_THINKING")
+                if enable_raw is not None:
+                    thinking = enable_raw.strip().lower() in {"1", "true", "yes", "on"}
+                temperature = _env_float(f"CODESEEQ_{key}_TEMPERATURE")
+                top_p = _env_float(f"CODESEEQ_{key}_TOP_P")
+                top_k = _env_int(f"CODESEEQ_{key}_TOP_K")
+                max_output_tokens = _env_int(f"CODESEEQ_{key}_MAX_OUTPUT_TOKENS")
+                timeout_seconds = _env_int(f"CODESEEQ_{key}_TIMEOUT_SECONDS")
+                sys_prompt = os.environ.get(f"CODESEEQ_{key}_SYSTEM_PROMPT")
+                template = MODEL_SPECS.get("local@local")
+                if template is not None:
                     spec = ModelSpec(
                         slug=f"{owner}@{upstream}",
                         deepseek_model=upstream,
                         thinking=thinking,
                         base_url=base,
                         chat_url=chat_url,
-                        temperature=spec.temperature,
-                        top_p=spec.top_p,
-                        top_k=spec.top_k,
-                        context_window=spec.context_window,
-                        max_output_tokens=spec.max_output_tokens,
-                        timeout_seconds=spec.timeout_seconds,
-                        system_prompt=spec.system_prompt,
+                        temperature=temperature if temperature is not None else template.temperature,
+                        top_p=top_p if top_p is not None else template.top_p,
+                        top_k=top_k if top_k is not None else template.top_k,
+                        context_window=template.context_window,
+                        max_output_tokens=max_output_tokens if max_output_tokens is not None else template.max_output_tokens,
+                        timeout_seconds=float(timeout_seconds if timeout_seconds is not None else template.timeout_seconds),
+                        system_prompt=sys_prompt if sys_prompt is not None else template.system_prompt,
                         provider=owner,
                         api_key_env=PROVIDER_API_KEY_ENV.get(owner),
                     )
@@ -1772,13 +1821,13 @@ def normalize_model(model: str) -> "ModelSpec":
                         thinking=thinking,
                         base_url=base,
                         chat_url=chat_url,
-                        temperature=None,
-                        top_p=None,
-                        top_k=None,
+                        temperature=temperature,
+                        top_p=top_p,
+                        top_k=top_k,
                         context_window=131072,
-                        max_output_tokens=32768,
-                        timeout_seconds=600.0,
-                        system_prompt=None,
+                        max_output_tokens=max_output_tokens or 32768,
+                        timeout_seconds=float(timeout_seconds or 600.0),
+                        system_prompt=sys_prompt,
                         provider=owner,
                         api_key_env=PROVIDER_API_KEY_ENV.get(owner),
                     )
@@ -1824,10 +1873,7 @@ def normalize_model(model: str) -> "ModelSpec":
             _env_first(*PROVIDER_BASE_URL_ENV.get(effective_provider, ()))
             or PROVIDER_DEFAULT_BASE_URL[effective_provider]
         )
-        if effective_provider == PROVIDER_ANTHROPIC:
-            override_chat_url = f"{override_base.rstrip('/')}/v1/messages"
-        else:
-            override_chat_url = f"{override_base.rstrip('/')}/chat/completions"
+        override_chat_url = _derive_chat_url(effective_provider, override_base)
         spec = ModelSpec(
             slug=spec.slug,
             deepseek_model=spec.deepseek_model,
@@ -3102,7 +3148,7 @@ async def anthropic_event_stream(
                             state["emitted"] = True
                     elif evt_type == "message_stop":
                         break
-    except (httpx.RemoteProtocolError, httpx.ReadError, httpx.TimeoutException, asyncio.CancelledError) as exc:
+    except (httpx.HTTPError, asyncio.CancelledError) as exc:
         log(f"anthropic stream connection/idle error: {exc!r}")
         yield sse_event(
             "response.failed",
@@ -3375,7 +3421,6 @@ async def responses(request: Request) -> Any:
 
     raw_model = spec.slug
     provider_model = spec.slug
-    deepseek_model = spec.deepseek_model
     provider = spec.provider
     thinking_enabled = spec.thinking
     model_chat_url = spec.chat_url
@@ -3503,13 +3548,20 @@ async def responses(request: Request) -> Any:
     if not stream:
         if is_anthropic:
             payload.pop("stream", None)
-            async with httpx.AsyncClient(timeout=model_timeout) as client:
-                resp = await client.post(model_chat_url, json=payload, headers=headers)
-                if resp.status_code >= 400:
-                    detail = resp.text[:1000]
-                    log(f"anthropic error status={resp.status_code} body={detail}")
-                    return JSONResponse(status_code=resp.status_code, content={"error": detail})
-                ds = resp.json()
+            try:
+                async with httpx.AsyncClient(timeout=model_timeout) as client:
+                    resp = await client.post(model_chat_url, json=payload, headers=headers)
+            except httpx.HTTPError as exc:
+                log(f"anthropic upstream request failed: {exc!r}")
+                return JSONResponse(
+                    status_code=502,
+                    content={"error": f"cannot reach upstream at {model_chat_url}: {exc}"},
+                )
+            if resp.status_code >= 400:
+                detail = resp.text[:1000]
+                log(f"anthropic error status={resp.status_code} body={detail}")
+                return JSONResponse(status_code=resp.status_code, content={"error": detail})
+            ds = resp.json()
 
             usage = anthropic_usage_to_responses_usage(
                 ds.get("usage") if isinstance(ds, dict) else None
@@ -3538,13 +3590,20 @@ async def responses(request: Request) -> Any:
             }
 
         payload["stream"] = False
-        async with httpx.AsyncClient(timeout=model_timeout) as client:
-            resp = await client.post(model_chat_url, json=payload, headers=headers)
-            if resp.status_code >= 400:
-                detail = resp.text[:1000]
-                log(f"deepseek error status={resp.status_code} body={detail}")
-                return JSONResponse(status_code=resp.status_code, content={"error": detail})
-            ds = resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=model_timeout) as client:
+                resp = await client.post(model_chat_url, json=payload, headers=headers)
+        except httpx.HTTPError as exc:
+            log(f"upstream request failed: {exc!r}")
+            return JSONResponse(
+                status_code=502,
+                content={"error": f"cannot reach upstream at {model_chat_url}: {exc}"},
+            )
+        if resp.status_code >= 400:
+            detail = resp.text[:1000]
+            log(f"deepseek error status={resp.status_code} body={detail}")
+            return JSONResponse(status_code=resp.status_code, content={"error": detail})
+        ds = resp.json()
 
         choice = ((ds.get("choices") or [{}])[0]) if isinstance(ds, dict) else {}
         msg = choice.get("message") if isinstance(choice, dict) else {}
@@ -3892,7 +3951,7 @@ async def responses(request: Request) -> Any:
                             if completed_blocks:
                                 for ev in dsml_block_events(completed_blocks):
                                     yield ev
-        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.TimeoutException, asyncio.CancelledError) as exc:
+        except (httpx.HTTPError, asyncio.CancelledError) as exc:
             log(f"deepseek stream connection/idle error: {exc!r}")
             yield sse_event(
                 "response.failed",

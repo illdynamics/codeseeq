@@ -166,6 +166,15 @@ CFGEOF
   else
     fail "config wizard (local provider) failed"
   fi
+  # Hosted provider with the key only in the environment: pressing Enter
+  # must keep the env key instead of failing with "API key is required".
+  if printf '1\n1\n\n' | ANTHROPIC_API_KEY="sk-env-only-key" CODESEEQ_CONFIG_HOME="${cfg_tmp}/config" ./codeseeq config >/dev/null 2>&1; then
+    if ! _rg -n '"ANTHROPIC_API_KEY": "sk-env-only-key"' "${cfg_tmp}/config/config.json" >/dev/null 2>&1; then
+      fail "config wizard did not keep env-only API key on empty Enter"
+    fi
+  else
+    fail "config wizard rejected env-only API key on empty Enter"
+  fi
   # Hosted provider re-run: unrelated keys must survive; provider must switch.
   if printf '1\n1\nsk-ant-rerun\n' | CODESEEQ_CONFIG_HOME="${cfg_tmp}/config" ./codeseeq config >/dev/null 2>&1; then
     if ! _rg -n '"BRAVE_API_KEY": "keep-me"' "${cfg_tmp}/config/config.json" >/dev/null 2>&1; then
@@ -220,6 +229,16 @@ fi
 note "checking wrapper/bridge per-model env-name agreement"
 if ! scripts/test-bridge-env-names.py; then
   fail "wrapper/bridge per-model env-name agreement test failed"
+fi
+
+note "checking bridge chat-endpoint derivation under base-URL overrides"
+if ! scripts/test-bridge-chat-url.py; then
+  fail "bridge chat-endpoint derivation regression test failed"
+fi
+
+note "checking orphaned bridge container reaping"
+if ! scripts/test-bridge-reap-containers.py; then
+  fail "orphaned bridge container reaping regression test failed"
 fi
 
 note "checking generated config"
