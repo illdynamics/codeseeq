@@ -221,6 +221,873 @@
       "support_verbosity": false,
       "experimental_supported_tools": [],
       "reasoning_summary": "auto"
+    },
+    {
+      "slug": "anthropic@claude-haiku-4",
+      "display_name": "Claude claude-haiku-4-20250514",
+      "description": "Claude claude-haiku-4-20250514",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://api.anthropic.com",
+      "chat_url": "https://api.anthropic.com/v1/messages",
+      "api_key_required": true,
+      "context_window": 200000,
+      "max_context_window": 200000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 300,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 200000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "anthropic@claude-opus-4",
+      "display_name": "Claude claude-opus-4-20250514",
+      "description": "Claude claude-opus-4-20250514",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://api.anthropic.com",
+      "chat_url": "https://api.anthropic.com/v1/messages",
+      "api_key_required": true,
+      "context_window": 200000,
+      "max_context_window": 200000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 200000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "anthropic@claude-opus-4-thinking",
+      "display_name": "Claude claude-opus-4-20250514",
+      "description": "Claude claude-opus-4-20250514 (thinking)",
+      "base_instructions": "",
+      "enable_thinking": true,
+      "base_url": "https://api.anthropic.com",
+      "chat_url": "https://api.anthropic.com/v1/messages",
+      "api_key_required": true,
+      "context_window": 200000,
+      "max_context_window": 200000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 200000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "high",
+          "description": "Maximum reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "anthropic@claude-sonnet-4",
+      "display_name": "Claude claude-sonnet-4-20250514",
+      "description": "Claude claude-sonnet-4-20250514",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://api.anthropic.com",
+      "chat_url": "https://api.anthropic.com/v1/messages",
+      "api_key_required": true,
+      "context_window": 200000,
+      "max_context_window": 200000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 200000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "anthropic@claude-sonnet-4-thinking",
+      "display_name": "Claude claude-sonnet-4-20250514",
+      "description": "Claude claude-sonnet-4-20250514 (thinking)",
+      "base_instructions": "",
+      "enable_thinking": true,
+      "base_url": "https://api.anthropic.com",
+      "chat_url": "https://api.anthropic.com/v1/messages",
+      "api_key_required": true,
+      "context_window": 200000,
+      "max_context_window": 200000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 200000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "high",
+          "description": "Maximum reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "google@gemini-1.5-pro",
+      "display_name": "Gemini gemini-1.5-pro",
+      "description": "Gemini gemini-1.5-pro",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://generativelanguage.googleapis.com",
+      "chat_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "api_key_required": true,
+      "context_window": 2000000,
+      "max_context_window": 2000000,
+      "max_output_tokens": 8192,
+      "timeout_seconds": 300,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 2000000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "google@gemini-2.0-flash",
+      "display_name": "Gemini gemini-2.0-flash",
+      "description": "Gemini gemini-2.0-flash",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://generativelanguage.googleapis.com",
+      "chat_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "api_key_required": true,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "max_output_tokens": 8192,
+      "timeout_seconds": 300,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 1000000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "google@gemini-2.5-flash",
+      "display_name": "Gemini gemini-2.5-flash",
+      "description": "Gemini gemini-2.5-flash (thinking)",
+      "base_instructions": "",
+      "enable_thinking": true,
+      "base_url": "https://generativelanguage.googleapis.com",
+      "chat_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "api_key_required": true,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "max_output_tokens": 65536,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 1000000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "high",
+          "description": "Maximum reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "google@gemini-2.5-pro",
+      "display_name": "Gemini gemini-2.5-pro",
+      "description": "Gemini gemini-2.5-pro (thinking)",
+      "base_instructions": "",
+      "enable_thinking": true,
+      "base_url": "https://generativelanguage.googleapis.com",
+      "chat_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "api_key_required": true,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "max_output_tokens": 65536,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 1000000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "high",
+          "description": "Maximum reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "grok@grok-3",
+      "display_name": "Grok grok-3",
+      "description": "Grok grok-3",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 131072
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "grok@grok-3-fast",
+      "display_name": "Grok grok-3-fast",
+      "description": "Grok grok-3-fast",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 131072
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "grok@grok-3-fast-thinking",
+      "display_name": "Grok grok-3-fast",
+      "description": "Grok grok-3-fast (thinking)",
+      "base_instructions": "",
+      "enable_thinking": true,
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 131072
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "high",
+          "description": "Maximum reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "grok@grok-3-mini",
+      "display_name": "Grok grok-3-mini",
+      "description": "Grok grok-3-mini",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 131072
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "grok@grok-3-mini-thinking",
+      "display_name": "Grok grok-3-mini",
+      "description": "Grok grok-3-mini (thinking)",
+      "base_instructions": "",
+      "enable_thinking": true,
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 131072
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "high",
+          "description": "Maximum reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "grok@grok-3-thinking",
+      "display_name": "Grok grok-3",
+      "description": "Grok grok-3 (thinking)",
+      "base_instructions": "",
+      "enable_thinking": true,
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 131072
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "high",
+          "description": "Maximum reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "grok@grok-4",
+      "display_name": "Grok grok-4",
+      "description": "Grok grok-4",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 256000,
+      "max_context_window": 256000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 256000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "grok@grok-4-thinking",
+      "display_name": "Grok grok-4",
+      "description": "Grok grok-4 (thinking)",
+      "base_instructions": "",
+      "enable_thinking": true,
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 256000,
+      "max_context_window": 256000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 256000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "high",
+          "description": "Maximum reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "local@local",
+      "display_name": "Local (local)",
+      "description": "Local OpenAI-compatible model: local",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "http://127.0.0.1:1337",
+      "chat_url": "http://127.0.0.1:1337/v1/chat/completions",
+      "api_key_required": false,
+      "context_window": 131072,
+      "max_context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 131072
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "venice@venice-deepseek-r1-0528",
+      "display_name": "Venice deepseek-r1-0528",
+      "description": "Venice deepseek-r1-0528",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://api.venice.ai",
+      "chat_url": "https://api.venice.ai/api/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 128000,
+      "max_context_window": 128000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 128000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "venice@venice-llama-3.3-70b",
+      "display_name": "Venice llama-3.3-70b",
+      "description": "Venice llama-3.3-70b",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://api.venice.ai",
+      "chat_url": "https://api.venice.ai/api/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 128000,
+      "max_context_window": 128000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 128000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "venice@venice-qwen-2.5-coder-32b",
+      "display_name": "Venice qwen2.5-coder-32b",
+      "description": "Venice qwen2.5-coder-32b",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://api.venice.ai",
+      "chat_url": "https://api.venice.ai/api/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 128000,
+      "max_context_window": 128000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 128000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "venice@venice-qwen-3-14b",
+      "display_name": "Venice venice-qwen-3-14b",
+      "description": "Venice venice-qwen-3-14b",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://api.venice.ai",
+      "chat_url": "https://api.venice.ai/api/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 128000,
+      "max_context_window": 128000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 128000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "venice@venice-qwen-3-32b",
+      "display_name": "Venice venice-qwen-3-32b",
+      "description": "Venice venice-qwen-3-32b",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "base_url": "https://api.venice.ai",
+      "chat_url": "https://api.venice.ai/api/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 128000,
+      "max_context_window": 128000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": false,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 128000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "venice@venice-qwen-3-32b-thinking",
+      "display_name": "Venice venice-qwen-3-32b",
+      "description": "Venice venice-qwen-3-32b (thinking)",
+      "base_instructions": "",
+      "enable_thinking": true,
+      "base_url": "https://api.venice.ai",
+      "chat_url": "https://api.venice.ai/api/v1/chat/completions",
+      "api_key_required": true,
+      "context_window": 128000,
+      "max_context_window": 128000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 128000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 40,
+      "supported_reasoning_levels": [
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "high",
+          "description": "Maximum reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
     }
   ]
 }

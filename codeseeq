@@ -56,9 +56,12 @@ except Exception:
 if not isinstance(data, dict):
     sys.exit(0)
 allowlist = {
-    "DEEPSEEK_API_KEY", "BRAVE_API_KEY", "UNSTRUCTURED_API_KEY",
+    "DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+    "GROK_API_KEY", "BRAVE_API_KEY", "UNSTRUCTURED_API_KEY",
     "RESPONSES_API_KEY", "VENICE_API_KEY", "CONTAINER", "IMAGE",
     "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL", "DEEPSEEK_CHAT_URL",
+    "ANTHROPIC_BASE_URL", "GOOGLE_BASE_URL", "GROK_BASE_URL",
+    "VENICE_BASE_URL", "LOCAL_BASE_URL",
     "UNSTRUCTURED_API_URL", "QWIBUS_NO_API_KEY",
 }
 for k, v in data.items():
@@ -76,7 +79,7 @@ for k, v in data.items():
 INNERCFG
 )"
   elif command -v jq >/dev/null 2>&1; then
-    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
+    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GROK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","ANTHROPIC_BASE_URL","GOOGLE_BASE_URL","GROK_BASE_URL","VENICE_BASE_URL","LOCAL_BASE_URL","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
   else
     warn "CODESEEQ_CONFIG_JSON/JSON config configured but neither python3 nor jq is available; skipping JSON config"
     return 0
@@ -211,7 +214,7 @@ _run_host_cleanup() {
 
 print_help() {
   cat <<'EOF'
-CodeSeeq - Codex CLI wired to DeepSeek through the CodeSeeq bridge
+CodeSeeq - Codex CLI wired to multiple LLM providers through the CodeSeeq bridge
 
 Usage:
   codeseeq [codex-options] [prompt]
@@ -224,9 +227,10 @@ CodeSeeq commands:
   build                 Build the CodeSeeq image
   install               Install the user-local launcher
   nuke                  Remove all installed CodeSeeq artifacts
-  models                Print supported DeepSeek models
+  models                Print the supported model catalog
   doctor                Check bridge/config/runtime status
-  config                Print generated Codex config status
+  config                Interactive LLM setup (provider, model, API key)
+  config status         Show the current LLM configuration
   ping                  Run a non-streaming bridge ping
   ping-stream           Run a streaming bridge ping
   ping-web              Check web_search diagnostic path
@@ -235,6 +239,13 @@ CodeSeeq commands:
   smoke                 Run smoke tests
   system                Manage user-config persistent system prompt
   package               Create a clean release zip
+
+Configure the LLM:
+  codeseeq config       TUI: pick provider (anthropic, google, grok,
+                        deepseek, venice, local), then model, then API key.
+  The wizard writes CODESEEQ_MODEL / CODESEEQ_PROVIDER and the provider API
+  key to ~/.config/codeseeq/config.json (CODESEEQ_CONFIG_HOME/config.json).
+  Environment variables always override config-file values.
 
 Prompt files:
   codeseeq run -f task.md
@@ -575,7 +586,30 @@ normalize_model() {
       alias_thinking="true"
       ;;
     *)
-      die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx"
+      # New provider slugs: <provider>@<model> with provider in
+      # anthropic|google|grok|venice|local (deepseek/qwibus handled above).
+      # A trailing "-thinking" suffix enables thinking; local accepts any
+      # manually-typed model name.
+      local owner upstream
+      if [[ "$model" == *@* ]]; then
+        owner="${model%%@*}"
+        upstream="${model#*@}"
+        case "$owner" in
+          anthropic|google|grok|venice|deepseek|local)
+            [[ -n "$upstream" ]] || die "unsupported model: ${model} (empty model name after @)"
+            PROVIDER_MODEL="$model"
+            alias_thinking="false"
+            case "$upstream" in
+              *-thinking|thinking) alias_thinking="true" ;;
+            esac
+            ;;
+          *)
+            die "unsupported provider: ${owner} in model ${model}. supported providers: deepseek, qwibus, anthropic, google, grok, venice, local"
+            ;;
+        esac
+      else
+        die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx, or <provider>@<model> with provider in anthropic, google, grok, venice, local"
+      fi
       ;;
   esac
 
@@ -754,22 +788,140 @@ split_direct_prompt_args() {
   return 1
 }
 
+provider_key_env_for_model() {
+  # Map a canonical provider@model slug to the API-key environment variable.
+  # Keyless providers (qwibus / local gateways) print nothing. A set
+  # CODESEEQ_PROVIDER overrides slug-derived routing (mirroring the bridge),
+  # so the key required here always matches the provider the bridge will use.
+  local model="${1:-${PROVIDER_MODEL:-${CODESEEQ_MODEL:-}}}"
+  case "${CODESEEQ_PROVIDER:-}" in
+    anthropic) printf 'ANTHROPIC_API_KEY'; return 0 ;;
+    google) printf 'GOOGLE_API_KEY'; return 0 ;;
+    grok) printf 'GROK_API_KEY'; return 0 ;;
+    venice) printf 'VENICE_API_KEY'; return 0 ;;
+    deepseek) printf 'DEEPSEEK_API_KEY'; return 0 ;;
+    local|qwibus) printf ''; return 0 ;;
+  esac
+  case "$model" in
+    qwibus@*|local@*) printf '' ;;
+    anthropic@*) printf 'ANTHROPIC_API_KEY' ;;
+    google@*) printf 'GOOGLE_API_KEY' ;;
+    grok@*) printf 'GROK_API_KEY' ;;
+    venice@*) printf 'VENICE_API_KEY' ;;
+    *) printf 'DEEPSEEK_API_KEY' ;;
+  esac
+}
+
 require_deepseek_key() {
-  # qwibus models run on a local gateway and require no API key.
-  if [[ "${PROVIDER_MODEL:-}" == qwibus@* ]]; then
+  # qwibus/local models run on local gateways and require no API key.
+  local env_name
+  env_name="$(provider_key_env_for_model)"
+  if [[ -z "$env_name" ]]; then
     return 0
   fi
-  [[ -n "${DEEPSEEK_API_KEY:-}" ]] || die "DEEPSEEK_API_KEY is required"
-  # CodeSeeq privacy hardening: OPENAI_API_KEY is no longer auto-populated from DEEPSEEK_API_KEY
+  [[ -n "${!env_name:-}" ]] || die "${env_name} is required. Set it in your environment or run: codeseeq config"
+  # CodeSeeq privacy hardening: OPENAI_API_KEY is no longer auto-populated from provider keys
+}
+
+# Merge the static Codex model catalog with the currently configured model so
+# Codex accepts any model selected via `codeseeq config` (including arbitrary
+# local@<model> names). Writes to <output>; points at the static catalog when
+# no merge is needed.
+write_merged_codex_catalog() {
+  local output="$1"
+  local static="${CODESEEQ_HOST_MODEL_CATALOG_JSON:-${CODESEEQ_INSTALL_ROOT}/config/codex-model-catalog.json}"
+  local model="${CODESEEQ_MODEL:-${PROVIDER_MODEL:-}}"
+  if [[ -z "$model" || ! -f "$static" ]]; then
+    cp "$static" "$output" 2>/dev/null || return 0
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    cp "$static" "$output" 2>/dev/null || true
+    return 0
+  fi
+  mkdir -p "$(dirname "$output")"
+  CODESEEQ_CATALOG_STATIC="$static" \
+  CODESEEQ_CATALOG_OUTPUT="$output" \
+  CODESEEQ_CATALOG_MODEL="$model" \
+  python3 - <<'PYCAT'
+import json, os
+
+static = os.environ["CODESEEQ_CATALOG_STATIC"]
+output = os.environ["CODESEEQ_CATALOG_OUTPUT"]
+model = os.environ.get("CODESEEQ_CATALOG_MODEL", "")
+
+def _main() -> None:
+    try:
+        with open(static, "r", encoding="utf-8") as fh:
+            cat = json.load(fh)
+    except Exception:
+        return
+    if not isinstance(cat, dict):
+        cat = {"models": []}
+    models = cat.get("models")
+    if not isinstance(models, list):
+        models = []
+        cat["models"] = models
+    slugs = {m.get("slug") for m in models if isinstance(m, dict)}
+    if model and model not in slugs:
+        thinking = model.rstrip("/").endswith("-thinking") or model.endswith("thinking")
+        models.append({
+            "slug": model,
+            "display_name": model,
+            "description": "User-configured model (via codeseeq config)",
+            "base_instructions": "",
+            "enable_thinking": thinking,
+            "context_window": 131072,
+            "max_context_window": 131072,
+            "max_output_tokens": 32768,
+            "timeout_seconds": 600,
+            "supports_reasoning_summaries": thinking,
+            "supported_in_api": True,
+            "visibility": "list",
+            "shell_type": "default",
+            "web_search_tool_type": "text",
+            "truncation_policy": {"mode": "tokens", "limit": 131072},
+            "supports_parallel_tool_calls": True,
+            "priority": 99,
+            "supported_reasoning_levels": [
+                {"level": "high", "effort": "high", "description": "High reasoning effort"},
+                {"level": "max", "effort": "high", "description": "Maximum reasoning effort"},
+            ] if thinking else [],
+            "input_modalities": ["text"],
+            "supports_search_tool": True,
+            "support_verbosity": False,
+            "experimental_supported_tools": [],
+        })
+    try:
+        with open(output, "w", encoding="utf-8") as fh:
+            json.dump(cat, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+    except Exception:
+        pass
+
+_main()
+PYCAT
 }
 
 write_host_config() {
   mkdir -p "$HOST_CODEX_HOME"
   export CODEX_HOME="$HOST_CODEX_HOME"
+  write_merged_codex_catalog "${HOST_CODEX_HOME}/codex-model-catalog.json"
+  local provider_env provider_label
+  provider_env="$(provider_key_env_for_model)"
+  provider_env="${provider_env:-DEEPSEEK_API_KEY}"
+  case "${PROVIDER_MODEL:-}" in
+    anthropic@*) provider_label="CodeSeeq Anthropic Bridge" ;;
+    google@*) provider_label="CodeSeeq Google Bridge" ;;
+    grok@*) provider_label="CodeSeeq Grok Bridge" ;;
+    venice@*) provider_label="CodeSeeq Venice Bridge" ;;
+    qwibus@*|local@*) provider_label="CodeSeeq Local Bridge" ;;
+    *) provider_label="CodeSeeq DeepSeek Bridge" ;;
+  esac
   cat > "$HOST_CODEX_HOME/config.toml" <<EOF
 model = "${PROVIDER_MODEL}"
 model_provider = "codeseeq"
-model_catalog_json = "${CODESEEQ_HOST_MODEL_CATALOG_JSON:-${CODESEEQ_INSTALL_ROOT}/config/codex-model-catalog.json}"
+model_catalog_json = "${HOST_CODEX_HOME}/codex-model-catalog.json"
 
 approval_policy = "${CODESEEQ_APPROVAL_POLICY}"
 sandbox_mode = "${CODESEEQ_SANDBOX_MODE}"
@@ -807,9 +959,9 @@ EOF
   cat >> "$HOST_CODEX_HOME/config.toml" <<EOF
 
 [model_providers.codeseeq]
-name = "CodeSeeq DeepSeek Bridge"
+name = "${provider_label}"
 base_url = "${CODESEEQ_OPENRESPONSES_URL}"
-env_key = "DEEPSEEK_API_KEY"
+env_key = "${provider_env}"
 wire_api = "responses"
 requires_openai_auth = false
 request_max_retries = ${CODESEEQ_REQUEST_MAX_RETRIES}
@@ -880,11 +1032,23 @@ select_host_bridge_port() {
 # standalone bridge container and the Codex container. Per-model keys use the
 # documented CODESEEQ_<MODEL>_<SUFFIX> scheme (provider prefix stripped).
 codeseeq_bridge_env_names() {
-  printf '%s\n'     DEEPSEEK_API_KEY BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY     DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS QWIBUS_NO_API_KEY
+  printf '%s\n'     DEEPSEEK_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GROK_API_KEY     BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY VENICE_API_KEY     DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     ANTHROPIC_BASE_URL GOOGLE_BASE_URL GROK_BASE_URL VENICE_BASE_URL LOCAL_BASE_URL     CODESEEQ_PROVIDER CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS QWIBUS_NO_API_KEY
 
   local key suffix
+  # Per-model keys use the CODESEEQ_<MODEL>_<SUFFIX> scheme: the bridge's
+  # _model_env_key strips the "provider@" slug prefix (e.g.
+  # "anthropic@claude-sonnet-4" -> CODESEEQ_CLAUDE_SONNET_4_BASE_URL), so the
+  # forwarded names below must NOT repeat the provider prefix.
   for key in DEEPSEEK_V4_FLASH DEEPSEEK_V4_FLASH_THINKING DEEPSEEK_V4_PRO \
-             DEEPSEEK_V4_PRO_THINKING QWIBUS_QWIKK QWIBUS_QMPLX; do
+             DEEPSEEK_V4_PRO_THINKING QWIBUS_QWIKK QWIBUS_QMPLX \
+             CLAUDE_SONNET_4 CLAUDE_SONNET_4_THINKING \
+             CLAUDE_OPUS_4 CLAUDE_OPUS_4_THINKING CLAUDE_HAIKU_4 \
+             GEMINI_2_5_PRO GEMINI_2_5_FLASH GEMINI_2_0_FLASH GEMINI_1_5_PRO \
+             GROK_4 GROK_4_THINKING GROK_3 GROK_3_THINKING \
+             GROK_3_MINI GROK_3_MINI_THINKING GROK_3_FAST GROK_3_FAST_THINKING \
+             VENICE_QWEN_3_32B VENICE_QWEN_3_32B_THINKING VENICE_QWEN_3_14B \
+             VENICE_DEEPSEEK_R1_0528 VENICE_LLAMA_3_3_70B \
+             VENICE_QWEN_2_5_CODER_32B LOCAL; do
     for suffix in BASE_URL CHAT_URL TEMPERATURE TOP_P TOP_K MAX_OUTPUT_TOKENS \
                   TIMEOUT_SECONDS ENABLE_THINKING SYSTEM_PROMPT; do
       printf '%s\n' "CODESEEQ_${key}_${suffix}"
@@ -1692,7 +1856,440 @@ cmd_nuke() {
 }
 
 # ─────────────────────────────────────────────────────────────
-# cmd_install — local install (inlined from install-local.sh)
+# cmd_config — interactive LLM provider/model/key configuration
+# ─────────────────────────────────────────────────────────────
+
+config_catalog_path() {
+  printf '%s' "${CODESEEQ_MODEL_CATALOG_JSON:-${CODESEEQ_INSTALL_ROOT}/config/model-catalog.json}"
+}
+
+config_json_path() {
+  printf '%s' "${CODESEEQ_CONFIG_JSON:-${CODESEEQ_CONFIG_HOME}/config.json}"
+}
+
+config_provider_list() {
+  printf '%s\n' anthropic google grok deepseek venice local
+}
+
+config_provider_label() {
+  case "$1" in
+    anthropic) printf 'Anthropic (Claude)' ;;
+    google) printf 'Google (Gemini)' ;;
+    grok) printf 'Grok (xAI)' ;;
+    deepseek) printf 'DeepSeek' ;;
+    venice) printf 'Venice.ai' ;;
+    local) printf 'Local (OpenAI-compatible gateway)' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+config_provider_key_env() {
+  case "$1" in
+    anthropic) printf 'ANTHROPIC_API_KEY' ;;
+    google) printf 'GOOGLE_API_KEY' ;;
+    grok) printf 'GROK_API_KEY' ;;
+    deepseek) printf 'DEEPSEEK_API_KEY' ;;
+    venice) printf 'VENICE_API_KEY' ;;
+    *) printf '' ;;
+  esac
+}
+
+config_provider_base_url_env() {
+  case "$1" in
+    anthropic) printf 'ANTHROPIC_BASE_URL' ;;
+    google) printf 'GOOGLE_BASE_URL' ;;
+    grok) printf 'GROK_BASE_URL' ;;
+    deepseek) printf 'DEEPSEEK_BASE_URL' ;;
+    venice) printf 'VENICE_BASE_URL' ;;
+    local) printf 'LOCAL_BASE_URL' ;;
+    *) printf '' ;;
+  esac
+}
+
+config_provider_default_base_url() {
+  case "$1" in
+    anthropic) printf 'https://api.anthropic.com' ;;
+    google) printf 'https://generativelanguage.googleapis.com' ;;
+    grok) printf 'https://api.x.ai' ;;
+    deepseek) printf 'https://api.deepseek.com' ;;
+    venice) printf 'https://api.venice.ai' ;;
+    local) printf 'http://127.0.0.1:1337' ;;
+    *) printf '' ;;
+  esac
+}
+
+# cfg_select <prompt> <"value|label">...
+# Arrow-key TUI menu rendered on the controlling terminal (/dev/tty). Prints
+# the selected value to stdout (callers capture it) and returns 0, or returns
+# 1 when the user quits (q / Ctrl-C). Falls back to a numbered menu on stderr
+# when no controlling terminal is available (e.g. piped input).
+cfg_select() {
+  local prompt="$1"
+  shift
+  local -a vals=() labels=()
+  local entry v l
+  for entry in "$@"; do
+    v="${entry%%|*}"
+    l="${entry#*|}"
+    vals+=("$v")
+    labels+=("$l")
+  done
+  local n=${#vals[@]}
+  [[ $n -gt 0 ]] || return 1
+
+  # Use the arrow-key TUI only when stdin is a real terminal (interactive
+  # use). Piped/scripted input gets the numbered fallback reading from stdin.
+  # Use fixed fd 9 for the controlling terminal (bash 3.2 compatible).
+  local tty_open=false
+  if [[ -t 0 && -e /dev/tty ]]; then
+    exec 9<>/dev/tty 2>/dev/null && tty_open=true || tty_open=false
+  fi
+
+  if [[ "$tty_open" != "true" ]]; then
+    # Non-interactive fallback: numbered menu on stderr, value on stdout.
+    local i choice
+    echo "$prompt" >&2
+    for ((i = 0; i < n; i++)); do
+      printf '  %d) %s\n' "$((i + 1))" "${labels[i]}" >&2
+    done
+    printf 'Enter selection [1-%d]: ' "$n" >&2
+    IFS= read -r choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= n )); then
+      printf '%s\n' "${vals[choice - 1]}"
+      return 0
+    fi
+    return 1
+  fi
+
+  local sel=0 key key2
+  printf '\033[?25l' >&9   # hide cursor
+  while true; do
+    printf '\033[H\033[J' >&9   # clear screen
+    printf '\n  %s\n\n' "$prompt" >&9
+    for ((i = 0; i < n; i++)); do
+      if (( i == sel )); then
+        printf '  \033[7m> %s\033[0m\n' "${labels[i]}" >&9
+      else
+        printf '    %s\n' "${labels[i]}" >&9
+      fi
+    done
+    printf '\n  Use ↑/↓ to move, Enter to select, q to quit.\n' >&9
+    IFS= read -rsn1 key <&9
+    case "$key" in
+      $'\x1b')
+        key2=""
+        IFS= read -rsn2 -t 0.1 key2 <&9 || true
+        case "$key2" in
+          '[A') (( sel > 0 )) && sel=$((sel - 1)) ;;
+          '[B') (( sel < n - 1 )) && sel=$((sel + 1)) ;;
+        esac
+        ;;
+      ''|$'\n'|$'\r')
+        printf '\033[?25h' >&9
+        exec 9>&-
+        printf '%s\n' "${vals[sel]}"
+        return 0
+        ;;
+      q|Q)
+        printf '\033[?25h' >&9
+        exec 9>&-
+        return 1
+        ;;
+    esac
+  done
+}
+
+# cfg_prompt <prompt> <default> -> prints input to stdout
+cfg_prompt() {
+  local prompt="$1" default="${2:-}"
+  if [[ -n "$default" ]]; then
+    printf '%s [%s]: ' "$prompt" "$default" >&2
+  else
+    printf '%s: ' "$prompt" >&2
+  fi
+  local reply=""
+  IFS= read -r reply
+  if [[ -z "$reply" && -n "$default" ]]; then
+    reply="$default"
+  fi
+  printf '%s\n' "$reply"
+}
+
+# cfg_prompt_secret <prompt> -> prints input to stdout (no echo)
+cfg_prompt_secret() {
+  local prompt="$1"
+  printf '%s: ' "$prompt" >&2
+  local reply=""
+  IFS= read -rs reply
+  printf '\n' >&2
+  printf '%s\n' "$reply"
+}
+
+# Print "value|label" lines for a provider's models from the catalog.
+config_provider_model_items() {
+  local provider="$1"
+  local catalog
+  catalog="$(config_catalog_path)"
+  if [[ -f "$catalog" ]] && command -v python3 >/dev/null 2>&1; then
+    python3 - "$provider" "$catalog" <<'PYCFG'
+import json, sys
+provider, path = sys.argv[1], sys.argv[2]
+try:
+    with open(path, "r", encoding="utf-8") as fh:
+        cat = json.load(fh)
+except Exception:
+    sys.exit(0)
+if not isinstance(cat, dict):
+    sys.exit(0)
+providers = cat.get("providers") if isinstance(cat.get("providers"), dict) else {}
+wanted = set(providers.get(provider, {}).get("models", []) or [])
+seen = set()
+for m in cat.get("models", []) or []:
+    if not isinstance(m, dict):
+        continue
+    mid = m.get("id")
+    if mid not in wanted and m.get("provider") != provider:
+        continue
+    if mid in seen:
+        continue
+    seen.add(mid)
+    slug = m.get("provider_model") or mid
+    label = mid
+    if m.get("thinking"):
+        label = label + " (thinking)"
+    print(f"{slug}|{label}")
+PYCFG
+    return 0
+  fi
+  if [[ -f "$catalog" ]] && command -v jq >/dev/null 2>&1; then
+    jq -r --arg p "$provider" '(.providers[$p].models // []) as $ids | [.models[] | select((.id | IN($ids[])) or (.provider == $p))] | unique_by(.id)[] | (.provider_model // .id) + "|" + .id + (if .thinking then " (thinking)" else "" end)' "$catalog" 2>/dev/null
+    return 0
+  fi
+  # Static fallback (no python3/jq).
+  case "$provider" in
+    anthropic) printf '%s\n' "anthropic@claude-sonnet-4|claude-sonnet-4" "anthropic@claude-sonnet-4-thinking|claude-sonnet-4 (thinking)" "anthropic@claude-opus-4|claude-opus-4" "anthropic@claude-opus-4-thinking|claude-opus-4 (thinking)" "anthropic@claude-haiku-4|claude-haiku-4" ;;
+    google) printf '%s\n' "google@gemini-2.5-pro|gemini-2.5-pro" "google@gemini-2.5-flash|gemini-2.5-flash" "google@gemini-2.0-flash|gemini-2.0-flash" "google@gemini-1.5-pro|gemini-1.5-pro" ;;
+    grok) printf '%s\n' "grok@grok-4|grok-4" "grok@grok-4-thinking|grok-4 (thinking)" "grok@grok-3|grok-3" "grok@grok-3-thinking|grok-3 (thinking)" "grok@grok-3-mini|grok-3-mini" "grok@grok-3-mini-thinking|grok-3-mini (thinking)" "grok@grok-3-fast|grok-3-fast" "grok@grok-3-fast-thinking|grok-3-fast (thinking)" ;;
+    deepseek) printf '%s\n' "deepseek@deepseek-v4-flash|deepseek-v4-flash" "deepseek@deepseek-v4-flash-thinking|deepseek-v4-flash (thinking)" "deepseek@deepseek-v4-pro|deepseek-v4-pro" "deepseek@deepseek-v4-pro-thinking|deepseek-v4-pro (thinking)" ;;
+    venice) printf '%s\n' "venice@venice-qwen-3-32b|venice-qwen-3-32b" "venice@venice-qwen-3-32b-thinking|venice-qwen-3-32b (thinking)" "venice@venice-qwen-3-14b|venice-qwen-3-14b" "venice@venice-deepseek-r1-0528|venice-deepseek-r1-0528" "venice@venice-llama-3.3-70b|venice-llama-3.3-70b" "venice@venice-qwen-2.5-coder-32b|venice-qwen-2.5-coder-32b" ;;
+    *) return 0 ;;
+  esac
+}
+
+config_write_json() {
+  # config_write_json <provider> <model> <key_env> <key> <base_url_env> <base_url>
+  local provider="$1" model="$2" key_env="$3" key="$4" base_url_env="$5" base_url="$6"
+  local path
+  path="$(config_json_path)"
+  mkdir -p "$(dirname "$path")"
+  local tmp
+  tmp="$(mktemp "${path}.XXXXXX")"
+  CODESEEQ_CONFIG_WRITE_PATH="$path" \
+  CODESEEQ_CONFIG_WRITE_PROVIDER="$provider" \
+  CODESEEQ_CONFIG_WRITE_MODEL="$model" \
+  CODESEEQ_CONFIG_WRITE_KEY_ENV="$key_env" \
+  CODESEEQ_CONFIG_WRITE_KEY="$key" \
+  CODESEEQ_CONFIG_WRITE_BASE_URL_ENV="$base_url_env" \
+  CODESEEQ_CONFIG_WRITE_BASE_URL="$base_url" \
+  python3 - "$tmp" <<'PYCFG'
+import json, os, sys
+path = sys.argv[1]
+provider = os.environ.get("CODESEEQ_CONFIG_WRITE_PROVIDER", "")
+model = os.environ.get("CODESEEQ_CONFIG_WRITE_MODEL", "")
+key_env = os.environ.get("CODESEEQ_CONFIG_WRITE_KEY_ENV", "")
+key = os.environ.get("CODESEEQ_CONFIG_WRITE_KEY", "")
+base_url_env = os.environ.get("CODESEEQ_CONFIG_WRITE_BASE_URL_ENV", "")
+base_url = os.environ.get("CODESEEQ_CONFIG_WRITE_BASE_URL", "")
+
+data = {}
+try:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+
+# Keep unrelated keys, but clear stale provider keys when switching providers.
+stale = {"ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GROK_API_KEY",
+         "DEEPSEEK_API_KEY", "VENICE_API_KEY",
+         "ANTHROPIC_BASE_URL", "GOOGLE_BASE_URL", "GROK_BASE_URL",
+         "DEEPSEEK_BASE_URL", "VENICE_BASE_URL", "LOCAL_BASE_URL"}
+for k in stale:
+    if k != key_env and k != base_url_env:
+        data.pop(k, None)
+
+data["CODESEEQ_MODEL"] = model
+data["CODESEEQ_PROVIDER"] = provider
+if key_env and key:
+    data[key_env] = key
+elif key_env:
+    data.pop(key_env, None)
+if base_url_env and base_url:
+    data[base_url_env] = base_url
+elif base_url_env:
+    data.pop(base_url_env, None)
+
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+try:
+    os.chmod(path, 0o600)
+except OSError:
+    pass
+PYCFG
+  mv "$tmp" "$path"
+  chmod 600 "$path" 2>/dev/null || true
+}
+
+config_print_status() {
+  local path
+  path="$(config_json_path)"
+  printf 'CodeSeeq LLM configuration\n'
+  printf 'Config file: %s\n' "$path"
+  if [[ ! -f "$path" ]]; then
+    printf 'No config written yet. Run: codeseeq config\n'
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$path" <<'PYCFG'
+import json, os, sys
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    print("(unreadable config)")
+    sys.exit(0)
+model = data.get("CODESEEQ_MODEL", "")
+provider = data.get("CODESEEQ_PROVIDER", "")
+if not provider and "@" in model:
+    provider = model.split("@", 1)[0]
+key_envs = {"anthropic": "ANTHROPIC_API_KEY", "google": "GOOGLE_API_KEY",
+            "grok": "GROK_API_KEY", "deepseek": "DEEPSEEK_API_KEY",
+            "venice": "VENICE_API_KEY"}
+key_env = key_envs.get(provider, "")
+key_state = "set" if (key_env and data.get(key_env)) else ("not required" if not key_env else "missing")
+print(f"Provider: {provider or '(unset)'}")
+print(f"Model: {model or '(unset)'}")
+if key_env:
+    print(f"API key ({key_env}): {key_state}")
+base_envs = {"anthropic": "ANTHROPIC_BASE_URL", "google": "GOOGLE_BASE_URL",
+             "grok": "GROK_BASE_URL", "deepseek": "DEEPSEEK_BASE_URL",
+             "venice": "VENICE_BASE_URL", "local": "LOCAL_BASE_URL"}
+base_env = base_envs.get(provider, "")
+if base_env and data.get(base_env):
+    print(f"Base URL: {data[base_env]}")
+print("Note: an environment variable always overrides the config file value.")
+PYCFG
+  else
+    printf 'python3 required to show config status\n'
+  fi
+}
+
+config_print_help() {
+  cat <<'EOF'
+CodeSeeq config — configure the LLM provider, model, and API key.
+
+Usage:
+  codeseeq config          Interactive TUI (provider -> model -> API key)
+  codeseeq config status   Show the current stored LLM configuration
+  codeseeq config --help   Show this help
+
+The wizard writes:
+  - CODESEEQ_MODEL / CODESEEQ_PROVIDER and the provider API key into
+    ~/.config/codeseeq/config.json (CODESEEQ_CONFIG_HOME/config.json).
+Environment variables always override config-file values.
+EOF
+}
+
+cmd_config() {
+  local sub="${1:-}"
+  if [[ -n "$sub" ]]; then
+    case "$sub" in
+      status) config_print_status; return 0 ;;
+      -h|--help|help) config_print_help; return 0 ;;
+      *) die "unknown config subcommand: $sub (use: status, --help)" ;;
+    esac
+  fi
+
+  # ── Screen 1: provider selection ─────────────────────────────
+  local -a provider_items=()
+  local p
+  for p in $(config_provider_list); do
+    provider_items+=("$p|$(config_provider_label "$p")")
+  done
+  local provider=""
+  provider="$(cfg_select "Select your LLM provider:" "${provider_items[@]}")" || { printf '\nConfiguration cancelled.\n' >&2; return 1; }
+
+  # ── Screen 2: model selection ────────────────────────────────
+  local model=""
+  if [[ "$provider" == "local" ]]; then
+    printf '\n'
+    model="$(cfg_prompt "Local model name (e.g. llama-4-maverick)" "")"
+    [[ -n "$model" ]] || { printf 'Model name is required.\n' >&2; return 1; }
+    model="local@${model}"
+  else
+    local -a model_items=()
+    local line
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && model_items+=("$line")
+    done < <(config_provider_model_items "$provider")
+    if ((${#model_items[@]} == 0)); then
+      die "no models found for provider ${provider} in $(config_catalog_path)"
+    fi
+    model="$(cfg_select "Select a model ($(config_provider_label "$provider")):" "${model_items[@]}")" || { printf '\nConfiguration cancelled.\n' >&2; return 1; }
+  fi
+
+  # ── Screen 3: API key / endpoint ─────────────────────────────
+  local key_env="" key="" base_url_env="" base_url=""
+  key_env="$(config_provider_key_env "$provider")"
+  base_url_env="$(config_provider_base_url_env "$provider")"
+  base_url="$(config_provider_default_base_url "$provider")"
+  printf '\n'
+  if [[ -n "$key_env" ]]; then
+    local existing=""
+    existing="$(config_json_path)"
+    if command -v python3 >/dev/null 2>&1 && [[ -f "$existing" ]]; then
+      existing="$(python3 - "$existing" "$key_env" <<'PYCFG'
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    print(data.get(sys.argv[2], ""))
+except Exception:
+    print("")
+PYCFG
+      )"
+    else
+      existing=""
+    fi
+    key="$(cfg_prompt_secret "Paste your ${key_env} (Enter keeps existing${existing:+ '${existing:0:4}…'})")"
+    if [[ -z "$key" ]]; then
+      key="$existing"
+    fi
+    [[ -n "$key" ]] || { printf 'API key is required for provider %s.\n' "$provider" >&2; return 1; }
+  else
+    # Local provider: optional base URL override.
+    base_url="$(cfg_prompt "Local gateway base URL" "$base_url")"
+  fi
+
+  config_write_json "$provider" "$model" "$key_env" "$key" "$base_url_env" "$base_url"
+
+  printf '\n'
+  printf 'CodeSeeq configuration saved:\n'
+  printf '  Provider: %s (%s)\n' "$provider" "$(config_provider_label "$provider")"
+  printf '  Model:    %s\n' "$model"
+  if [[ -n "$key_env" ]]; then
+    printf '  API key:  %s set in %s\n' "$key_env" "$(config_json_path)"
+  fi
+  if [[ -n "$base_url_env" && -n "$base_url" ]]; then
+    printf '  Base URL: %s=%s\n' "$base_url_env" "$base_url"
+  fi
+  printf '\nCodeSeeq is ready to use. Try: codeseeq -y "hello"\n'
+}
+
+
 # ─────────────────────────────────────────────────────────────
 cmd_install() {
   local log_prefix="[codeseeq-install]"
@@ -1726,6 +2323,12 @@ cmd_install() {
       --exclude '__pycache__/' \
       --exclude '.pytest_cache/' \
       --exclude 'node_modules/' \
+      --exclude '.qq*' \
+      --exclude 'oops.md' \
+      --exclude 'codeseeq-*-fix.md' \
+      --exclude 'venice-image.md' \
+      --exclude 'package.json' \
+      --exclude 'package-lock.json' \
       "$CODESEEQ_INSTALL_ROOT/" "$CODESEEQ_INSTALL_DIR/"
   else
     tar -C "$CODESEEQ_INSTALL_ROOT" \
@@ -1739,6 +2342,12 @@ cmd_install() {
       --exclude '__pycache__' \
       --exclude '.pytest_cache' \
       --exclude 'node_modules' \
+      --exclude '.qq*' \
+      --exclude 'oops.md' \
+      --exclude 'codeseeq-*-fix.md' \
+      --exclude 'venice-image.md' \
+      --exclude 'package.json' \
+      --exclude 'package-lock.json' \
       -cf - . | tar -C "$CODESEEQ_INSTALL_DIR" -xf -
   fi
 
@@ -1956,6 +2565,12 @@ cmd_package() {
     "*/logs/*"
     "*.log"
     "*.zip"
+    ".qq*"
+    "oops.md"
+    "codeseeq-*-fix.md"
+    "venice-image.md"
+    "package.json"
+    "package-lock.json"
   )
 
   have_zip_cli() { command -v zip >/dev/null 2>&1; }
@@ -2008,7 +2623,7 @@ from pathlib import Path
 repo = Path(os.environ["CODESEEQ_REPO_ROOT"]).resolve()
 out = Path(os.environ["CODESEEQ_OUTPUT_ZIP"]).resolve()
 out_rel = os.environ.get("CODESEEQ_OUTPUT_REL", "")
-patterns = [".git/*","*/.git/*",".codeseeq/*","*/.codeseeq/*","system-prompt.md","*/system-prompt.md","__MACOSX/*","*/__MACOSX/*",".DS_Store","*/.DS_Store",".env",".env.*","*.env","*.env.*","prod.env","production.env","dist/*","*/dist/*","build/*","*/build/*","node_modules/*","*/node_modules/*","workspace/*","*/workspace/*","__pycache__/*","*/__pycache__/*","*.pyc","logs/*","*/logs/*","*.log","*.zip"]
+patterns = [".git/*","*/.git/*",".codeseeq/*","*/.codeseeq/*","system-prompt.md","*/system-prompt.md","__MACOSX/*","*/__MACOSX/*",".DS_Store","*/.DS_Store",".env",".env.*","*.env","*.env.*","prod.env","production.env","dist/*","*/dist/*","build/*","*/build/*","node_modules/*","*/node_modules/*","workspace/*","*/workspace/*","__pycache__/*","*/__pycache__/*","*.pyc","logs/*","*/logs/*","*.log","*.zip",".qq*","oops.md","codeseeq-*-fix.md","venice-image.md","package.json","package-lock.json"]
 if out_rel: patterns.append(out_rel)
 def excluded(rel):
     if rel == ".env.example": return False
@@ -2093,7 +2708,7 @@ PY
           continue;;
       esac
       case "$base" in
-        .DS_Store|*.pyc|*.zip|*.log|system-prompt.md)
+        .DS_Store|*.pyc|*.zip|*.log|system-prompt.md|.qqignore|.qq_prompt_call-*|oops.md|codeseeq-*-fix.md|venice-image.md|package.json|package-lock.json)
           echo "[package:check:error] forbidden file in archive: $entry" >&2
           failures=$((failures + 1))
           continue;;
@@ -2125,6 +2740,8 @@ PY
       '"workspace/*"' '"*/workspace/*"'
       '"__pycache__/*"' '"*/__pycache__/*"'
       '"*.pyc"' '"logs/*"' '"*/logs/*"' '"*.log"' '"*.zip"'
+      '".qq*"' '"oops.md"' '"codeseeq-*-fix.md"' '"venice-image.md"'
+      '"package.json"' '"package-lock.json"'
     )
     local pattern
     for pattern in "${required_patterns[@]}"; do
@@ -2226,6 +2843,11 @@ case "${1:-}" in
     ;;
   nuke)
     cmd_nuke "$@"
+    exit $?
+    ;;
+  config)
+    shift
+    cmd_config "$@"
     exit $?
     ;;
   --help|-h)
@@ -2359,14 +2981,9 @@ if is_codeseeq_diagnostic_command "$cmd_arg"; then
         exit 0
         ;;
       config)
-        write_host_config
-        printf 'Runtime: host
-'
-        printf 'Bridge: %s
-' "${CODESEEQ_BRIDGE_MODE:-auto}"
-        printf 'Config: %s/config.toml
-' "$HOST_CODEX_HOME"
-        exit 0
+        shift
+        cmd_config "$@"
+        exit $?
         ;;
       doctor)
         echo "CodeSeeq Doctor (host runtime)"
@@ -2378,7 +2995,13 @@ if is_codeseeq_diagnostic_command "$cmd_arg"; then
         echo "Bridge deps: $(python3 -c 'import fastapi,uvicorn,httpx; print("OK")' 2>/dev/null || echo 'missing')"
         echo "Container runtime: $(command -v podman 2>/dev/null || command -v docker 2>/dev/null || echo 'not found')"
         echo "Host runtime runnable: $(command -v codex >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && python3 -c 'import fastapi' 2>/dev/null && echo yes || echo no)"
-        echo "DEEPSEEK_API_KEY: $( [[ -n "${DEEPSEEK_API_KEY:-}" ]] && echo set || echo missing)"
+        _dk_env="$(provider_key_env_for_model)"
+        if [[ -z "$_dk_env" ]]; then
+          echo "Provider: local (keyless gateway)"
+        else
+          echo "Provider key (${_dk_env}): $( [[ -n "${!_dk_env:-}" ]] && echo set || echo missing)"
+        fi
+        echo "Model: ${CODESEEQ_MODEL:-${PROVIDER_MODEL:-deepseek-v4-flash}}"
         echo "Config home: ${CODESEEQ_CONFIG_HOME:-$HOME/.config/codeseeq}"
         exit 0
         ;;

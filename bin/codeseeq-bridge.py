@@ -1,6 +1,23 @@
 #!/usr/bin/env python3
 """
-codeseeq-bridge: OpenAI Responses API <-> DeepSeek Chat Completions translation bridge.
+codeseeq-bridge: OpenAI Responses API <-> provider translation bridge.
+
+v0.4.2 patches:
+- Multi-provider routing: DeepSeek (OpenAI-compatible chat completions),
+  Anthropic Claude (native Messages API, streaming + non-streaming,
+  extended thinking, tool use), Google Gemini (OpenAI-compatible endpoint),
+  Grok/xAI, Venice.ai, and arbitrary local OpenAI-compatible gateways.
+  Model slugs use the provider@model form; unknown <provider>@<model> names
+  are accepted and routed to the provider's base URL.
+- Anthropic tool-loop fixes: assistant tool_calls from prior turns are now
+  forwarded as tool_use content blocks (Anthropic 400s tool_result blocks
+  whose tool_use_id has no matching tool_use in history), and temperature /
+  top_p are no longer sent alongside extended thinking (Anthropic rejects
+  them); max_tokens is raised to at least the thinking budget and a specific
+  tool_choice is downgraded to "auto" while thinking is enabled.
+- CODESEEQ_PROVIDER override is honored for routing and key selection
+  (wrapper and bridge stay in sync), and /health reports the effective
+  provider of the configured model.
 
 v0.4.1 patches:
 - Parent-death watchdog: the bridge shuts itself down and releases its port
@@ -90,6 +107,9 @@ app = FastAPI()
 _NON_CODESEEQ_CONFIG_KEYS = frozenset(
     {
         "DEEPSEEK_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "GROK_API_KEY",
         "BRAVE_API_KEY",
         "UNSTRUCTURED_API_KEY",
         "RESPONSES_API_KEY",
@@ -99,6 +119,11 @@ _NON_CODESEEQ_CONFIG_KEYS = frozenset(
         "OPENAI_BASE_URL",
         "DEEPSEEK_BASE_URL",
         "DEEPSEEK_CHAT_URL",
+        "ANTHROPIC_BASE_URL",
+        "GOOGLE_BASE_URL",
+        "GROK_BASE_URL",
+        "VENICE_BASE_URL",
+        "LOCAL_BASE_URL",
         "UNSTRUCTURED_API_URL",
         "QWIBUS_NO_API_KEY",
     }
@@ -252,6 +277,8 @@ class ModelSpec:
     __slots__ = (
         "slug",
         "deepseek_model",
+        "provider",
+        "api_key_env",
         "thinking",
         "enable_thinking",
         "base_url",
@@ -280,9 +307,13 @@ class ModelSpec:
         max_output_tokens: int,
         timeout_seconds: float,
         system_prompt: Optional[str],
+        provider: str = "deepseek",
+        api_key_env: Optional[str] = "DEEPSEEK_API_KEY",
     ) -> None:
         self.slug = slug
         self.deepseek_model = deepseek_model
+        self.provider = provider
+        self.api_key_env = api_key_env
         self.thinking = thinking
         self.enable_thinking = thinking
         self.base_url = base_url
@@ -313,42 +344,178 @@ MODEL_ALIASES: Dict[str, Tuple[str, bool]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Provider routing
+# ---------------------------------------------------------------------------
+# The bridge emulates the OpenAI Responses API for Codex and forwards to the
+# configured upstream provider. OpenAI-compatible providers (deepseek, grok,
+# venice, google's OpenAI-compat endpoint, local gateways) share the chat-
+# completions translation; anthropic uses the native Messages API.
+PROVIDER_DEEPSEEK = "deepseek"
+PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_GOOGLE = "google"
+PROVIDER_GROK = "grok"
+PROVIDER_VENICE = "venice"
+PROVIDER_LOCAL = "local"
+
+OPENAI_COMPAT_PROVIDERS = frozenset(
+    {
+        PROVIDER_DEEPSEEK,
+        PROVIDER_GROK,
+        PROVIDER_VENICE,
+        PROVIDER_GOOGLE,
+        PROVIDER_LOCAL,
+    }
+)
+
+# Provider -> environment variable holding the API key. Local gateways are
+# keyless (None). The configured provider is chosen by the slug prefix or the
+# CODESEEQ_PROVIDER override (see resolve_provider_for_slug).
+PROVIDER_API_KEY_ENV = {
+    PROVIDER_DEEPSEEK: "DEEPSEEK_API_KEY",
+    PROVIDER_ANTHROPIC: "ANTHROPIC_API_KEY",
+    PROVIDER_GOOGLE: "GOOGLE_API_KEY",
+    PROVIDER_GROK: "GROK_API_KEY",
+    PROVIDER_VENICE: "VENICE_API_KEY",
+    PROVIDER_LOCAL: None,
+}
+
+# Generic provider base-URL override env vars, checked in order per provider.
+PROVIDER_BASE_URL_ENV = {
+    PROVIDER_DEEPSEEK: ("DEEPSEEK_BASE_URL", "OPENAI_BASE_URL", "CODESEEQ_BASE_URL"),
+    PROVIDER_ANTHROPIC: ("ANTHROPIC_BASE_URL",),
+    PROVIDER_GOOGLE: ("GOOGLE_BASE_URL", "OPENAI_BASE_URL", "CODESEEQ_BASE_URL"),
+    PROVIDER_GROK: ("GROK_BASE_URL", "OPENAI_BASE_URL", "CODESEEQ_BASE_URL"),
+    PROVIDER_VENICE: ("VENICE_BASE_URL", "OPENAI_BASE_URL", "CODESEEQ_BASE_URL"),
+    PROVIDER_LOCAL: ("LOCAL_BASE_URL", "OPENAI_BASE_URL", "CODESEEQ_BASE_URL"),
+}
+
+# Provider base URLs (used as default_base for each model when no override).
+PROVIDER_DEFAULT_BASE_URL = {
+    PROVIDER_DEEPSEEK: "https://api.deepseek.com",
+    PROVIDER_ANTHROPIC: "https://api.anthropic.com",
+    PROVIDER_GOOGLE: "https://generativelanguage.googleapis.com",
+    PROVIDER_GROK: "https://api.x.ai",
+    PROVIDER_VENICE: "https://api.venice.ai",
+    PROVIDER_LOCAL: "http://127.0.0.1:1337",
+}
+
+
+def resolve_provider_for_slug(slug: str) -> str:
+    """Map a canonical model slug to a provider id.
+
+    Slugs use the provider@model convention; bare deepseek/qwibus legacy slugs
+    keep their historical providers. CODESEEQ_PROVIDER can override routing so
+    a user can point e.g. a `local@*` model at a different local gateway.
+    """
+    override = os.environ.get("CODESEEQ_PROVIDER", "").strip().lower()
+    if override:
+        if override not in PROVIDER_API_KEY_ENV:
+            raise ValueError(
+                "invalid CODESEEQ_PROVIDER: "
+                + ", ".join(sorted(PROVIDER_API_KEY_ENV.keys()))
+            )
+        return override
+    owner = slug.split("@", 1)[0].lower() if "@" in slug else ""
+    if owner == "qwibus":
+        return PROVIDER_LOCAL
+    if owner:
+        return owner
+    if slug.startswith("qwibus"):
+        return PROVIDER_LOCAL
+    return PROVIDER_DEEPSEEK
+
+
+def provider_api_key_env(provider: str) -> Optional[str]:
+    return PROVIDER_API_KEY_ENV.get(provider)
+
+
+def provider_api_key(provider: str) -> Optional[str]:
+    env_name = provider_api_key_env(provider)
+    if not env_name:
+        return None
+    return os.environ.get(env_name, "").strip() or None
+
+
+def require_provider_key(provider: str) -> Optional[str]:
+    """Return the API key for `provider`, or None for keyless providers.
+
+    Raises HTTP 400 with a helpful message when the provider requires a key
+    that is not configured.
+    """
+    env_name = provider_api_key_env(provider)
+    if not env_name:
+        return None  # keyless provider (local gateway)
+    key = os.environ.get(env_name, "").strip()
+    if not key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{env_name} is required for the {provider} provider. "
+                f"Set it in your environment or run `codeseeq config`."
+            ),
+        )
+    return key
+
+
+
+
 def _build_model_specs() -> Dict[str, ModelSpec]:
     """Build the canonical per-model runtime configuration.
 
-    Defaults encode the current deepseek models plus the two new qwibus
-    models. Per-model env overrides use the CODESEEQ_<KEY>_* naming scheme
-    (see the comment above). Generic base-url fallback order is
-    OPENAI_BASE_URL -> DEEPSEEK_BASE_URL -> CODESEEQ_BASE_URL.
+    Defaults encode the deepseek, qwibus (local), anthropic, google, grok and
+    venice models. Per-model env overrides use the CODESEEQ_<KEY>_* naming
+    scheme (see the comment above). Generic base-url fallbacks are resolved
+    per provider via PROVIDER_BASE_URL_ENV (deepseek keeps the historical
+    OPENAI_BASE_URL -> DEEPSEEK_BASE_URL -> CODESEEQ_BASE_URL order).
     """
-    generic_base = _env_first(
-        "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL", "CODESEEQ_BASE_URL"
-    )
-
     def _spec(
         slug: str,
         deepseek_model: str,
         thinking: bool,
         *,
-        default_base: str,
+        default_base: Optional[str] = None,
         default_chat_url: Optional[str] = None,
-        default_temperature: Optional[float],
-        default_top_p: Optional[float],
-        default_top_k: Optional[int],
-        context_window: int,
-        max_output_tokens: int,
-        timeout_seconds: float,
+        default_temperature: Optional[float] = None,
+        default_top_p: Optional[float] = None,
+        default_top_k: Optional[int] = None,
+        context_window: int = 1000000,
+        max_output_tokens: int = 384000,
+        timeout_seconds: float = 120.0,
+        provider: str = PROVIDER_DEEPSEEK,
     ) -> ModelSpec:
         key = _model_env_key(slug)
-        chat_url = _env_first(
-            f"CODESEEQ_{key}_CHAT_URL",
-            "DEEPSEEK_CHAT_URL",
-        ) or (default_chat_url or (default_base.rstrip("/") + "/chat/completions"))
-        base_url = (
-            _env_first(f"CODESEEQ_{key}_BASE_URL")
-            or generic_base
-            or default_base
-        )
+        # Provider base URL: per-model override, provider generic override
+        # (e.g. ANTHROPIC_BASE_URL), then the built-in default.
+        per_model_base = _env_first(f"CODESEEQ_{key}_BASE_URL")
+        generic_base = _env_first(*PROVIDER_BASE_URL_ENV.get(provider, ()))
+        base_url = per_model_base or generic_base or default_base or PROVIDER_DEFAULT_BASE_URL[provider]
+        # Chat URL: per-model override wins; deepseek keeps the legacy
+        # DEEPSEEK_CHAT_URL fallback (used by tests and single-endpoint
+        # deployments). When the caller supplied a custom base URL (per-model
+        # or generic provider override), the chat endpoint is derived from it
+        # (Anthropic -> /v1/messages, everything else -> /chat/completions)
+        # so proxy/re-gateway overrides actually take effect. Otherwise the
+        # provider's built-in default chat URL is used (e.g. Google's
+        # /v1beta/openai/chat/completions path, which cannot be guessed from
+        # the bare base URL).
+        per_model_chat = _env_first(f"CODESEEQ_{key}_CHAT_URL")
+        if per_model_chat:
+            chat_url = per_model_chat  # type: ignore[assignment]
+        elif provider == PROVIDER_DEEPSEEK and _env_first("DEEPSEEK_CHAT_URL"):
+            chat_url = _env_first("DEEPSEEK_CHAT_URL")  # type: ignore[assignment]
+        elif per_model_base or generic_base:
+            chat_url = (
+                f"{base_url.rstrip('/')}/v1/messages"
+                if provider == PROVIDER_ANTHROPIC
+                else f"{base_url.rstrip('/')}/chat/completions"
+            )
+        elif default_chat_url:
+            chat_url = default_chat_url
+        elif provider == PROVIDER_ANTHROPIC:
+            chat_url = f"{base_url.rstrip('/')}/v1/messages"
+        else:
+            chat_url = f"{base_url.rstrip('/')}/chat/completions"
         temperature = _env_float(f"CODESEEQ_{key}_TEMPERATURE")
         if temperature is None:
             temperature = default_temperature
@@ -381,6 +548,8 @@ def _build_model_specs() -> Dict[str, ModelSpec]:
             max_output_tokens=mt,
             timeout_seconds=float(to),
             system_prompt=sys_prompt,
+            provider=provider,
+            api_key_env=PROVIDER_API_KEY_ENV.get(provider),
         )
 
     return {
@@ -456,6 +625,272 @@ def _build_model_specs() -> Dict[str, ModelSpec]:
             default_top_k=20,
             context_window=32768,
             max_output_tokens=8192,
+            timeout_seconds=600,
+            provider=PROVIDER_LOCAL,
+        ),
+        # Anthropic (native Messages API, non-OpenAI-compatible wire).
+        "anthropic@claude-sonnet-4": _spec(
+            "anthropic@claude-sonnet-4",
+            "claude-sonnet-4-20250514",
+            False,
+            provider=PROVIDER_ANTHROPIC,
+            default_temperature=1.0,
+            context_window=200000,
+            max_output_tokens=64000,
+            timeout_seconds=600,
+        ),
+        "anthropic@claude-sonnet-4-thinking": _spec(
+            "anthropic@claude-sonnet-4-thinking",
+            "claude-sonnet-4-20250514",
+            True,
+            provider=PROVIDER_ANTHROPIC,
+            default_temperature=1.0,
+            context_window=200000,
+            max_output_tokens=64000,
+            timeout_seconds=600,
+        ),
+        "anthropic@claude-opus-4": _spec(
+            "anthropic@claude-opus-4",
+            "claude-opus-4-20250514",
+            False,
+            provider=PROVIDER_ANTHROPIC,
+            default_temperature=1.0,
+            context_window=200000,
+            max_output_tokens=64000,
+            timeout_seconds=600,
+        ),
+        "anthropic@claude-opus-4-thinking": _spec(
+            "anthropic@claude-opus-4-thinking",
+            "claude-opus-4-20250514",
+            True,
+            provider=PROVIDER_ANTHROPIC,
+            default_temperature=1.0,
+            context_window=200000,
+            max_output_tokens=64000,
+            timeout_seconds=600,
+        ),
+        "anthropic@claude-haiku-4": _spec(
+            "anthropic@claude-haiku-4",
+            "claude-haiku-4-20250514",
+            False,
+            provider=PROVIDER_ANTHROPIC,
+            default_temperature=1.0,
+            context_window=200000,
+            max_output_tokens=64000,
+            timeout_seconds=300,
+        ),
+        # Google Gemini (OpenAI-compatible endpoint).
+        "google@gemini-2.5-pro": _spec(
+            "google@gemini-2.5-pro",
+            "gemini-2.5-pro",
+            True,
+            provider=PROVIDER_GOOGLE,
+            default_chat_url="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            default_temperature=1.0,
+            context_window=1000000,
+            max_output_tokens=65536,
+            timeout_seconds=600,
+        ),
+        "google@gemini-2.5-flash": _spec(
+            "google@gemini-2.5-flash",
+            "gemini-2.5-flash",
+            True,
+            provider=PROVIDER_GOOGLE,
+            default_chat_url="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            default_temperature=1.0,
+            context_window=1000000,
+            max_output_tokens=65536,
+            timeout_seconds=600,
+        ),
+        "google@gemini-2.0-flash": _spec(
+            "google@gemini-2.0-flash",
+            "gemini-2.0-flash",
+            False,
+            provider=PROVIDER_GOOGLE,
+            default_chat_url="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            default_temperature=1.0,
+            context_window=1000000,
+            max_output_tokens=8192,
+            timeout_seconds=300,
+        ),
+        "google@gemini-1.5-pro": _spec(
+            "google@gemini-1.5-pro",
+            "gemini-1.5-pro",
+            False,
+            provider=PROVIDER_GOOGLE,
+            default_chat_url="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            default_temperature=1.0,
+            context_window=2000000,
+            max_output_tokens=8192,
+            timeout_seconds=300,
+        ),
+        # Grok / xAI (OpenAI-compatible chat completions).
+        "grok@grok-4": _spec(
+            "grok@grok-4",
+            "grok-4",
+            False,
+            provider=PROVIDER_GROK,
+            default_chat_url="https://api.x.ai/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=256000,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        "grok@grok-4-thinking": _spec(
+            "grok@grok-4-thinking",
+            "grok-4",
+            True,
+            provider=PROVIDER_GROK,
+            default_chat_url="https://api.x.ai/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=256000,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        "grok@grok-3": _spec(
+            "grok@grok-3",
+            "grok-3",
+            False,
+            provider=PROVIDER_GROK,
+            default_chat_url="https://api.x.ai/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=131072,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        "grok@grok-3-thinking": _spec(
+            "grok@grok-3-thinking",
+            "grok-3",
+            True,
+            provider=PROVIDER_GROK,
+            default_chat_url="https://api.x.ai/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=131072,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        "grok@grok-3-mini": _spec(
+            "grok@grok-3-mini",
+            "grok-3-mini",
+            False,
+            provider=PROVIDER_GROK,
+            default_chat_url="https://api.x.ai/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=131072,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        "grok@grok-3-mini-thinking": _spec(
+            "grok@grok-3-mini-thinking",
+            "grok-3-mini",
+            True,
+            provider=PROVIDER_GROK,
+            default_chat_url="https://api.x.ai/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=131072,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        "grok@grok-3-fast": _spec(
+            "grok@grok-3-fast",
+            "grok-3-fast",
+            False,
+            provider=PROVIDER_GROK,
+            default_chat_url="https://api.x.ai/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=131072,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        "grok@grok-3-fast-thinking": _spec(
+            "grok@grok-3-fast-thinking",
+            "grok-3-fast",
+            True,
+            provider=PROVIDER_GROK,
+            default_chat_url="https://api.x.ai/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=131072,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        # Venice.ai (OpenAI-compatible chat completions).
+        "venice@venice-qwen-3-32b": _spec(
+            "venice@venice-qwen-3-32b",
+            "venice-qwen-3-32b",
+            False,
+            provider=PROVIDER_VENICE,
+            default_chat_url="https://api.venice.ai/api/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=128000,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        "venice@venice-qwen-3-32b-thinking": _spec(
+            "venice@venice-qwen-3-32b-thinking",
+            "venice-qwen-3-32b",
+            True,
+            provider=PROVIDER_VENICE,
+            default_chat_url="https://api.venice.ai/api/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=128000,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        "venice@venice-qwen-3-14b": _spec(
+            "venice@venice-qwen-3-14b",
+            "venice-qwen-3-14b",
+            False,
+            provider=PROVIDER_VENICE,
+            default_chat_url="https://api.venice.ai/api/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=128000,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        "venice@venice-deepseek-r1-0528": _spec(
+            "venice@venice-deepseek-r1-0528",
+            "deepseek-r1-0528",
+            False,
+            provider=PROVIDER_VENICE,
+            default_chat_url="https://api.venice.ai/api/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=128000,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        "venice@venice-llama-3.3-70b": _spec(
+            "venice@venice-llama-3.3-70b",
+            "llama-3.3-70b",
+            False,
+            provider=PROVIDER_VENICE,
+            default_chat_url="https://api.venice.ai/api/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=128000,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        "venice@venice-qwen-2.5-coder-32b": _spec(
+            "venice@venice-qwen-2.5-coder-32b",
+            "qwen2.5-coder-32b",
+            False,
+            provider=PROVIDER_VENICE,
+            default_chat_url="https://api.venice.ai/api/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=128000,
+            max_output_tokens=32768,
+            timeout_seconds=600,
+        ),
+        # Local OpenAI-compatible gateway (manual model name, keyless).
+        "local@local": _spec(
+            "local@local",
+            "local",
+            False,
+            provider=PROVIDER_LOCAL,
+            default_base="http://127.0.0.1:1337",
+            default_chat_url="http://127.0.0.1:1337/v1/chat/completions",
+            default_temperature=0.7,
+            context_window=131072,
+            max_output_tokens=32768,
             timeout_seconds=600,
         ),
     }
@@ -1233,13 +1668,6 @@ def log(msg: str) -> None:
     print(f"[codeseeq-bridge] {msg}", file=sys.stderr, flush=True)
 
 
-def require_deepseek_key() -> str:
-    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-    if not key:
-        raise HTTPException(status_code=400, detail="DEEPSEEK_API_KEY is required")
-    return key
-
-
 def env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -1300,6 +1728,58 @@ def normalize_model(model: str) -> "ModelSpec":
             candidate = f"deepseek@{raw.split('@', 1)[1]}"
             if candidate in MODEL_SPECS:
                 canonical = candidate
+        # Generic "<provider>@<model>" form: accept any model name for a
+        # known provider (e.g. local@my-model, grok@grok-4-1). The upstream
+        # model name is the part after "@" and provider routing is resolved
+        # from the slug prefix.
+        elif "@" in raw:
+            owner, _, upstream = raw.partition("@")
+            owner = owner.lower()
+            if owner in PROVIDER_API_KEY_ENV and upstream:
+                spec = MODEL_SPECS.get("local@local")
+                base = (
+                    _env_first(*PROVIDER_BASE_URL_ENV.get(owner, ()))
+                    or PROVIDER_DEFAULT_BASE_URL[owner]
+                )
+                chat_url = f"{base.rstrip('/')}/chat/completions"
+                if owner == PROVIDER_ANTHROPIC:
+                    chat_url = f"{base.rstrip('/')}/v1/messages"
+                thinking = env_bool("CODESEEQ_THINKING", False)
+                if spec is not None:
+                    spec = ModelSpec(
+                        slug=f"{owner}@{upstream}",
+                        deepseek_model=upstream,
+                        thinking=thinking,
+                        base_url=base,
+                        chat_url=chat_url,
+                        temperature=spec.temperature,
+                        top_p=spec.top_p,
+                        top_k=spec.top_k,
+                        context_window=spec.context_window,
+                        max_output_tokens=spec.max_output_tokens,
+                        timeout_seconds=spec.timeout_seconds,
+                        system_prompt=spec.system_prompt,
+                        provider=owner,
+                        api_key_env=PROVIDER_API_KEY_ENV.get(owner),
+                    )
+                else:
+                    spec = ModelSpec(
+                        slug=f"{owner}@{upstream}",
+                        deepseek_model=upstream,
+                        thinking=thinking,
+                        base_url=base,
+                        chat_url=chat_url,
+                        temperature=None,
+                        top_p=None,
+                        top_k=None,
+                        context_window=131072,
+                        max_output_tokens=32768,
+                        timeout_seconds=600.0,
+                        system_prompt=None,
+                        provider=owner,
+                        api_key_env=PROVIDER_API_KEY_ENV.get(owner),
+                    )
+                return spec
     if canonical not in MODEL_SPECS:
         raise ValueError(
             "unsupported model. supported: "
@@ -1320,6 +1800,8 @@ def normalize_model(model: str) -> "ModelSpec":
         max_output_tokens=src.max_output_tokens,
         timeout_seconds=src.timeout_seconds,
         system_prompt=src.system_prompt,
+        provider=src.provider,
+        api_key_env=src.api_key_env,
     )
 
     # Legacy "CODESEEQ_THINKING" global toggle only affects the explicit
@@ -1328,6 +1810,37 @@ def normalize_model(model: str) -> "ModelSpec":
     if canonical in {"deepseek@deepseek-v4-flash", "deepseek@deepseek-v4-pro"}:
         spec.thinking = default_thinking
         spec.enable_thinking = default_thinking
+
+    # CODESEEQ_PROVIDER (when set) overrides routing: the same slug can be
+    # pointed at a different provider's base URL / key env (e.g. re-point a
+    # local@* gateway model, or force a hosted provider). The wrapper mirrors
+    # this override so the key it requires stays in sync with the bridge.
+    effective_provider = resolve_provider_for_slug(spec.slug)
+    if effective_provider != spec.provider:
+        override_base = (
+            _env_first(*PROVIDER_BASE_URL_ENV.get(effective_provider, ()))
+            or PROVIDER_DEFAULT_BASE_URL[effective_provider]
+        )
+        if effective_provider == PROVIDER_ANTHROPIC:
+            override_chat_url = f"{override_base.rstrip('/')}/v1/messages"
+        else:
+            override_chat_url = f"{override_base.rstrip('/')}/chat/completions"
+        spec = ModelSpec(
+            slug=spec.slug,
+            deepseek_model=spec.deepseek_model,
+            thinking=spec.thinking,
+            base_url=override_base,
+            chat_url=override_chat_url,
+            temperature=spec.temperature,
+            top_p=spec.top_p,
+            top_k=spec.top_k,
+            context_window=spec.context_window,
+            max_output_tokens=spec.max_output_tokens,
+            timeout_seconds=spec.timeout_seconds,
+            system_prompt=spec.system_prompt,
+            provider=effective_provider,
+            api_key_env=PROVIDER_API_KEY_ENV.get(effective_provider),
+        )
 
     return spec
 
@@ -2076,6 +2589,622 @@ def deepseek_usage_to_responses_usage(usage: Any) -> Dict[str, int]:
     }
 
 
+def anthropic_payload(
+    body: Dict[str, Any],
+    spec: "ModelSpec",
+    messages: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Translate Responses-API messages to an Anthropic Messages payload.
+
+    Chat-completions style assistant messages carrying ``tool_calls`` are
+    expanded into Anthropic ``tool_use`` content blocks so tool results in
+    later turns can reference them (Anthropic 400s any ``tool_result`` whose
+    ``tool_use_id`` does not exist in a previous assistant message).
+
+    Extended thinking constraints are honored: ``temperature`` / ``top_p`` are
+    omitted while thinking is enabled (Anthropic rejects them), ``max_tokens``
+    is raised to at least the thinking budget, and a specific tool_choice is
+    downgraded to "auto" (the only choice Anthropic allows with thinking).
+    """
+    thinking_enabled = spec.thinking
+    system_parts: List[str] = []
+    msgs: List[Dict[str, Any]] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        content = m.get("content")
+        if role == "system":
+            if content:
+                system_parts.append(str(content))
+            continue
+        if role == "tool":
+            # Codex tool results arrive as tool-role messages.
+            tool_call_id = m.get("tool_call_id") or m.get("name") or "tool_result"
+            msgs.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_call_id,
+                            "content": str(content or ""),
+                        }
+                    ],
+                }
+            )
+            continue
+        if role == "assistant":
+            # Preserve any previous tool_use blocks: Anthropic requires the
+            # assistant message that called a tool to carry the tool_use
+            # content block (with its id) so the following tool_result can
+            # reference it.
+            blocks: List[Dict[str, Any]] = []
+            text = str(content or "")
+            if text:
+                blocks.append({"type": "text", "text": text})
+            tool_calls = m.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") if isinstance(tc.get("function"), dict) else None
+                    name = (fn or {}).get("name") or tc.get("name") or "tool"
+                    raw_args = (fn or {}).get("arguments") if fn else None
+                    if isinstance(raw_args, str):
+                        try:
+                            parsed_args = json.loads(raw_args) if raw_args.strip() else {}
+                        except Exception:
+                            parsed_args = {"_raw": raw_args}
+                    elif isinstance(raw_args, dict):
+                        parsed_args = raw_args
+                    else:
+                        parsed_args = {}
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": str(tc.get("id") or f"call_{uuid.uuid4().hex[:12]}"),
+                            "name": name,
+                            "input": parsed_args,
+                        }
+                    )
+            msgs.append({"role": "assistant", "content": blocks})
+            continue
+        msgs.append({"role": "user", "content": str(content or "")})
+
+    payload: Dict[str, Any] = {
+        "model": spec.deepseek_model,
+        "max_tokens": resolve_max_tokens(body, spec),
+        "messages": msgs,
+    }
+    if system_parts:
+        payload["system"] = "\n\n".join(system_parts)
+
+    thinking_budget: Optional[int] = None
+    if thinking_enabled:
+        thinking_block: Dict[str, Any] = {"type": "enabled"}
+        reasoning = body.get("reasoning")
+        if not isinstance(reasoning, dict):
+            reasoning = {}
+        effort = reasoning.get("effort") or os.environ.get("CODESEEQ_REASONING_EFFORT", "")
+        if effort in {"low", "medium", "high", "xhigh", "max"}:
+            thinking_budget = {
+                "low": 2048,
+                "medium": 8192,
+                "high": 16384,
+                "xhigh": 32000,
+                "max": 32000,
+            }.get(effort, 16384)
+            thinking_block["budget_tokens"] = thinking_budget
+        else:
+            # No explicit effort: pick a moderate default budget so the
+            # request is valid (Anthropic requires budget_tokens when
+            # thinking is enabled).
+            thinking_budget = 8192
+            thinking_block["budget_tokens"] = thinking_budget
+        payload["thinking"] = thinking_block
+        # Anthropic forbids temperature/top_p/top_k together with thinking,
+        # so they are never forwarded while extended thinking is enabled.
+    else:
+        temperature = body.get("temperature")
+        if temperature is None or not isinstance(temperature, (int, float)):
+            temperature = spec.temperature
+        if temperature is not None:
+            payload["temperature"] = float(temperature)
+
+        top_p = body.get("top_p")
+        if top_p is None or not isinstance(top_p, (int, float)):
+            top_p = spec.top_p
+        if top_p is not None:
+            payload["top_p"] = float(top_p)
+
+    if thinking_enabled:
+        payload["max_tokens"] = max(
+            int(payload.get("max_tokens") or 0), int(thinking_budget or 0)
+        )
+
+    tools = body.get("tools")
+    if isinstance(tools, list) and tools:
+        anthropic_tools: List[Dict[str, Any]] = []
+        for tool in tools:
+            if not isinstance(tool, dict) or tool.get("type") != "function":
+                continue
+            fn = tool.get("function") if isinstance(tool.get("function"), dict) else None
+            name = (fn or {}).get("name") or tool.get("name")
+            if not name:
+                continue
+            t: Dict[str, Any] = {
+                "name": name,
+                "input_schema": {"type": "object", "properties": {}},
+            }
+            description = (fn or {}).get("description") or tool.get("description")
+            if description:
+                t["description"] = str(description)
+            parameters = (fn or {}).get("parameters") or tool.get("parameters")
+            if isinstance(parameters, dict):
+                t["input_schema"] = parameters
+            anthropic_tools.append(t)
+        if anthropic_tools:
+            payload["tools"] = anthropic_tools
+            tool_choice = body.get("tool_choice")
+            if thinking_enabled:
+                # With extended thinking Anthropic only allows auto/none/any.
+                if isinstance(tool_choice, str) and tool_choice in {"none", "any"}:
+                    payload["tool_choice"] = {"type": tool_choice}
+                else:
+                    payload["tool_choice"] = {"type": "auto"}
+            elif isinstance(tool_choice, str):
+                payload["tool_choice"] = {"type": tool_choice}
+            elif isinstance(tool_choice, dict):
+                fn = (
+                    tool_choice.get("function")
+                    if isinstance(tool_choice.get("function"), dict)
+                    else None
+                )
+                name = (fn or {}).get("name") or tool_choice.get("name")
+                if name:
+                    payload["tool_choice"] = {"type": "tool", "name": name}
+    return payload
+
+
+def anthropic_usage_to_responses_usage(usage: Any) -> Dict[str, int]:
+    if not isinstance(usage, dict):
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or (input_tokens + output_tokens))
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def anthropic_content_to_items(
+    content: Any,
+    spec: "ModelSpec",
+    registered_set: Set[str],
+    registered_arg_names: Dict[str, Set[str]],
+) -> List[Dict[str, Any]]:
+    """Convert Anthropic content blocks into Responses output items.
+
+    Handles text blocks, thinking blocks (forwarded only when spec.thinking),
+    and tool_use blocks (validated like DeepSeek tool calls).
+    """
+    items: List[Dict[str, Any]] = []
+    if not isinstance(content, list):
+        return items
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            text = normalize_dsml_display(str(block.get("text") or ""))
+            if text.strip():
+                items.append(to_response_message_item(text))
+        elif btype == "thinking" and spec.thinking:
+            text = str(block.get("thinking") or "")
+            if text.strip():
+                items.append(
+                    {
+                        "type": "reasoning",
+                        "id": f"rs_{uuid.uuid4().hex[:12]}",
+                        "summary": [{"type": "summary_text", "text": text[:1000]}],
+                        "content": [{"type": "reasoning_text", "text": text}],
+                        "encrypted_content": None,
+                    }
+                )
+        elif btype == "tool_use":
+            name = str(block.get("name") or "tool")
+            raw_args = block.get("input")
+            if not isinstance(raw_args, dict):
+                raw_args = {}
+            tc = {
+                "id": str(block.get("id") or f"call_{uuid.uuid4().hex[:12]}"),
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(raw_args, ensure_ascii=False),
+                },
+            }
+            prepared, err = prepare_structured_tool_call(
+                tc,
+                registered_tools=registered_set,
+                registered_arg_names=registered_arg_names,
+            )
+            if err:
+                items.append(
+                    to_response_message_item(malformed_tool_call_message([err]))
+                )
+            elif prepared:
+                items.append(tool_call_to_response_item(prepared))
+    return items
+
+
+async def anthropic_event_stream(
+    *,
+    response_id: str,
+    provider_model: str,
+    spec: "ModelSpec",
+    payload: Dict[str, Any],
+    headers: Dict[str, str],
+    chat_url: str,
+    timeout_seconds: float,
+    registered_set: Set[str],
+    registered_arg_names: Dict[str, Set[str]],
+) -> AsyncIterator[str]:
+    """Stream an Anthropic Messages response and translate it to Responses SSE.
+
+    Anthropic streams `content_block_delta` events with `text_delta`,
+    `thinking_delta`, `input_json_delta` (tool args) and `signature_delta`;
+    tool starts arrive as `content_block_start` events with `tool_use`.
+    """
+    usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    text_parts: List[str] = []
+    reasoning_parts: List[str] = []
+    tool_states: Dict[str, Dict[str, Any]] = {}
+    message_item_id_local = f"msg_{uuid.uuid4().hex[:20]}"
+    message_item_open = {"value": False}
+    message_output_index: Dict[str, Optional[int]] = {"value": None}
+    reasoning_item_id_local = f"rs_{uuid.uuid4().hex[:20]}"
+    reasoning_item_open = {"value": False}
+    reasoning_output_index: Dict[str, Optional[int]] = {"value": None}
+    next_output_index = {"value": 0}
+    dsml_buf = StreamingDsmlBuffer(registered_set)
+
+    def allocate_output_index() -> int:
+        idx = next_output_index["value"]
+        next_output_index["value"] += 1
+        return idx
+
+    yield sse_event(
+        "response.created",
+        {
+            "type": "response.created",
+            "response": {
+                "id": response_id,
+                "object": "response",
+                "model": provider_model,
+                "status": "in_progress",
+            },
+        },
+    )
+
+    def text_delta_events(text: str) -> List[str]:
+        out: List[str] = []
+        if not text:
+            return out
+        if not message_item_open["value"]:
+            message_item_open["value"] = True
+            message_output_index["value"] = allocate_output_index()
+            out.append(
+                sse_event(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": message_output_index["value"],
+                        "item": {
+                            "id": message_item_id_local,
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [],
+                        },
+                    },
+                )
+            )
+        text_parts.append(text)
+        out.append(
+            sse_event(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "delta": text,
+                    "item_id": message_item_id_local,
+                    "output_index": message_output_index["value"],
+                    "content_index": 0,
+                },
+            )
+        )
+        return out
+
+    def tool_call_events() -> List[str]:
+        """Emit lifecycle events for fully-buffered anthropic tool_use blocks."""
+        out: List[str] = []
+        for block_id, state in tool_states.items():
+            if state.get("emitted"):
+                continue
+            fn = state.get("function") or {}
+            arguments_json = fn.get("arguments") or "{}"
+            out.extend(
+                _function_call_lifecycle_events(
+                    item_id=f"fc_{uuid.uuid4().hex[:12]}",
+                    call_id=state.get("id") or block_id,
+                    name=fn.get("name") or "tool",
+                    arguments_json=arguments_json,
+                    output_index=allocate_output_index(),
+                    chunk_size=CHUNK_SIZE,
+                )
+            )
+            state["emitted"] = True
+        return out
+
+    try:
+        stream_idle_timeout = max(1.0, STREAM_IDLE_TIMEOUT_MS / 1000.0)
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_seconds, read=stream_idle_timeout)
+        ) as client:
+            async with client.stream(
+                "POST", chat_url, json=payload, headers=headers
+            ) as resp:
+                if resp.status_code >= 400:
+                    detail = (await resp.aread()).decode("utf-8", errors="replace")[:1000]
+                    log(f"anthropic stream error status={resp.status_code} body={detail}")
+                    yield sse_event(
+                        "response.failed",
+                        {
+                            "type": "response.failed",
+                            "response": {
+                                "id": response_id,
+                                "object": "response",
+                                "model": provider_model,
+                                "status": "failed",
+                                "error": {"code": "anthropic_error", "message": detail or "upstream error"},
+                            },
+                        },
+                    )
+                    return
+
+                async for raw_line in resp.aiter_lines():
+                    line = raw_line.strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    if not line:
+                        continue
+                    try:
+                        evt = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(evt, dict):
+                        continue
+                    evt_type = evt.get("type")
+
+                    if evt_type == "message_start":
+                        msg = evt.get("message")
+                        if isinstance(msg, dict) and isinstance(msg.get("usage"), dict):
+                            usage = anthropic_usage_to_responses_usage(msg["usage"])
+                    elif evt_type == "message_delta":
+                        delta = evt.get("delta")
+                        if isinstance(delta, dict) and isinstance(delta.get("usage"), dict):
+                            usage = anthropic_usage_to_responses_usage(delta["usage"])
+                        elif isinstance(evt.get("usage"), dict):
+                            usage = anthropic_usage_to_responses_usage(evt["usage"])
+                    elif evt_type == "content_block_start":
+                        block = evt.get("content_block")
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            block_id = str(evt.get("index", block.get("id") or f"tb_{uuid.uuid4().hex[:12]}"))
+                            tool_states[block_id] = {
+                                "id": str(block.get("id") or f"call_{uuid.uuid4().hex[:12]}"),
+                                "type": "function",
+                                "function": {
+                                    "name": str(block.get("name") or "tool"),
+                                    "arguments": "",
+                                },
+                                "emitted": False,
+                            }
+                    elif evt_type == "content_block_delta":
+                        delta = evt.get("delta")
+                        if not isinstance(delta, dict):
+                            continue
+                        dtype = delta.get("type")
+                        if dtype == "thinking_delta" and spec.thinking:
+                            text = str(delta.get("thinking") or "")
+                            if text:
+                                reasoning_parts.append(text)
+                                if not reasoning_item_open["value"]:
+                                    reasoning_item_open["value"] = True
+                                    reasoning_output_index["value"] = allocate_output_index()
+                                    yield sse_event(
+                                        "response.output_item.added",
+                                        {
+                                            "type": "response.output_item.added",
+                                            "output_index": reasoning_output_index["value"],
+                                            "item": {
+                                                "id": reasoning_item_id_local,
+                                                "type": "reasoning",
+                                                "summary": [],
+                                            },
+                                        },
+                                    )
+                                yield sse_event(
+                                    "response.reasoning_text.delta",
+                                    {
+                                        "type": "response.reasoning_text.delta",
+                                        "delta": text,
+                                        "item_id": reasoning_item_id_local,
+                                        "output_index": reasoning_output_index["value"],
+                                        "content_index": 0,
+                                    },
+                                )
+                        elif dtype == "text_delta":
+                            text = str(delta.get("text") or "")
+                            if text:
+                                normalized = normalize_dsml_display(text)
+                                safe_text, completed_blocks = dsml_buf.feed(normalized)
+                                for ev in text_delta_events(safe_text):
+                                    yield ev
+                                if completed_blocks:
+                                    for ev in tool_call_events():
+                                        yield ev
+                        elif dtype == "input_json_delta":
+                            # Find the open tool block by index; append partial JSON.
+                            idx = evt.get("index")
+                            block_id = str(idx) if idx is not None else None
+                            if block_id is not None and block_id in tool_states:
+                                tool_states[block_id]["function"]["arguments"] += str(
+                                    delta.get("partial_json") or ""
+                                )
+                    elif evt_type == "content_block_stop":
+                        idx = evt.get("index")
+                        block_id = str(idx) if idx is not None else None
+                        if block_id in tool_states and not tool_states[block_id]["emitted"]:
+                            state = tool_states[block_id]
+                            tc = {
+                                "id": state["id"],
+                                "type": "function",
+                                "function": state["function"],
+                            }
+                            prepared, err = prepare_structured_tool_call(
+                                tc,
+                                registered_tools=registered_set,
+                                registered_arg_names=registered_arg_names,
+                            )
+                            if err:
+                                for ev in text_delta_events(
+                                    malformed_tool_call_message([err])
+                                ):
+                                    yield ev
+                            elif prepared:
+                                fn = prepared.get("function") or {}
+                                for ev in _function_call_lifecycle_events(
+                                    item_id=f"fc_{uuid.uuid4().hex[:12]}",
+                                    call_id=prepared.get("id") or state["id"],
+                                    name=fn.get("name") or "tool",
+                                    arguments_json=fn.get("arguments") or "{}",
+                                    output_index=allocate_output_index(),
+                                    chunk_size=CHUNK_SIZE,
+                                ):
+                                    yield ev
+                            state["emitted"] = True
+                    elif evt_type == "message_stop":
+                        break
+    except (httpx.RemoteProtocolError, httpx.ReadError, httpx.TimeoutException, asyncio.CancelledError) as exc:
+        log(f"anthropic stream connection/idle error: {exc!r}")
+        yield sse_event(
+            "response.failed",
+            {
+                "type": "response.failed",
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "model": provider_model,
+                    "status": "failed",
+                    "error": {"code": "bridge_stream_error", "message": str(exc)},
+                },
+            },
+        )
+        return
+    except Exception as exc:
+        log(f"anthropic stream bridge error: {exc!r}")
+        yield sse_event(
+            "response.failed",
+            {
+                "type": "response.failed",
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "model": provider_model,
+                    "status": "failed",
+                    "error": {"code": "bridge_stream_error", "message": str(exc)},
+                },
+            },
+        )
+        return
+
+    # Flush residual buffered text.
+    residual_text, residual_blocks = dsml_buf.flush()
+    if residual_text:
+        for ev in text_delta_events(residual_text):
+            yield ev
+    if residual_blocks:
+        for ev in tool_call_events():
+            yield ev
+    # Any tool blocks that were not stopped before stream end.
+    for ev in tool_call_events():
+        yield ev
+
+    # Close reasoning item.
+    full_reasoning = "".join(reasoning_parts).strip()
+    if reasoning_item_open["value"]:
+        yield sse_event(
+            "response.reasoning_text.done",
+            {
+                "type": "response.reasoning_text.done",
+                "item_id": reasoning_item_id_local,
+                "output_index": reasoning_output_index["value"],
+                "content_index": 0,
+                "text": full_reasoning,
+            },
+        )
+        yield sse_event(
+            "response.output_item.done",
+            {
+                "type": "response.output_item.done",
+                "output_index": reasoning_output_index["value"],
+                "item": {
+                    "id": reasoning_item_id_local,
+                    "type": "reasoning",
+                    "summary": [
+                        {"type": "summary_text", "text": full_reasoning[:1000]}
+                    ] if full_reasoning else [],
+                },
+            },
+        )
+
+    # Close message item.
+    full_text = "".join(text_parts)
+    if message_item_open["value"]:
+        yield sse_event(
+            "response.output_item.done",
+            {
+                "type": "response.output_item.done",
+                "output_index": message_output_index["value"],
+                "item": {
+                    "id": message_item_id_local,
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": full_text}],
+                },
+            },
+        )
+
+    yield sse_event(
+        "response.completed",
+        {
+            "type": "response.completed",
+            "response": {
+                "id": response_id,
+                "object": "response",
+                "model": provider_model,
+                "status": "completed",
+                "usage": usage,
+            },
+        },
+    )
+
+
 def split_chunks(text: str, size: int) -> List[str]:
     if not text:
         return []
@@ -2200,7 +3329,13 @@ async def health() -> Dict[str, str]:
     effective_backend = image_backend
     if image_backend == "none" and venice_key:
         effective_backend = "venice"
-    info: Dict[str, str] = {"status": "ok", "version": "0.4.1", "image_backend": effective_backend}
+    info: Dict[str, str] = {"status": "ok", "version": "0.4.2", "image_backend": effective_backend}
+    providers = sorted({spec.provider for spec in MODEL_SPECS.values()})
+    info["providers"] = ",".join(providers)
+    try:
+        info["provider"] = normalize_model(os.environ.get("CODESEEQ_MODEL", "")).provider
+    except Exception:
+        info["provider"] = os.environ.get("CODESEEQ_PROVIDER", "") or "deepseek"
     if effective_backend == "venice":
         info["venice_api_key_configured"] = str(bool(venice_key))
         info["venice_image_model"] = os.environ.get("CODESEEQ_VENICE_IMAGE_MODEL", "z-image-turbo")
@@ -2211,8 +3346,14 @@ async def health() -> Dict[str, str]:
 async def models() -> Dict[str, Any]:
     data = []
     for slug in sorted(MODEL_SPECS.keys()):
-        owner = "qwibus" if slug.startswith("qwibus") else "deepseek"
-        data.append({"id": slug, "object": "model", "owned_by": owner})
+        spec = MODEL_SPECS[slug]
+        data.append(
+            {
+                "id": slug,
+                "object": "model",
+                "owned_by": spec.provider,
+            }
+        )
     return {"object": "list", "data": data}
 
 
@@ -2232,16 +3373,18 @@ async def responses(request: Request) -> Any:
     raw_model = spec.slug
     provider_model = spec.slug
     deepseek_model = spec.deepseek_model
+    provider = spec.provider
     thinking_enabled = spec.thinking
     model_chat_url = spec.chat_url
     model_timeout = spec.timeout_seconds
 
-    # qwibus models run on a local gateway that requires no API key.
+    # Resolve the API key for the configured provider. qwibus and local
+    # gateways are keyless; every hosted provider requires its own key env.
     if spec.slug.startswith("qwibus"):
         if not env_bool("QWIBUS_NO_API_KEY", True):
-            require_deepseek_key()
+            require_provider_key(provider)
     else:
-        require_deepseek_key()
+        require_provider_key(provider)
 
     response_id = f"resp_{uuid.uuid4().hex[:20]}"
 
@@ -2325,16 +3468,24 @@ async def responses(request: Request) -> Any:
             rest.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
         messages = rest
 
-    payload = deepseek_payload(body, spec, messages)
     stream = bool(body.get("stream", False))
 
-    key = os.environ.get("DEEPSEEK_API_KEY", "")
-    headers = {
-        "Content-Type": "application/json",
-    }
-    # qwibus models are keyless; never send an Authorization header for them.
-    if key and not spec.slug.startswith("qwibus"):
-        headers["Authorization"] = f"Bearer {key}"
+    is_anthropic = provider == PROVIDER_ANTHROPIC
+    key = provider_api_key(provider)
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    if key:
+        if is_anthropic:
+            headers["x-api-key"] = key
+            headers["anthropic-version"] = "2023-06-01"
+        else:
+            headers["Authorization"] = f"Bearer {key}"
+
+    # OpenAI-compatible providers reuse the chat-completions translation;
+    # anthropic uses the native Messages API payload.
+    if is_anthropic:
+        payload = anthropic_payload(body, spec, messages)
+    else:
+        payload = deepseek_payload(body, spec, messages)
 
     log(
         f"request model={raw_model} mapped={provider_model} thinking={thinking_enabled} "
@@ -2346,6 +3497,42 @@ async def responses(request: Request) -> Any:
 
     # ---------------- non-streaming path --------------------------------
     if not stream:
+        if is_anthropic:
+            payload.pop("stream", None)
+            async with httpx.AsyncClient(timeout=model_timeout) as client:
+                resp = await client.post(model_chat_url, json=payload, headers=headers)
+                if resp.status_code >= 400:
+                    detail = resp.text[:1000]
+                    log(f"anthropic error status={resp.status_code} body={detail}")
+                    return JSONResponse(status_code=resp.status_code, content={"error": detail})
+                ds = resp.json()
+
+            usage = anthropic_usage_to_responses_usage(
+                ds.get("usage") if isinstance(ds, dict) else None
+            )
+            output_items: List[Dict[str, Any]] = anthropic_content_to_items(
+                ds.get("content") if isinstance(ds, dict) else None,
+                spec,
+                registered_set,
+                registered_arg_names,
+            )
+            text = "".join(
+                str(it.get("text") or "")
+                for it in output_items
+                if isinstance(it, dict) and it.get("type") == "message"
+            )
+            if not output_items:
+                output_items.append(to_response_message_item(""))
+            return {
+                "id": response_id,
+                "object": "response",
+                "model": provider_model,
+                "status": "completed",
+                "output": output_items,
+                "output_text": text,
+                "usage": usage,
+            }
+
         payload["stream"] = False
         async with httpx.AsyncClient(timeout=model_timeout) as client:
             resp = await client.post(model_chat_url, json=payload, headers=headers)
@@ -2441,6 +3628,22 @@ async def responses(request: Request) -> Any:
 
     # ---------------- streaming path ------------------------------------
     payload["stream"] = True
+
+    if is_anthropic:
+        return StreamingResponse(
+            anthropic_event_stream(
+                response_id=response_id,
+                provider_model=provider_model,
+                spec=spec,
+                payload=payload,
+                headers=headers,
+                chat_url=model_chat_url,
+                timeout_seconds=model_timeout,
+                registered_set=registered_set,
+                registered_arg_names=registered_arg_names,
+            ),
+            media_type="text/event-stream",
+        )
 
     async def event_stream() -> AsyncIterator[str]:
         usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}

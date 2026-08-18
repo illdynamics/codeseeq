@@ -106,8 +106,31 @@ if ! grep -q 'CODESEEQ_CODEX_HOME:=/home/codeseeq/.codeseeq' bin/codeseeq-entryp
 fi
 
 note "checking model catalog"
-if ! python3 -c "import json; d=json.load(open('config/model-catalog.json')); assert d.get('default')=='deepseek-v4-flash'; assert len(d.get('models',[]))>=4, 'expected 4+ models'; print('OK')" 2>/dev/null; then
+if ! python3 -c "
+import json
+d = json.load(open('config/model-catalog.json'))
+assert d.get('default') == 'deepseek-v4-flash'
+assert len(d.get('models', [])) >= 4, 'expected 4+ models'
+providers = set(m.get('provider') for m in d.get('models', []) if m.get('provider'))
+assert {'deepseek', 'anthropic', 'google', 'grok', 'venice', 'local'} <= providers, providers
+codex = json.load(open('config/codex-model-catalog.json'))
+codex_slugs = {m['slug'] for m in codex.get('models', [])}
+for m in d.get('models', []):
+    assert m.get('provider_model') in codex_slugs, 'missing codex entry: ' + m.get('provider_model', '?')
+print('OK')
+" 2>/dev/null; then
   warn "model catalog check skipped (non-critical)"
+fi
+
+note "checking config wizard model list (python3 + jq fallback)"
+if command -v jq >/dev/null 2>&1; then
+  for cfg_provider in deepseek anthropic google grok venice; do
+    if ! jq -r --arg p "$cfg_provider" '(.providers[$p].models // []) as $ids | [.models[] | select((.id | IN($ids[])) or (.provider == $p))] | unique_by(.id)[] | (.provider_model // .id) + "|" + .id' config/model-catalog.json 2>/dev/null | grep -q "@"; then
+      fail "config wizard jq fallback produced no models for provider ${cfg_provider}"
+    fi
+  done
+else
+  note "jq not available; skipping config wizard jq fallback check"
 fi
 
 note "checking version documentation"
@@ -134,6 +157,16 @@ if ! scripts/test-bridge-extraction.py; then
   fail "bridge XML/tool-call extraction regression test failed"
 fi
 
+note "checking bridge Anthropic translation"
+if ! scripts/test-bridge-anthropic.py; then
+  fail "bridge Anthropic translation regression test failed"
+fi
+
+note "checking wrapper/bridge per-model env-name agreement"
+if ! scripts/test-bridge-env-names.py; then
+  fail "wrapper/bridge per-model env-name agreement test failed"
+fi
+
 note "checking generated config"
 tmp_check_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_check_dir"' EXIT
@@ -151,6 +184,26 @@ else
   if ! _rg -n 'model_provider' "${tmp_check_dir}/config.out" >/dev/null 2>&1; then
     fail "generated config missing model_provider=codeseeq"
   fi
+fi
+
+note "checking entrypoint merges codex catalog for arbitrary local@model"
+if ! CODESEEQ_CODEX_HOME="${tmp_check_dir}/.codeseeq-catalog" \
+  CODESEEQ_WORKDIR="${tmp_check_dir}/workspace-catalog" \
+  CODESEEQ_RUNTIME_DIR="${tmp_check_dir}/run-catalog" \
+  CODESEEQ_LOG_DIR="${tmp_check_dir}/log-catalog" \
+  CODESEEQ_HOST_MODEL_CATALOG_JSON="${repo_root}/config/codex-model-catalog.json" \
+  CODESEEQ_MODEL="local@llama-4-maverick" \
+  CODESEEQ_PROVIDER="local" \
+  ./bin/codeseeq-entrypoint config > "${tmp_check_dir}/config-catalog.out" 2>/dev/null; then
+  fail "codeseeq-entrypoint config with local@model failed"
+elif ! python3 -c "
+import json
+d = json.load(open('${tmp_check_dir}/.codeseeq-catalog/codex-model-catalog.json'))
+slugs = [m.get('slug') for m in d.get('models', [])]
+assert 'local@llama-4-maverick' in slugs, slugs
+print('OK')
+"; then
+  fail "entrypoint did not merge local@model into codex model catalog"
 fi
 
 note "checking system prompt injection config"

@@ -62,6 +62,12 @@ zip_excludes=(
   "*/logs/*"
   "*.log"
   "*.zip"
+  ".qq*"
+  "oops.md"
+  "codeseeq-*-fix.md"
+  "venice-image.md"
+  "package.json"
+  "package-lock.json"
 )
 
 have_zip_cli() {
@@ -162,6 +168,12 @@ patterns = [
     "*/logs/*",
     "*.log",
     "*.zip",
+    ".qq*",
+    "oops.md",
+    "codeseeq-*-fix.md",
+    "venice-image.md",
+    "package.json",
+    "package-lock.json",
 ]
 if out_rel:
     patterns.append(out_rel)
@@ -278,7 +290,7 @@ validate_archive() {
     esac
 
     case "$base" in
-      .DS_Store|*.pyc|*.zip|*.log|system-prompt.md)
+      .DS_Store|*.pyc|*.zip|*.log|system-prompt.md|.qqignore|.qq_prompt_call-*|oops.md|codeseeq-*-fix.md|venice-image.md|package.json|package-lock.json)
         printf '[package:check:error] forbidden file in archive: %s\n' "$entry" >&2
         failures=$((failures + 1))
         continue
@@ -334,6 +346,12 @@ static_package_check() {
     '"*/logs/*"'
     '"*.log"'
     '"*.zip"'
+    '".qq*"'
+    '"oops.md"'
+    '"codeseeq-*-fix.md"'
+    '"venice-image.md"'
+    '"package.json"'
+    '"package-lock.json"'
   )
 
   local pattern

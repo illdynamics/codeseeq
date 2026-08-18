@@ -7,11 +7,24 @@ log()  { printf '[codeseeq-install] %s\n' "$*" >&2; }
 die()  { printf '[codeseeq-install:error] %s\n' "$*" >&2; exit 1; }
 
 REPO="${CODESEEQ_REPO:-illdynamics/codeseeq}"
-# If CODESEEQ_RELEASE_TAG is not explicitly set, fetch the latest version
-# from the VERSION file on the default branch (single source of truth).
+# CODESEEQ_ALLOW_LATEST_RELEASE gates the VERSION-file auto-fetch. Default is
+# true (fetch the latest release); set it to false to require an explicit
+# pinned CODESEEQ_RELEASE_TAG (supply-chain hardening, matches docs/SECURITY.md).
+ALLOW_LATEST="${CODESEEQ_ALLOW_LATEST_RELEASE:-true}"
+case "$(printf "%s" "$ALLOW_LATEST" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on) ALLOW_LATEST=true ;;
+  0|false|no|off) ALLOW_LATEST=false ;;
+  *) die "invalid CODESEEQ_ALLOW_LATEST_RELEASE: $ALLOW_LATEST (use true or false)" ;;
+esac
+
 if [ -z "${CODESEEQ_RELEASE_TAG+x}" ]; then
+  if [ "$ALLOW_LATEST" != "true" ]; then
+    die "CODESEEQ_ALLOW_LATEST_RELEASE is not true and CODESEEQ_RELEASE_TAG is unset; set CODESEEQ_RELEASE_TAG to a pinned release (e.g. v0.4.0) or set CODESEEQ_ALLOW_LATEST_RELEASE=true"
+  fi
+  # Fetch the latest version from the VERSION file on the default branch
+  # (single source of truth).
   VERSION_URL="https://raw.githubusercontent.com/${REPO}/main/VERSION"
-  RELEASE_TAG="$(curl -fsSL "$VERSION_URL" 2>/dev/null || echo "v0.4.1")"
+  RELEASE_TAG="$(curl -fsSL "$VERSION_URL" 2>/dev/null || echo "v0.4.2")"
   # sanitize: strip whitespace
   RELEASE_TAG="$(printf "%s" "$RELEASE_TAG" | tr -d "[:space:]")"
 else

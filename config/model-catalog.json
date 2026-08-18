@@ -29,7 +29,9 @@
         "fast coding",
         "repo inspection",
         "daily edits"
-      ]
+      ],
+      "provider": "deepseek",
+      "upstream_model": "deepseek-v4-flash"
     },
     {
       "id": "deepseek-v4-flash-thinking",
@@ -54,7 +56,9 @@
         "fast reasoning",
         "debugging",
         "planning"
-      ]
+      ],
+      "provider": "deepseek",
+      "upstream_model": "deepseek-v4-flash-thinking"
     },
     {
       "id": "deepseek-v4-pro",
@@ -79,7 +83,9 @@
         "larger coding tasks",
         "reviews",
         "refactors"
-      ]
+      ],
+      "provider": "deepseek",
+      "upstream_model": "deepseek-v4-pro"
     },
     {
       "id": "deepseek-v4-pro-thinking",
@@ -104,7 +110,9 @@
         "hard debugging",
         "architecture",
         "deep review"
-      ]
+      ],
+      "provider": "deepseek",
+      "upstream_model": "deepseek-v4-pro-thinking"
     },
     {
       "id": "qwibus-qwikk",
@@ -129,7 +137,9 @@
         "fast local coding",
         "quick edits",
         "no-API-key use"
-      ]
+      ],
+      "provider": "qwibus",
+      "upstream_model": "qwibus-qwikk"
     },
     {
       "id": "qwibus-qmplx",
@@ -154,7 +164,689 @@
         "local deep reasoning",
         "planning",
         "long-context work"
+      ],
+      "provider": "qwibus",
+      "upstream_model": "qwibus-qmplx"
+    },
+    {
+      "id": "claude-sonnet-4",
+      "provider_model": "anthropic@claude-sonnet-4",
+      "provider": "anthropic",
+      "upstream_model": "claude-sonnet-4-20250514",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://api.anthropic.com",
+      "chat_url": "https://api.anthropic.com/v1/messages",
+      "temperature": 1.0,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "ANTHROPIC_API_KEY",
+      "context_window": 200000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Anthropic Claude Sonnet 4 (non-thinking).",
+      "recommended_for": [
+        "fast coding",
+        "daily edits"
+      ]
+    },
+    {
+      "id": "claude-sonnet-4-thinking",
+      "provider_model": "anthropic@claude-sonnet-4-thinking",
+      "provider": "anthropic",
+      "upstream_model": "claude-sonnet-4-20250514",
+      "thinking": true,
+      "enable_thinking": true,
+      "group": "thinking",
+      "base_url": "https://api.anthropic.com",
+      "chat_url": "https://api.anthropic.com/v1/messages",
+      "temperature": 1.0,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "ANTHROPIC_API_KEY",
+      "context_window": 200000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Anthropic Claude Sonnet 4 with extended thinking.",
+      "recommended_for": [
+        "debugging",
+        "planning"
+      ]
+    },
+    {
+      "id": "claude-opus-4",
+      "provider_model": "anthropic@claude-opus-4",
+      "provider": "anthropic",
+      "upstream_model": "claude-opus-4-20250514",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://api.anthropic.com",
+      "chat_url": "https://api.anthropic.com/v1/messages",
+      "temperature": 1.0,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "ANTHROPIC_API_KEY",
+      "context_window": 200000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Anthropic Claude Opus 4 (non-thinking).",
+      "recommended_for": [
+        "hard debugging",
+        "deep review"
+      ]
+    },
+    {
+      "id": "claude-opus-4-thinking",
+      "provider_model": "anthropic@claude-opus-4-thinking",
+      "provider": "anthropic",
+      "upstream_model": "claude-opus-4-20250514",
+      "thinking": true,
+      "enable_thinking": true,
+      "group": "thinking",
+      "base_url": "https://api.anthropic.com",
+      "chat_url": "https://api.anthropic.com/v1/messages",
+      "temperature": 1.0,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "ANTHROPIC_API_KEY",
+      "context_window": 200000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Anthropic Claude Opus 4 with extended thinking.",
+      "recommended_for": [
+        "architecture",
+        "deep review"
+      ]
+    },
+    {
+      "id": "claude-haiku-4",
+      "provider_model": "anthropic@claude-haiku-4",
+      "provider": "anthropic",
+      "upstream_model": "claude-haiku-4-20250514",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://api.anthropic.com",
+      "chat_url": "https://api.anthropic.com/v1/messages",
+      "temperature": 1.0,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "ANTHROPIC_API_KEY",
+      "context_window": 200000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 300,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Anthropic Claude Haiku 4 (fast, non-thinking).",
+      "recommended_for": [
+        "fast coding",
+        "quick edits"
+      ]
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "provider_model": "google@gemini-2.5-pro",
+      "provider": "google",
+      "upstream_model": "gemini-2.5-pro",
+      "thinking": true,
+      "enable_thinking": true,
+      "group": "thinking",
+      "base_url": "https://generativelanguage.googleapis.com",
+      "chat_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "temperature": 1.0,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "GOOGLE_API_KEY",
+      "context_window": 1000000,
+      "max_output_tokens": 65536,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Google Gemini 2.5 Pro via OpenAI-compatible endpoint.",
+      "recommended_for": [
+        "hard debugging",
+        "planning"
+      ]
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "provider_model": "google@gemini-2.5-flash",
+      "provider": "google",
+      "upstream_model": "gemini-2.5-flash",
+      "thinking": true,
+      "enable_thinking": true,
+      "group": "thinking",
+      "base_url": "https://generativelanguage.googleapis.com",
+      "chat_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "temperature": 1.0,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "GOOGLE_API_KEY",
+      "context_window": 1000000,
+      "max_output_tokens": 65536,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Google Gemini 2.5 Flash (fast).",
+      "recommended_for": [
+        "fast coding",
+        "daily edits"
+      ]
+    },
+    {
+      "id": "gemini-2.0-flash",
+      "provider_model": "google@gemini-2.0-flash",
+      "provider": "google",
+      "upstream_model": "gemini-2.0-flash",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://generativelanguage.googleapis.com",
+      "chat_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "temperature": 1.0,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "GOOGLE_API_KEY",
+      "context_window": 1000000,
+      "max_output_tokens": 8192,
+      "timeout_seconds": 300,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Google Gemini 2.0 Flash (legacy fast).",
+      "recommended_for": [
+        "fast coding"
+      ]
+    },
+    {
+      "id": "gemini-1.5-pro",
+      "provider_model": "google@gemini-1.5-pro",
+      "provider": "google",
+      "upstream_model": "gemini-1.5-pro",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://generativelanguage.googleapis.com",
+      "chat_url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "temperature": 1.0,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "GOOGLE_API_KEY",
+      "context_window": 2000000,
+      "max_output_tokens": 8192,
+      "timeout_seconds": 300,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Google Gemini 1.5 Pro (legacy).",
+      "recommended_for": [
+        "long-context work"
+      ]
+    },
+    {
+      "id": "grok-4",
+      "provider_model": "grok@grok-4",
+      "provider": "grok",
+      "upstream_model": "grok-4",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "GROK_API_KEY",
+      "context_window": 256000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "xAI Grok 4 (non-thinking).",
+      "recommended_for": [
+        "fast coding",
+        "daily edits"
+      ]
+    },
+    {
+      "id": "grok-4-thinking",
+      "provider_model": "grok@grok-4-thinking",
+      "provider": "grok",
+      "upstream_model": "grok-4",
+      "thinking": true,
+      "enable_thinking": true,
+      "group": "thinking",
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "GROK_API_KEY",
+      "context_window": 256000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "xAI Grok 4 with thinking enabled.",
+      "recommended_for": [
+        "debugging",
+        "planning"
+      ]
+    },
+    {
+      "id": "grok-3",
+      "provider_model": "grok@grok-3",
+      "provider": "grok",
+      "upstream_model": "grok-3",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "GROK_API_KEY",
+      "context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "xAI Grok 3 (non-thinking).",
+      "recommended_for": [
+        "fast coding"
+      ]
+    },
+    {
+      "id": "grok-3-thinking",
+      "provider_model": "grok@grok-3-thinking",
+      "provider": "grok",
+      "upstream_model": "grok-3",
+      "thinking": true,
+      "enable_thinking": true,
+      "group": "thinking",
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "GROK_API_KEY",
+      "context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "xAI Grok 3 with thinking enabled.",
+      "recommended_for": [
+        "debugging",
+        "planning"
+      ]
+    },
+    {
+      "id": "grok-3-mini",
+      "provider_model": "grok@grok-3-mini",
+      "provider": "grok",
+      "upstream_model": "grok-3-mini",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "GROK_API_KEY",
+      "context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "xAI Grok 3 mini (fast, non-thinking).",
+      "recommended_for": [
+        "fast coding",
+        "quick edits"
+      ]
+    },
+    {
+      "id": "grok-3-mini-thinking",
+      "provider_model": "grok@grok-3-mini-thinking",
+      "provider": "grok",
+      "upstream_model": "grok-3-mini",
+      "thinking": true,
+      "enable_thinking": true,
+      "group": "thinking",
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "GROK_API_KEY",
+      "context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "xAI Grok 3 mini with thinking enabled.",
+      "recommended_for": [
+        "debugging"
+      ]
+    },
+    {
+      "id": "grok-3-fast",
+      "provider_model": "grok@grok-3-fast",
+      "provider": "grok",
+      "upstream_model": "grok-3-fast",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "GROK_API_KEY",
+      "context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "xAI Grok 3 fast (non-thinking).",
+      "recommended_for": [
+        "fast coding",
+        "quick edits"
+      ]
+    },
+    {
+      "id": "grok-3-fast-thinking",
+      "provider_model": "grok@grok-3-fast-thinking",
+      "provider": "grok",
+      "upstream_model": "grok-3-fast",
+      "thinking": true,
+      "enable_thinking": true,
+      "group": "thinking",
+      "base_url": "https://api.x.ai",
+      "chat_url": "https://api.x.ai/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "GROK_API_KEY",
+      "context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "xAI Grok 3 fast with thinking enabled.",
+      "recommended_for": [
+        "debugging"
+      ]
+    },
+    {
+      "id": "venice-qwen-3-32b",
+      "provider_model": "venice@venice-qwen-3-32b",
+      "provider": "venice",
+      "upstream_model": "venice-qwen-3-32b",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://api.venice.ai",
+      "chat_url": "https://api.venice.ai/api/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "VENICE_API_KEY",
+      "context_window": 128000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Venice.ai Qwen 3 32B (uncensored-capable).",
+      "recommended_for": [
+        "uncensored",
+        "fast coding"
+      ]
+    },
+    {
+      "id": "venice-qwen-3-32b-thinking",
+      "provider_model": "venice@venice-qwen-3-32b-thinking",
+      "provider": "venice",
+      "upstream_model": "venice-qwen-3-32b",
+      "thinking": true,
+      "enable_thinking": true,
+      "group": "thinking",
+      "base_url": "https://api.venice.ai",
+      "chat_url": "https://api.venice.ai/api/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "VENICE_API_KEY",
+      "context_window": 128000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Venice.ai Qwen 3 32B with thinking enabled.",
+      "recommended_for": [
+        "debugging",
+        "planning"
+      ]
+    },
+    {
+      "id": "venice-qwen-3-14b",
+      "provider_model": "venice@venice-qwen-3-14b",
+      "provider": "venice",
+      "upstream_model": "venice-qwen-3-14b",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://api.venice.ai",
+      "chat_url": "https://api.venice.ai/api/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "VENICE_API_KEY",
+      "context_window": 128000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Venice.ai Qwen 3 14B (fast).",
+      "recommended_for": [
+        "fast coding",
+        "quick edits"
+      ]
+    },
+    {
+      "id": "venice-deepseek-r1-0528",
+      "provider_model": "venice@venice-deepseek-r1-0528",
+      "provider": "venice",
+      "upstream_model": "deepseek-r1-0528",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://api.venice.ai",
+      "chat_url": "https://api.venice.ai/api/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "VENICE_API_KEY",
+      "context_window": 128000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Venice.ai DeepSeek R1 0528 (reasoning).",
+      "recommended_for": [
+        "debugging",
+        "reasoning"
+      ]
+    },
+    {
+      "id": "venice-llama-3.3-70b",
+      "provider_model": "venice@venice-llama-3.3-70b",
+      "provider": "venice",
+      "upstream_model": "llama-3.3-70b",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://api.venice.ai",
+      "chat_url": "https://api.venice.ai/api/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "VENICE_API_KEY",
+      "context_window": 128000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Venice.ai Llama 3.3 70B.",
+      "recommended_for": [
+        "uncensored",
+        "daily edits"
+      ]
+    },
+    {
+      "id": "venice-qwen-2.5-coder-32b",
+      "provider_model": "venice@venice-qwen-2.5-coder-32b",
+      "provider": "venice",
+      "upstream_model": "qwen2.5-coder-32b",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://api.venice.ai",
+      "chat_url": "https://api.venice.ai/api/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": "VENICE_API_KEY",
+      "context_window": 128000,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Venice.ai Qwen 2.5 Coder 32B.",
+      "recommended_for": [
+        "fast coding",
+        "repo inspection"
+      ]
+    },
+    {
+      "id": "local",
+      "provider_model": "local@local",
+      "provider": "local",
+      "upstream_model": "local",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "http://127.0.0.1:1337",
+      "chat_url": "http://127.0.0.1:1337/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": null,
+      "context_window": 131072,
+      "max_output_tokens": 32768,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "via-open-responses-if-supported",
+      "notes": "Local OpenAI-compatible gateway. Model name is typed manually (e.g. llama-4-maverick).",
+      "recommended_for": [
+        "local",
+        "no-API-key"
       ]
     }
-  ]
+  ],
+  "providers": {
+    "deepseek": {
+      "label": "DeepSeek",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "models": []
+    },
+    "anthropic": {
+      "label": "Anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "models": [
+        "claude-sonnet-4",
+        "claude-sonnet-4-thinking",
+        "claude-opus-4",
+        "claude-opus-4-thinking",
+        "claude-haiku-4"
+      ]
+    },
+    "google": {
+      "label": "Google",
+      "api_key_env": "GOOGLE_API_KEY",
+      "models": [
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-pro"
+      ]
+    },
+    "grok": {
+      "label": "Grok",
+      "api_key_env": "GROK_API_KEY",
+      "models": [
+        "grok-4",
+        "grok-4-thinking",
+        "grok-3",
+        "grok-3-thinking",
+        "grok-3-mini",
+        "grok-3-mini-thinking",
+        "grok-3-fast",
+        "grok-3-fast-thinking"
+      ]
+    },
+    "venice": {
+      "label": "Venice",
+      "api_key_env": "VENICE_API_KEY",
+      "models": [
+        "venice-qwen-3-32b",
+        "venice-qwen-3-32b-thinking",
+        "venice-qwen-3-14b",
+        "venice-deepseek-r1-0528",
+        "venice-llama-3.3-70b",
+        "venice-qwen-2.5-coder-32b"
+      ]
+    },
+    "local": {
+      "label": "Local",
+      "api_key_env": null,
+      "models": [
+        "local"
+      ]
+    }
+  }
 }

@@ -1,3 +1,77 @@
+## v0.4.2 - 2026-08-18
+
+### Added
+- **`codeseeq config` interactive setup wizard.** A three-screen TUI that walks
+  you through provider selection (`anthropic`, `google`, `grok`, `deepseek`,
+  `venice`, `local`) → model selection → API key, then writes
+  `~/.config/codeseeq/config.json` so CodeSeeq is ready to use. API providers
+  get a live model list from the catalog; the local provider accepts any typed
+  model name (plus an optional gateway base URL). `codeseeq config status`
+  prints the current configuration without revealing keys.
+- **Multi-provider bridge.** The bridge now routes requests to DeepSeek
+  (OpenAI-compatible), Anthropic Claude (native Messages API, including
+  extended thinking and tool use), Google Gemini (OpenAI-compatible endpoint),
+  Grok/xAI, Venice.ai, and arbitrary local OpenAI-compatible gateways. Model
+  slugs use the `provider@model` form (`anthropic@claude-sonnet-4`,
+  `local@llama-4-maverick`); unknown `<provider>@<model>` names are accepted and
+  routed to the provider's base URL (overridable via `ANTHROPIC_BASE_URL`,
+  `GOOGLE_BASE_URL`, `GROK_BASE_URL`, `VENICE_BASE_URL`, `LOCAL_BASE_URL`).
+- **Provider-aware model catalogs.** `config/model-catalog.json` and
+  `config/codex-model-catalog.json` now include Anthropic, Google, Grok, Venice
+  and local models; the generated Codex catalog is merged with the configured
+  model so Codex accepts arbitrary locally-typed model names.
+- **`CODESEEQ_ALLOW_LATEST_RELEASE` is now real.** The one-line installer
+  honors it: `false` requires an explicit pinned `CODESEEQ_RELEASE_TAG`;
+  default remains auto-fetch of the latest release (docs updated to match).
+- **Installer/package exclude dev artifacts.** `oops.md`, `codeseeq-*-fix.md`,
+  `venice-image.md`, `package.json`, `package-lock.json` and `.qq*` are no
+  longer shipped in install snapshots or release zips.
+
+### Fixed
+- **Anthropic tool-loop translation.** Assistant `tool_calls` from previous
+  turns are now forwarded to the Messages API as `tool_use` content blocks, so
+  `tool_result` blocks can reference them. Previously the tool calls were
+  dropped and Anthropic rejected the multi-turn request (every second agentic
+  turn 400'd for Claude models).
+- **Anthropic extended-thinking constraints.** `temperature` / `top_p` are no
+  longer sent alongside `thinking` (Anthropic rejects them), `max_tokens` is
+  raised to at least the thinking budget, and a specific `tool_choice` is
+  downgraded to `"auto"` while thinking is enabled. `claude-*-thinking`
+  variants now produce valid requests.
+- **Per-model env overrides reach the bridge.** The wrapper now forwards
+  `CODESEEQ_<MODEL>_*` overrides (e.g. `CODESEEQ_CLAUDE_SONNET_4_BASE_URL`)
+  matching the bridge's `provider@model` slug key scheme; the old
+  provider-prefixed names (`CODESEEQ_ANTHROPIC_CLAUDE_SONNET_4_*`) were
+  forwarded but ignored.
+- **Provider base-URL overrides now affect the chat endpoint.** Setting
+  `ANTHROPIC_BASE_URL`, `GOOGLE_BASE_URL`, `GROK_BASE_URL`, `VENICE_BASE_URL`,
+  `LOCAL_BASE_URL` or a per-model `CODESEEQ_<MODEL>_BASE_URL` re-points the
+  actual chat request (Anthropic -> `/v1/messages`, others ->
+  `/chat/completions`), not just the displayed base URL.
+- **`CODESEEQ_PROVIDER` override is honored end-to-end.** The bridge routes to
+  the overridden provider (key env + base URL) and the wrapper/entrypoint
+  require the matching key, so the two can never disagree. `/health` reports
+  the effective provider of the configured model.
+- **Config wizard jq fallback lists DeepSeek models.** Without python3 the
+  numbered model menu now includes the DeepSeek models (the previous jq query
+  only used the `providers.<p>.models` list, which is empty for deepseek).
+
+### Changed
+- **Provider keys are per-provider.** `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`,
+  `GROK_API_KEY`, `VENICE_API_KEY` and `DEEPSEEK_API_KEY` are each validated
+  only when their provider is active; local gateways need no key.
+- **README/doc URLs point at `illdynamics/codeseeq`.** The one-liner, clone and
+  releases links in the README no longer 404 (the historical `codeseeq/codeseeq`
+  org did not exist).
+
+### Known limitations
+- **Anthropic extended thinking + tool use across turns.** Anthropic requires
+  the assistant `thinking` signature to be passed back on every subsequent turn
+  when extended thinking and tools are combined. The stateless bridge cannot
+  persist signatures, so multi-turn agentic runs with `claude-*-thinking`
+  variants can fail at the API; single-turn thinking works. Use the
+  non-thinking Claude variants for multi-turn tool-driven work.
+
 ## v0.4.1 - 2026-08-18
 
 ### Fixed
@@ -391,7 +465,8 @@
 
 ### Changed
 - **Launcher becomes dual-purpose.** `./codeseeq` now detects the `install`
-  subcommand automatically and delegates to `scripts/install-local.sh`. Running
+  subcommand automatically (install logic is inlined in the launcher;
+  `scripts/install-local.sh` is kept as a standalone equivalent). Running
   without subcommand starts the container with all configuration variables
   forwarded.
 - **`CODESEEQ_WORKDIR_HOST` now resolves symlinks.** Uses `pwd -P` instead of

@@ -1,6 +1,6 @@
 # Architecture
 
-Current version: `v0.4.1`
+Current version: `v0.4.2`
 
 ## Runtime Modes
 
@@ -22,7 +22,7 @@ host ./codeseeq
   -> Codex inside the container, cwd=/workspace
   -> local bridge inside the same container
   -> http://127.0.0.1:8080/v1/responses
-  -> DeepSeek API
+  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local)
 ```
 
 Default Codex settings: `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`.
@@ -34,7 +34,7 @@ host ./codeseeq -y/--yolo/--sandbox danger-full-access ...
   -> bridge starts as process or container sidecar
   -> local host Codex, cwd=current host checkout
   -> isolated CODEX_HOME=$PWD/.codeseeq
-  -> DeepSeek API through the bridge
+  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local) through the bridge
 ```
 
 Host runtime runs Codex directly on the host checkout without container sandboxing.
@@ -60,7 +60,7 @@ CodeSeeq controls how the translation bridge is started via `CODESEEQ_BRIDGE_MOD
 wrapper (./codeseeq)
   -> python3 bin/codeseeq-bridge.py   (host-native child process)
   -> Codex                             (host or container)
-  -> DeepSeek API
+  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local)
 ```
 
 Process mode is the recommended path for host runtime. It removes the bridge
@@ -170,7 +170,7 @@ Injection mechanism:
 codex-config-developer_instructions
 ```
 
-CodeSeeq writes the stored prompt into generated Codex config as `developer_instructions`. Codex then sends it as a developer instruction, while preserving the selected model's normal base instructions. The bridge maps Codex `developer` messages to DeepSeek-compatible `system` messages.
+CodeSeeq writes the stored prompt into generated Codex config as `developer_instructions`. Codex then sends it as a developer instruction, while preserving the selected model's normal base instructions. The bridge maps Codex `developer` messages to provider-compatible `system` messages.
 
 `doctor` and `config` report presence, path, bytes, lines, and mechanism without printing the full prompt. `system view/show/cat` are the explicit content-printing commands.
 
@@ -204,7 +204,7 @@ claim Codex-owned flags.
 - `-p PROFILE`, `--profile PROFILE`, and `--profile=PROFILE` are Codex profile flags.
 - `--model`, `--sandbox`, `--ask-for-approval`, `--cd`, `--help`, `--version`,
   and other Codex flags are preserved or translated only where CodeSeeq must
-  normalize DeepSeek model aliases or choose safe vs host runtime mode.
+  normalize model aliases (any provider) or choose safe vs host runtime mode.
 - `--prompt` is not a CodeSeeq direct-prompt flag.
 
 Direct non-interactive prompt execution uses the Codex CLI's `exec` command.
@@ -224,7 +224,8 @@ stdin prompts.
 
 3. **`bin/codeseeq-bridge.py`** — FastAPI bridge implementing `/v1/responses`
    (the OpenAI Responses API wire format). Converts Codex Responses requests
-   to DeepSeek Chat Completions. Normalizes model aliases, streaming events,
+   to the configured provider (OpenAI-compatible chat completions for DeepSeek/
+Google/Grok/Venice/local, Anthropic Messages for Claude). Normalizes model aliases, streaming events,
    function/tool calls, and diagnostic web/doc paths.
 
 4. **`@openai/codex`** — Installed in the image for safe mode. Used from the
@@ -233,7 +234,7 @@ stdin prompts.
 5. **`requirements-bridge.txt`** — Python dependencies for the bridge (FastAPI,
    Uvicorn, httpx). Install with: `python3 -m pip install -r requirements-bridge.txt`
 
-6. **`config/model-catalog.json`** — Human-facing DeepSeek/qwibus model
+6. **`config/model-catalog.json`** — Human-facing provider model catalog
    definitions read by the bridge via `CODESEEQ_MODEL_CATALOG_JSON` to supply
    endpoint/sampling defaults (`provider_model` schema). Per-model
    `CODESEEQ_<MODEL>_*` env vars (or their JSON-config equivalents) always
@@ -253,16 +254,18 @@ CodeSeeq does not fork Codex's interactive menu. Model, sandbox, approval, and
 settings toggles use upstream Codex behavior against the generated CodeSeeq
 config and isolated `CODEX_HOME`.
 
-`model_catalog_json` points Codex at the CodeSeeq DeepSeek catalog. If a Codex
-release still surfaces extra model choices, wrapper/bridge validation remains
-authoritative and non-DeepSeek models fail clearly.
+`model_catalog_json` points Codex at the CodeSeeq model catalog (the shipped
+`config/codex-model-catalog.json` merged with the currently configured model, so
+arbitrary `local@<model>` names and any `provider@model` choice are accepted). If
+a Codex release still surfaces extra model choices, wrapper/bridge validation
+remains authoritative and unsupported models fail clearly.
 
 ## Bridge API Format
 
 The CodeSeeq bridge implements the OpenAI Responses API wire format
 (`/v1/responses`). Codex is configured with `wire_api = "responses"` in its
 generated `config.toml`, which tells Codex to speak the Responses protocol.
-The bridge translates between that protocol and DeepSeek's Chat Completions API.
+The bridge translates between that protocol and the configured provider's API.
 
 The upstream `open-responses` npm package is **not** used or required.
 CodeSeeq's `Dockerfile` does not install it. The actual runtime bridge is

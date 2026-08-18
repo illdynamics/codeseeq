@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `v0.4.1`
+Current version: `v0.4.2`
 
 ## `./codeseeq` is not executable
 
@@ -231,11 +231,12 @@ CodeSeeq pins the Codex version instead of using `@openai/codex@latest`. If you 
 npm install -g @openai/codex@0.130.0
 ```
 
-The installer also requires `CODESEEQ_ALLOW_LATEST_RELEASE=true` to fetch the latest release.
+The installer fetches the latest release by default. Set `CODESEEQ_ALLOW_LATEST_RELEASE=false` (with a pinned `CODESEEQ_RELEASE_TAG`) if you want to pin an exact release.
 
 ## Privacy Settings Not In Config
 
-Run `./codeseeq config` to verify the generated config includes:
+Run `./codeseeq doctor` (and inspect the generated `config.toml` at your
+`CODEX_HOME`) to verify the generated config includes:
 
 ```toml
 web_search = "live"

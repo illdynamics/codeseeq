@@ -1,15 +1,17 @@
 # CodeSeeq
 
-**Production-grade Codex CLI drop-in launcher wired to DeepSeek V4 models.**
+**Production-grade Codex CLI drop-in launcher wired to multiple LLM providers.**
 
 Run `codeseeq` instead of `codex`. Same flags, same interactive TUI, same tool calls.
-But your prompts go to DeepSeek V4 via your `DEEPSEEK_API_KEY` — no OpenAI account or API key needed.
+Your prompts go to the provider you choose — DeepSeek, Anthropic (Claude), Google
+(Gemini), Grok (xAI), Venice.ai, or a local OpenAI-compatible gateway — no OpenAI
+account or API key needed. Configure everything interactively with `codeseeq config`.
 
 <p align="center">
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.4.1` (from [`VERSION`](./VERSION)).
+Current version: `v0.4.2` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -17,7 +19,10 @@ Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
 ### Prerequisites
 
-- **DEEPSEEK_API_KEY** — set in your shell for model requests.
+- **An API key for your chosen provider** — DeepSeek (`DEEPSEEK_API_KEY`), Anthropic
+  (`ANTHROPIC_API_KEY`), Google (`GOOGLE_API_KEY`), Grok (`GROK_API_KEY`), or Venice
+  (`VENICE_API_KEY`). Set it interactively with `codeseeq config` (local gateways
+  need no key).
 - **BRAVE_API_KEY** (optional) — needed for web-search pings (`ping-web`).
 - **UNSTRUCTURED_API_KEY** (optional) — needed for doc-input pings (`ping-docs`).
 - **VENICE_API_KEY** (optional) — automatically enables Venice.ai image generation when set (no `CODESEEQ_IMAGE_BACKEND` needed).
@@ -29,7 +34,7 @@ Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 **Option A — curl one-liner (recommended)**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/codeseeq/codeseeq/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
 ```
 
 Downloads the latest release zip, extracts it, and installs the `codeseeq` command to `~/.config/codeseeq` with a launcher at `~/bin/codeseeq`.
@@ -37,14 +42,14 @@ Downloads the latest release zip, extracts it, and installs the `codeseeq` comma
 **Option B — git clone**
 
 ```bash
-git clone https://github.com/codeseeq/codeseeq.git
+git clone https://github.com/illdynamics/codeseeq.git
 cd codeseeq
 ./codeseeq install
 ```
 
 **Option C — download release zip manually**
 
-Download `codeseeq-$(cat VERSION).zip` from [GitHub Releases](https://github.com/codeseeq/codeseeq/releases), then:
+Download `codeseeq-$(cat VERSION).zip` from [GitHub Releases](https://github.com/illdynamics/codeseeq/releases), then:
 
 ```bash
 unzip codeseeq-$(cat VERSION).zip
@@ -60,7 +65,16 @@ Make sure `~/bin` is in your `PATH`:
 export PATH="$HOME/bin:$PATH"
 ```
 
-Set your API key and copy the env template:
+Set your provider, model, and API key interactively (recommended):
+
+```bash
+codeseeq config
+```
+
+`codeseeq config` walks you through three screens: provider (anthropic, google,
+grok, deepseek, venice, local) → model → API key, and writes
+`~/.config/codeseeq/config.json`. You can also copy the env template and set keys
+manually:
 
 ```bash
 cp .env.example .env
@@ -112,7 +126,7 @@ host ./codeseeq
   -> podman/docker run codeseeq:dev
   -> Codex inside the container
   -> local bridge inside the container
-  -> DeepSeek
+  -> your provider (deepseek / anthropic / google / grok / venice / local)
 ```
 
 Default Codex settings:
@@ -143,7 +157,7 @@ npm install -g @openai/codex
 
 ## How It Works
 
-CodeSeeq does not fork or patch Codex. It launches the upstream Codex CLI with an isolated generated `config.toml`. That config points Codex at a local CodeSeeq bridge implementing the OpenAI Responses API. The bridge translates requests to DeepSeek Chat Completions and converts responses back to the format Codex expects. The generated config includes privacy hardening settings: live web search, disabled analytics/feedback/OTel/history, and DeepSeek-only auth with no OpenAI key aliasing.
+CodeSeeq does not fork or patch Codex. It launches the upstream Codex CLI with an isolated generated `config.toml`. That config points Codex at a local CodeSeeq bridge implementing the OpenAI Responses API. The bridge translates requests to the configured provider — OpenAI-compatible chat completions for DeepSeek, Google, Grok, Venice.ai, and local gateways, and the native Messages API for Anthropic — then converts responses back to the format Codex expects. The generated config includes privacy hardening settings: live web search, disabled analytics/feedback/OTel/history, and provider-only auth with no OpenAI key aliasing.
 
 ## Bridge Modes
 
@@ -333,11 +347,15 @@ All supported variables are documented in [`.env.example`](./.env.example). Key 
 
 | Variable                      | Default              | Description                                      |
 |-------------------------------|----------------------|--------------------------------------------------|
-| `DEEPSEEK_API_KEY`            | — (required)         | Model API key                                    |
+| `DEEPSEEK_API_KEY`            | — (required for deepseek) | DeepSeek model API key                      |
+| `ANTHROPIC_API_KEY`           | — (required for anthropic) | Anthropic Claude API key                   |
+| `GOOGLE_API_KEY`              | — (required for google) | Google Gemini API key                         |
+| `GROK_API_KEY`                | — (required for grok)   | Grok / xAI API key                             |
 | `BRAVE_API_KEY`               | —                    | Web search API key (for `ping-web`)              |
 | `UNSTRUCTURED_API_KEY`        | —                    | Doc input API key (for `ping-docs`)              |
 | `RESPONSES_API_KEY`           | —                    | Responses API key (advanced)                     |
-| `CODESEEQ_MODEL`              | `deepseek-v4-flash`  | Default model                                    |
+| `CODESEEQ_MODEL`              | `deepseek-v4-flash`  | Default model (`provider@model`, e.g. `anthropic@claude-sonnet-4`, `local@my-model`) |
+| `CODESEEQ_PROVIDER`           | —                    | Optional explicit provider override (deepseek, anthropic, google, grok, venice, local) |
 | `CODESEEQ_THINKING`           | `false`              | Enable thinking mode                             |
 | `CODESEEQ_APPROVAL_POLICY`    | `on-request`         | Codex approval policy                            |
 | `CODESEEQ_SANDBOX_MODE`       | `workspace-write`    | Codex sandbox mode                               |
@@ -368,19 +386,24 @@ JSON config is read from `CODESEEQ_CONFIG_JSON` if set, otherwise
 
 ```json
 {
-  "CODESEEQ_MODEL": "qwibus-qwikk",
-  "CODESEEQ_BRIDGE_MODE": "process",
-  "CODESEEQ_QWIBUS_QWIKK_BASE_URL": "http://127.0.0.1:1337",
-  "CODESEEQ_QWIBUS_QWIKK_CHAT_URL": "http://127.0.0.1:1337/v1/chat/completions"
+  "CODESEEQ_MODEL": "anthropic@claude-sonnet-4",
+  "CODESEEQ_PROVIDER": "anthropic",
+  "ANTHROPIC_API_KEY": "sk-ant-...",
+  "CODESEEQ_BRIDGE_MODE": "process"
 }
 ```
 
+`codeseeq config` writes exactly this kind of file for you.
+
 The full list of supported keys corresponds one-to-one with the environment
 variables documented in [`.env.example`](./.env.example) (any `CODESEEQ_*`
-variable plus `DEEPSEEK_API_KEY`, `BRAVE_API_KEY`, `UNSTRUCTURED_API_KEY`,
-`RESPONSES_API_KEY`, `VENICE_API_KEY`, `CONTAINER`, `IMAGE`,
+variable plus the provider keys `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`,
+`GOOGLE_API_KEY`, `GROK_API_KEY`, `VENICE_API_KEY`, `BRAVE_API_KEY`,
+`UNSTRUCTURED_API_KEY`, `RESPONSES_API_KEY`, `CONTAINER`, `IMAGE`,
 `OPENAI_BASE_URL`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_CHAT_URL`,
-`UNSTRUCTURED_API_URL`, and `QWIBUS_NO_API_KEY`).
+`ANTHROPIC_BASE_URL`, `GOOGLE_BASE_URL`, `GROK_BASE_URL`, `VENICE_BASE_URL`,
+`LOCAL_BASE_URL`, `UNSTRUCTURED_API_URL`, and `QWIBUS_NO_API_KEY`).
+
 
 ## Clean Packages
 
@@ -447,21 +470,31 @@ python3 bin/codeseeq-venice-image.py --prompt "a beautiful sunset" --out sunset.
 
 ## Supported Models
 
-- `deepseek-v4-flash` (default)
-- `deepseek-v4-flash-thinking`
-- `deepseek-v4-pro`
-- `deepseek-v4-pro-thinking`
-- `qwibus-qwikk` (local gateway, no API key)
-- `qwibus-qmplx` (local gateway, no API key)
+CodeSeeq supports these providers (choose them with `codeseeq config`):
 
-Provider-form aliases:
+| Provider | Key env var | Example models |
+|---|---|---|
+| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-v4-flash` (default), `deepseek-v4-pro` (+ `-thinking` variants) |
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4`, `claude-opus-4`, `claude-haiku-4` (+ thinking variants) |
+| Google | `GOOGLE_API_KEY` | `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-1.5-pro` |
+| Grok (xAI) | `GROK_API_KEY` | `grok-4`, `grok-3`, `grok-3-mini`, `grok-3-fast` (+ thinking variants) |
+| Venice.ai | `VENICE_API_KEY` | `venice-qwen-3-32b`, `venice-qwen-3-14b`, `venice-deepseek-r1-0528`, `venice-llama-3.3-70b`, `venice-qwen-2.5-coder-32b` |
+| Local | none | any OpenAI-compatible model name typed manually, e.g. `local@llama-4-maverick` |
+| Qwibus | none | `qwibus-qwikk`, `qwibus-qmplx` (legacy local gateway) |
 
-- `deepseek@deepseek-v4-flash`
-- `deepseek@deepseek-v4-flash-thinking`
-- `deepseek@deepseek-v4-pro`
-- `deepseek@deepseek-v4-pro-thinking`
-- `qwibus@qwibus-qwikk`
-- `qwibus@qwibus-qmplx`
+Model slugs use the `provider@model` form (`deepseek@deepseek-v4-flash`,
+`anthropic@claude-sonnet-4`, `local@my-model`, ...). Legacy aliases remain:
+
+- `deepseek-v4-flash`, `deepseek-v4-flash-thinking`, `deepseek-v4-pro`,
+  `deepseek-v4-pro-thinking`
+- `qwibus-qwikk`, `qwibus-qmplx`, `qwibus@qwibus-qwikk`, `qwibus@qwibus-qmplx`
+
+> **Note on Anthropic `-thinking` variants:** extended thinking works for
+> single-turn requests. Anthropic requires the assistant `thinking` signature
+> to be passed back across turns when tools are used, which a stateless bridge
+> cannot persist — so multi-turn agentic runs with `claude-*-thinking` may fail
+> at the API. Use the non-thinking Claude variants for multi-turn tool-driven
+> work.
 
 ### Model catalogs
 
@@ -499,7 +532,7 @@ Then run:
 ./codeseeq ping-docs
 ```
 
-`doctor` reports system prompt status, storage path, byte count, line count, and injection mechanism without printing the prompt content. `config` also redacts the full prompt content.
+`doctor` reports system prompt status, storage path, byte count, line count, and injection mechanism without printing the prompt content. `codeseeq config` runs the interactive provider/model/key wizard; `codeseeq config status` prints the current stored LLM configuration without revealing keys.
 
 ## Interactive Menu Notes
 
@@ -511,7 +544,7 @@ Manual check:
 ./codeseeq
 ```
 
-Open the Codex menu or use slash commands such as `/model` where supported by your Codex version. Approval and sandbox toggles use upstream Codex behavior. The model menu is backed by CodeSeeq's DeepSeek catalog where Codex honors `model_catalog_json`; wrapper and bridge validation remain authoritative if upstream Codex shows additional models.
+Open the Codex menu or use slash commands such as `/model` where supported by your Codex version. Approval and sandbox toggles use upstream Codex behavior. The model menu is backed by the generated Codex catalog (`config/codex-model-catalog.json` merged with your configured model) where Codex honors `model_catalog_json`; wrapper and bridge validation remain authoritative if upstream Codex shows additional models.
 
 ## CI / Release Pipeline
 
@@ -562,7 +595,7 @@ CodeSeeq applies privacy hardening by default:
 
 | Setting | Value |
 |---------|-------|
-| **Model provider** | DeepSeek via local bridge |
+| **Model provider** | Your choice (deepseek / anthropic / google / grok / venice / local), always via the local bridge |
 | **Web search** | Live (not cached) |
 | **Analytics** | Disabled |
 | **Feedback** | Disabled |
@@ -574,7 +607,7 @@ CodeSeeq applies privacy hardening by default:
 | **Upstream OpenAI/Codex commands** | Blocked (`login`, `logout`, `cloud`, `app`, `app-server`, `plugin`, `update`, `features`) |
 | **OPENAI_API_KEY from DEEPSEEK_API_KEY** | Not auto-populated |
 | **Codex version** | Pinned (no auto-update) |
-| **Latest release auto-fetch** | Requires `CODESEEQ_ALLOW_LATEST_RELEASE=true` |
+| **Latest release auto-fetch** | Enabled by default; set `CODESEEQ_ALLOW_LATEST_RELEASE=false` to require a pinned `CODESEEQ_RELEASE_TAG` |
 
 ### Override upstream Codex commands
 
@@ -582,10 +615,15 @@ CodeSeeq applies privacy hardening by default:
 CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true ./codeseeq login
 ```
 
-### Override pinned release
+### Pin a specific release
+
+By default the one-liner auto-fetches the latest release (the `VERSION` file on `main`).
+To pin an exact release, set `CODESEEQ_RELEASE_TAG`. To forbid auto-fetching entirely,
+set `CODESEEQ_ALLOW_LATEST_RELEASE=false` (a pinned `CODESEEQ_RELEASE_TAG` is then required):
 
 ```bash
-CODESEEQ_ALLOW_LATEST_RELEASE=true curl -fsSL ... | bash
+CODESEEQ_RELEASE_TAG=v0.4.0 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.4.0 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
 ```
 
 ### Uncensored Mode

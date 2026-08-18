@@ -1,6 +1,6 @@
 # Security
 
-Current version: `v0.4.1`
+Current version: `v0.4.2`
 
 ## Runtime Secrets
 
@@ -181,7 +181,7 @@ persistence = "none"
 Additional hardening beyond telemetry:
 
 - **Upstream Codex commands blocked:** `login`, `logout`, `cloud`, `app`, `app-server`, `plugin`, `update`, `features`, and `remote-control` are blocked by default. Set `CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true` to override.
-- **Codex version pinned:** The Dockerfile and Makefile use a pinned `CODEX_NPM_VERSION` (default: `0.130.0`) instead of `latest`. Set `CODESEEQ_ALLOW_LATEST_RELEASE=true` to allow latest release fetching in the installer.
+- **Codex version pinned:** The Dockerfile and Makefile use a pinned `CODEX_NPM_VERSION` (default: `0.130.0`) instead of `latest`. The installer auto-fetches the latest release unless `CODESEEQ_ALLOW_LATEST_RELEASE=false` is set, in which case a pinned `CODESEEQ_RELEASE_TAG` is required.
 - **No OPENAI_API_KEY aliasing:** `DEEPSEEK_API_KEY` is used directly. It is not exported as `OPENAI_API_KEY`.
 - **Network diagnostics guard:** Use `CODESEEQ_ALLOW_NETWORK_DIAGNOSTICS=true` to enable diagnostics that contact third-party services outside the normal model/web-search path.
 

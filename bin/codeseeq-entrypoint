@@ -62,9 +62,12 @@ except Exception:
 if not isinstance(data, dict):
     sys.exit(0)
 allowlist = {
-    "DEEPSEEK_API_KEY", "BRAVE_API_KEY", "UNSTRUCTURED_API_KEY",
+    "DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+    "GROK_API_KEY", "BRAVE_API_KEY", "UNSTRUCTURED_API_KEY",
     "RESPONSES_API_KEY", "VENICE_API_KEY", "CONTAINER", "IMAGE",
     "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL", "DEEPSEEK_CHAT_URL",
+    "ANTHROPIC_BASE_URL", "GOOGLE_BASE_URL", "GROK_BASE_URL",
+    "VENICE_BASE_URL", "LOCAL_BASE_URL",
     "UNSTRUCTURED_API_URL", "QWIBUS_NO_API_KEY",
 }
 for k, v in data.items():
@@ -82,7 +85,7 @@ for k, v in data.items():
 INNERCFG
 )"
   elif command -v jq >/dev/null 2>&1; then
-    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
+    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GROK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","ANTHROPIC_BASE_URL","GOOGLE_BASE_URL","GROK_BASE_URL","VENICE_BASE_URL","LOCAL_BASE_URL","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
   else
     warn "CODESEEQ_CONFIG_JSON/JSON config configured but neither python3 nor jq is available; skipping JSON config"
     return 0
@@ -337,7 +340,29 @@ normalize_model() {
       alias_thinking="true"
       ;;
     *)
-      die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx"
+      # New provider slugs: <provider>@<model> (anthropic, google, grok,
+      # venice, local). A trailing "-thinking" enables thinking; local
+      # accepts any manually-typed model name.
+      local owner upstream
+      if [[ "$model" == *@* ]]; then
+        owner="${model%%@*}"
+        upstream="${model#*@}"
+        case "$owner" in
+          anthropic|google|grok|venice|deepseek|local)
+            [[ -n "$upstream" ]] || die "unsupported model: ${model} (empty model name after @)"
+            PROVIDER_MODEL="$model"
+            alias_thinking="false"
+            case "$upstream" in
+              *-thinking|thinking) alias_thinking="true" ;;
+            esac
+            ;;
+          *)
+            die "unsupported provider: ${owner} in model ${model}. supported providers: deepseek, qwibus, anthropic, google, grok, venice, local"
+            ;;
+        esac
+      else
+        die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx, or <provider>@<model> with provider in anthropic, google, grok, venice, local"
+      fi
       ;;
   esac
 
@@ -403,13 +428,105 @@ start_bridge() {
   return 1
 }
 
+# Merge the static Codex model catalog with the currently configured model so
+# Codex accepts any model selected via `codeseeq config` (including arbitrary
+# local@<model> names) inside the container, matching host-mode behavior.
+# Writes to <output>; falls back to the static catalog when no merge is needed.
+write_merged_codex_catalog() {
+  local output="$1"
+  local static="${CODESEEQ_HOST_MODEL_CATALOG_JSON:-/etc/codeseeq/codex-model-catalog.json}"
+  local model="${CODESEEQ_MODEL:-${PROVIDER_MODEL:-}}"
+  if [[ -z "$model" || ! -f "$static" ]]; then
+    cp "$static" "$output" 2>/dev/null || return 0
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    cp "$static" "$output" 2>/dev/null || true
+    return 0
+  fi
+  mkdir -p "$(dirname "$output")"
+  CODESEEQ_CATALOG_STATIC="$static" \
+  CODESEEQ_CATALOG_OUTPUT="$output" \
+  CODESEEQ_CATALOG_MODEL="$model" \
+  python3 - <<'PYCAT'
+import json, os
+
+static = os.environ["CODESEEQ_CATALOG_STATIC"]
+output = os.environ["CODESEEQ_CATALOG_OUTPUT"]
+model = os.environ.get("CODESEEQ_CATALOG_MODEL", "")
+
+def _main() -> None:
+    try:
+        with open(static, "r", encoding="utf-8") as fh:
+            cat = json.load(fh)
+    except Exception:
+        return
+    if not isinstance(cat, dict):
+        cat = {"models": []}
+    models = cat.get("models")
+    if not isinstance(models, list):
+        models = []
+        cat["models"] = models
+    slugs = {m.get("slug") for m in models if isinstance(m, dict)}
+    if model and model not in slugs:
+        thinking = model.rstrip("/").endswith("-thinking") or model.endswith("thinking")
+        models.append({
+            "slug": model,
+            "display_name": model,
+            "description": "User-configured model (via codeseeq config)",
+            "base_instructions": "",
+            "enable_thinking": thinking,
+            "context_window": 131072,
+            "max_context_window": 131072,
+            "max_output_tokens": 32768,
+            "timeout_seconds": 600,
+            "supports_reasoning_summaries": thinking,
+            "supported_in_api": True,
+            "visibility": "list",
+            "shell_type": "default",
+            "web_search_tool_type": "text",
+            "truncation_policy": {"mode": "tokens", "limit": 131072},
+            "supports_parallel_tool_calls": True,
+            "priority": 99,
+            "supported_reasoning_levels": [
+                {"level": "high", "effort": "high", "description": "High reasoning effort"},
+                {"level": "max", "effort": "high", "description": "Maximum reasoning effort"},
+            ] if thinking else [],
+            "input_modalities": ["text"],
+            "supports_search_tool": True,
+            "support_verbosity": False,
+            "experimental_supported_tools": [],
+        })
+    try:
+        with open(output, "w", encoding="utf-8") as fh:
+            json.dump(cat, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+    except Exception:
+        pass
+
+_main()
+PYCAT
+}
+
 write_config() {
   export CODEX_HOME="$CODESEEQ_CODEX_HOME"
+  write_merged_codex_catalog "${CODESEEQ_CODEX_HOME}/codex-model-catalog.json"
 
+  local provider_env provider_label
+  provider_env="$(provider_key_env_for_model)"
+  provider_env="${provider_env:-DEEPSEEK_API_KEY}"
+  case "${PROVIDER_MODEL:-}" in
+    anthropic@*) provider_label="CodeSeeq Anthropic Bridge" ;;
+    google@*) provider_label="CodeSeeq Google Bridge" ;;
+    grok@*) provider_label="CodeSeeq Grok Bridge" ;;
+    venice@*) provider_label="CodeSeeq Venice Bridge" ;;
+    qwibus@*|local@*) provider_label="CodeSeeq Local Bridge" ;;
+    *) provider_label="CodeSeeq DeepSeek Bridge" ;;
+  esac
   cat > "$CODESEEQ_CODEX_HOME/config.toml" <<EOF
 model = "${PROVIDER_MODEL}"
 model_provider = "codeseeq"
-model_catalog_json = "/etc/codeseeq/codex-model-catalog.json"
+model_catalog_json = "${CODESEEQ_CODEX_HOME}/codex-model-catalog.json"
 
 approval_policy = "${CODESEEQ_APPROVAL_POLICY}"
 sandbox_mode = "${CODESEEQ_SANDBOX_MODE}"
@@ -448,9 +565,9 @@ EOF
   cat >> "$CODESEEQ_CODEX_HOME/config.toml" <<EOF
 
 [model_providers.codeseeq]
-name = "CodeSeeq DeepSeek Bridge"
+name = "${provider_label}"
 base_url = "${CODESEEQ_OPENRESPONSES_URL}"
-env_key = "DEEPSEEK_API_KEY"
+env_key = "${provider_env}"
 wire_api = "responses"
 requires_openai_auth = false
 request_max_retries = ${CODESEEQ_REQUEST_MAX_RETRIES}
@@ -474,18 +591,47 @@ print_config() {
   sed 's/^developer_instructions = .*/developer_instructions = "<redacted: CodeSeeq system prompt>"/' "$CODESEEQ_CODEX_HOME/config.toml"
 }
 
+provider_key_env_for_model() {
+  # Map a canonical provider@model slug to the API-key environment variable.
+  # Keyless providers (qwibus / local gateways) print nothing. A set
+  # CODESEEQ_PROVIDER overrides slug-derived routing (mirroring the bridge),
+  # so the key required here always matches the provider the bridge will use.
+  local model="${1:-${PROVIDER_MODEL:-${CODESEEQ_MODEL:-}}}"
+  case "${CODESEEQ_PROVIDER:-}" in
+    anthropic) printf 'ANTHROPIC_API_KEY'; return 0 ;;
+    google) printf 'GOOGLE_API_KEY'; return 0 ;;
+    grok) printf 'GROK_API_KEY'; return 0 ;;
+    venice) printf 'VENICE_API_KEY'; return 0 ;;
+    deepseek) printf 'DEEPSEEK_API_KEY'; return 0 ;;
+    local|qwibus) printf ''; return 0 ;;
+  esac
+  case "$model" in
+    qwibus@*|local@*) printf '' ;;
+    anthropic@*) printf 'ANTHROPIC_API_KEY' ;;
+    google@*) printf 'GOOGLE_API_KEY' ;;
+    grok@*) printf 'GROK_API_KEY' ;;
+    venice@*) printf 'VENICE_API_KEY' ;;
+    *) printf 'DEEPSEEK_API_KEY' ;;
+  esac
+}
+
+
+
 require_deepseek_key() {
-  # qwibus models run on a local gateway and require no API key.
-  if [[ "${PROVIDER_MODEL:-}" == qwibus@* ]]; then
+  # qwibus/local models run on local gateways and require no API key.
+  local env_name
+  env_name="$(provider_key_env_for_model)"
+  if [[ -z "$env_name" ]]; then
     return 0
   fi
-  [[ -n "${DEEPSEEK_API_KEY:-}" ]] || die "DEEPSEEK_API_KEY is required"
-  # CodeSeeq privacy hardening: OPENAI_API_KEY is no longer auto-populated from DEEPSEEK_API_KEY
-  # (removed per privacy hardening)
+  [[ -n "${!env_name:-}" ]] || die "${env_name} is required. Set it in your environment or run: codeseeq config"
+  # CodeSeeq privacy hardening: OPENAI_API_KEY is no longer auto-populated from provider keys
 }
 
 ping_deepseek() {
   require_deepseek_key
+  PROVIDER_PING_KEY_ENV="$(provider_key_env_for_model)"
+  PROVIDER_PING_KEY="${!PROVIDER_PING_KEY_ENV:-}"
   start_bridge || die "failed to start bridge"
 
   local payload
@@ -497,7 +643,7 @@ EOF
   local out
   out="$(curl --silent --show-error --fail \
     -H 'Content-Type: application/json' \
-    -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+    -H "Authorization: Bearer ${PROVIDER_PING_KEY:-${DEEPSEEK_API_KEY:-missing}}" \
     -d "$payload" \
     "${CODESEEQ_OPENRESPONSES_URL}/responses")"
 
@@ -511,6 +657,8 @@ EOF
 
 ping_stream() {
   require_deepseek_key
+  PROVIDER_PING_KEY_ENV="$(provider_key_env_for_model)"
+  PROVIDER_PING_KEY="${!PROVIDER_PING_KEY_ENV:-}"
   start_bridge || die "failed to start bridge"
 
   local payload
@@ -523,7 +671,7 @@ EOF
   out="$(curl --silent --show-error --fail \
     -N \
     -H 'Content-Type: application/json' \
-    -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+    -H "Authorization: Bearer ${PROVIDER_PING_KEY:-${DEEPSEEK_API_KEY:-missing}}" \
     -d "$payload" \
     "${CODESEEQ_OPENRESPONSES_URL}/responses")"
 
@@ -573,6 +721,8 @@ INNEREOF
 
 ping_web() {
   require_deepseek_key
+  PROVIDER_PING_KEY_ENV="$(provider_key_env_for_model)"
+  PROVIDER_PING_KEY="${!PROVIDER_PING_KEY_ENV:-}"
   [[ -n "${BRAVE_API_KEY:-}" ]] || die "BRAVE_API_KEY is required for ping-web"
   start_bridge || die "failed to start bridge"
 
@@ -586,7 +736,7 @@ EOF
   for attempt in 1 2 3; do
     if out="$(curl --silent --show-error --fail \
       -H 'Content-Type: application/json' \
-      -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+      -H "Authorization: Bearer ${PROVIDER_PING_KEY:-${DEEPSEEK_API_KEY:-missing}}" \
       -d "$payload" \
       "${CODESEEQ_OPENRESPONSES_URL}/responses")"; then
       break
@@ -607,6 +757,8 @@ EOF
 
 ping_docs() {
   require_deepseek_key
+  PROVIDER_PING_KEY_ENV="$(provider_key_env_for_model)"
+  PROVIDER_PING_KEY="${!PROVIDER_PING_KEY_ENV:-}"
   [[ -n "${UNSTRUCTURED_API_KEY:-}" ]] || die "UNSTRUCTURED_API_KEY is required for ping-docs"
   start_bridge || die "failed to start bridge"
 
@@ -620,7 +772,7 @@ EOF
   for attempt in 1 2 3; do
     if out="$(curl --silent --show-error --fail \
       -H 'Content-Type: application/json' \
-      -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+      -H "Authorization: Bearer ${PROVIDER_PING_KEY:-${DEEPSEEK_API_KEY:-missing}}" \
       -d "$payload" \
       "${CODESEEQ_OPENRESPONSES_URL}/responses")"; then
       break
@@ -643,6 +795,25 @@ doctor() {
   write_config
 
   local deepseek_state brave_state unstructured_state stream_state health_state deepseek_provider_state
+  local provider_name provider_env provider_state
+  provider_name="$(provider_key_env_for_model)"
+  if [[ -z "$provider_name" ]]; then
+    provider_label="local"
+    provider_state="keyless"
+  else
+    case "${PROVIDER_MODEL:-}" in
+      anthropic@*) provider_label="anthropic" ;;
+      google@*) provider_label="google" ;;
+      grok@*) provider_label="grok" ;;
+      venice@*) provider_label="venice" ;;
+      *) provider_label="deepseek" ;;
+    esac
+    if [[ -n "${!provider_name:-}" ]]; then
+      provider_state="configured"
+    else
+      provider_state="not-configured"
+    fi
+  fi
   deepseek_state="$(key_state "${DEEPSEEK_API_KEY:-}")"
   brave_state="$(key_state "${BRAVE_API_KEY:-}")"
   unstructured_state="$(key_state "${UNSTRUCTURED_API_KEY:-}")"
@@ -660,11 +831,6 @@ doctor() {
   fi
 
   stream_state="supported"
-  if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
-    deepseek_provider_state="configured"
-  else
-    deepseek_provider_state="not-configured"
-  fi
 
   if start_bridge && bridge_health; then
     health_state="up"
@@ -698,7 +864,8 @@ Venice API key: $(key_state "${VENICE_API_KEY:-}")
 Bridge URL: ${CODESEEQ_OPENRESPONSES_URL}
 Bridge startup command: ${CODESEEQ_OPENRESPONSES_CMD}
 Bridge health: ${health_state}
-DeepSeek provider: ${deepseek_provider_state}
+Provider: ${provider_label}
+Provider API key (${provider_name:-none}): ${provider_state}
 DeepSeek provider key: ${deepseek_state}
 Brave web_search: ${brave_state}
 Unstructured doc parsing: ${unstructured_state}
@@ -992,7 +1159,7 @@ open_shell() {
 
 print_help() {
   cat <<'EOF'
-CodeSeeq - Codex CLI wired to DeepSeek through the CodeSeeq bridge
+CodeSeeq - Codex CLI wired to multiple LLM providers through the CodeSeeq bridge
 
 Usage:
   codeseeq [codex-options] [prompt]

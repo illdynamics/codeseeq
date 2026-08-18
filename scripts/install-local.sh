@@ -54,6 +54,12 @@ if command -v rsync >/dev/null 2>&1; then
     --exclude '__pycache__/' \
     --exclude '.pytest_cache/' \
     --exclude 'node_modules/' \
+    --exclude '.qq*' \
+    --exclude 'oops.md' \
+    --exclude 'codeseeq-*-fix.md' \
+    --exclude 'venice-image.md' \
+    --exclude 'package.json' \
+    --exclude 'package-lock.json' \
     "$SOURCE_ROOT/" "$CODESEEQ_INSTALL_DIR/"
 else
   tar -C "$SOURCE_ROOT" \
@@ -67,6 +73,12 @@ else
     --exclude '__pycache__' \
     --exclude '.pytest_cache' \
     --exclude 'node_modules' \
+    --exclude '.qq*' \
+    --exclude 'oops.md' \
+    --exclude 'codeseeq-*-fix.md' \
+    --exclude 'venice-image.md' \
+    --exclude 'package.json' \
+    --exclude 'package-lock.json' \
     -cf - . | tar -C "$CODESEEQ_INSTALL_DIR" -xf -
 fi
 
