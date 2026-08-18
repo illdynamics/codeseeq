@@ -80,6 +80,76 @@ if kill -0 "${BRIDGE_PID}" 2>/dev/null; then
   fail "bridge pid ${BRIDGE_PID} still alive after kill"
 fi
 
-# --- 8) Remove log, pass ----------------------------------------------------
+# --- 8) Parent-death watchdog: owner dies, bridge must self-exit --------
+log "testing parent-death watchdog (orphan leak regression)..."
+
+WATCH_LOG="$(mktemp /tmp/bridge-smoke-watch.XXXXXX.log)"
+WATCH_PORT="$(python3 -c "
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(('127.0.0.1', 0))
+print(s.getsockname()[1])
+s.close()
+")"
+
+# A short-lived parent (python) spawns the bridge, waits for it to be
+# healthy, then exits -- orphaning the bridge exactly as a SIGKILLed
+# codeseeq owner would. The bridge must detect the orphan and exit on
+# its own, releasing the port -- the scenario that used to leak bridges
+# until "no free bridge port found in range ...".
+WATCH_PID="$(BRIDGE_PY="${bridge_py}" WATCH_PORT="${WATCH_PORT}" WATCH_LOG="${WATCH_LOG}" python3 -c "
+import os, subprocess, sys, time, urllib.request
+port = int(os.environ['WATCH_PORT'])
+bridge = subprocess.Popen(
+    [sys.executable, os.environ['BRIDGE_PY']],
+    env={**os.environ,
+         'CODESEEQ_BRIDGE_PORT': str(port),
+         'CODESEEQ_BRIDGE_HOST': '127.0.0.1',
+         'CODESEEQ_BRIDGE_LOG': os.environ['WATCH_LOG']},
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+)
+ok = False
+for _ in range(40):
+    try:
+        urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=0.5)
+        ok = True
+        break
+    except Exception:
+        time.sleep(0.25)
+print(bridge.pid, flush=True)
+if not ok:
+    bridge.kill()
+    raise SystemExit(1)
+sys.exit(0)  # owner gone; bridge must self-exit as an orphan
+" 2>"${WATCH_LOG}")" || WATCH_PID=""
+
+if [[ -z "${WATCH_PID}" ]]; then
+  rm -f "${WATCH_LOG}"
+  fail "watchdog test: owner never reached healthy bridge"
+fi
+log "  watchdog owner pid=${WATCH_PID}"
+
+self_exited=0
+for i in $(seq 1 10); do
+  if ! kill -0 "${WATCH_PID}" 2>/dev/null; then
+    self_exited=1
+    break
+  fi
+  sleep 0.3
+done
+if [[ "${self_exited}" -ne 1 ]]; then
+  kill -9 "${WATCH_PID}" 2>/dev/null || true
+  rm -f "${WATCH_LOG}"
+  fail "watchdog test: bridge pid ${WATCH_PID} still alive after owner died (port leak)"
+fi
+
+if curl -sf --max-time 1 "http://127.0.0.1:${WATCH_PORT}/health" >/dev/null 2>&1; then
+  rm -f "${WATCH_LOG}"
+  fail "watchdog test: port ${WATCH_PORT} still serving after orphan exit"
+fi
+rm -f "${WATCH_LOG}"
+log "  watchdog OK (bridge self-exited, port released)"
+
+# --- 9) Remove log, pass ----------------------------------------------------
 rm -f "${LOG_FILE}"
 pass

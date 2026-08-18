@@ -50,9 +50,12 @@ import html
 import json
 import os
 import re
+import signal
 import socket
 import sys
+import threading
 import tempfile
+import time
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
@@ -3014,9 +3017,49 @@ def _bind_socket(host: str, port: int) -> socket.socket:
     return sock
 
 
+def _install_parent_watchdog() -> None:
+    """Exit when the launching process dies so the bridge is never orphaned.
+
+    codeseeq launches the bridge as a background child and relies on a bash
+    EXIT trap to stop it. When the parent is killed hard (SIGKILL or a
+    process-group teardown, e.g. an agent-call timeout in a pipeline), that
+    trap cannot run: the bridge would be reparented to PID 1 and hold its
+    port forever, eventually exhausting the auto-select range with
+    "no free bridge port found in range ...".  This watchdog makes the
+    bridge close its port and exit as soon as the parent goes away, so a
+    killed parent can never leak a bridge.
+    """
+    parent = os.getppid()
+    if parent <= 1:
+        return  # already orphaned (or PID 1 in a container): nothing to watch
+
+    def _watch_parent() -> None:
+        try:
+            while True:
+                # SIGHUP(1)/SIGTERM(15) => parent gone. Python re-raises
+                # interrupted system calls, so keep polling if it was just
+                # a transient signal. Reparenting to PID 1 (or 0) is
+                # definitive and cannot recover.
+                if os.getppid() != parent or parent == 1:
+                    break
+                time.sleep(0.5)
+        except BaseException:  # pragma: no cover - best effort
+            pass
+        finally:
+            log("parent process exited; bridge shutting down")
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+            except OSError:  # pragma: no cover - already gone
+                pass
+
+    threading.Thread(target=_watch_parent, name="parent-watchdog", daemon=True).start()
+
+
 def main():
     import uvicorn
     from uvicorn import Config, Server
+
+    _install_parent_watchdog()
 
     host = os.environ.get(
         "CODESEEQ_BRIDGE_HOST",

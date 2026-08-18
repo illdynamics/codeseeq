@@ -975,6 +975,51 @@ bridge_check_deps_process() {
   return 0
 }
 
+bridge_reap_orphans() {
+  # Reap bridge processes left over from a previous run of this bridge home
+  # (same CODESEEQ_BRIDGE_LOG) whose owning codeseeq is gone. Normally the
+  # bridge exits via the bash EXIT trap; but when the owner is SIGKILLed
+  # (agent-call timeouts, pipeline teardown) the trap cannot run and the
+  # bridge would otherwise hold its port forever until the auto-select range
+  # is exhausted ("no free bridge port found in range ...").
+  #
+  # Only processes that BOTH (a) write to this bridge's log file and
+  # (b) are orphaned (parent already dead, reparented to PID 1) are reaped,
+  # so a healthy bridge a concurrent invocation owns, or one a live
+  # CODESEEQ_BRIDGE_REUSE=1 user wants to keep, is never touched.
+  local log_dev_inode
+  log_dev_inode="$(stat -Lc '%d:%i' "$CODESEEQ_BRIDGE_LOG" 2>/dev/null || stat -Lf '%d:%i' "$CODESEEQ_BRIDGE_LOG" 2>/dev/null || true)"
+  [[ -n "$log_dev_inode" ]] || return 0
+
+  local stale fd_inode ppid
+  while IFS= read -r stale; do
+    [[ -n "$stale" ]] || continue
+    case "$stale" in
+      /proc/*) stale="${stale#/proc/}"; stale="${stale%%/*}" ;;
+    esac
+    [[ "$stale" =~ ^[0-9]+$ ]] || continue
+    [[ "$stale" == "$$" || "$stale" == "$BASHPID" || "$stale" == "$PPID" ]] && continue
+    fd_inode="$(stat -Lc '%d:%i' "/proc/${stale}/fd/1" 2>/dev/null || stat -Lf '%d:%i' "/proc/${stale}/fd/1" 2>/dev/null || true)"
+    [[ "$fd_inode" == "$log_dev_inode" ]] || continue
+    ppid="$(awk '/^PPid:/{print $2}' "/proc/${stale}/status" 2>/dev/null || true)"
+    [[ "$ppid" == "1" || "$ppid" == "0" ]] || continue
+    if kill -0 "$stale" >/dev/null 2>&1; then
+      warn "reaping orphaned bridge process (pid=${stale}) from ${CODESEEQ_BRIDGE_LOG}"
+      kill "$stale" 2>/dev/null || true
+      local waited=0
+      while (( waited < 5 )) && kill -0 "$stale" >/dev/null 2>&1; do
+        sleep 1
+        waited=$((waited + 1))
+      done
+      kill -9 "$stale" 2>/dev/null || true
+    fi
+  done < <(pgrep -f "codeseeq-bridge.py" 2>/dev/null || true)
+
+  # Remove stale discovery files left behind by dead owners.
+  rm -f "${CODESEEQ_BRIDGE_PID_FILE}" 2>/dev/null || true
+  rm -f "${CODESEEQ_BRIDGE_PORT_FILE:-${CODESEEQ_BRIDGE_PID_FILE}.port}" 2>/dev/null || true
+}
+
 bridge_resolve_log_pid_paths() {
   if [[ -z "${CODESEEQ_BRIDGE_LOG:-}" ]]; then
     CODESEEQ_BRIDGE_LOG="${HOST_CODEX_HOME}/log/bridge.log"
@@ -983,6 +1028,7 @@ bridge_resolve_log_pid_paths() {
     CODESEEQ_BRIDGE_PID_FILE="${HOST_CODEX_HOME}/run/bridge.pid"
   fi
   mkdir -p "$(dirname "$CODESEEQ_BRIDGE_LOG")" "$(dirname "$CODESEEQ_BRIDGE_PID_FILE")" 2>/dev/null || true
+  bridge_reap_orphans
 }
 
 bridge_start_process() {

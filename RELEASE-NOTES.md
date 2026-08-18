@@ -1,3 +1,23 @@
+## v0.4.1 - 2026-08-18
+
+### Fixed
+- **Bridge processes can no longer be orphaned (port leaks).** Each
+  `codeseeq run` starts its own bridge process and relies on a bash EXIT
+  trap to stop it. When the owning process was killed hard (SIGKILL /
+  process-group teardown, e.g. an agent-call timeout in a pipeline such as
+  QonQrete), that trap could not run and the bridge was reparented to PID 1,
+  holding its port forever. After enough runs the auto-select range
+  (default 8080-8179) filled up and every new run failed with
+  "no free bridge port found in range 8080-8179". The bridge now runs a
+  parent-death watchdog thread that shuts it down and releases the port the
+  moment its parent process disappears — even under SIGKILL.
+- **Stale bridges are reaped on startup.** Before starting a new process
+  bridge, CodeSeeq scans for `codeseeq-bridge.py` processes that (a) write
+  to the same bridge log and (b) are orphaned (parent already gone), and
+  terminates them, so ports leaked by older versions or by hard-killed runs
+  are reclaimed automatically. Bridges whose owner is still alive (including
+  `CODESEEQ_BRIDGE_REUSE=1` setups) are never touched.
+
 ## v0.3.9 - 2026-08-17
 
 ### Fixed
