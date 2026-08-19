@@ -1,4 +1,4 @@
-## v0.4.2 - 2026-08-18
+## v0.4.2 - 2026-08-19
 
 ### Added
 - **`codeseeq config` interactive setup wizard.** A three-screen TUI that walks
@@ -117,6 +117,15 @@
   now removes `codeseeq-bridge-<port>-<owner-pid>` containers whose owner PID
   is gone (never touching live owners, and disabled entirely by
   `CODESEEQ_KEEP_BRIDGE_CONTAINER=true`).
+- **macOS bash 3.2 compatibility for bridge reaping.** The startup reaper that
+  removes orphaned `codeseeq-bridge-<port>-<owner-pid>` containers referenced
+  `$BASHPID`, which the bash 3.2 shipped with macOS does not define; under `set
+  -u` the wrapper aborted with "BASHPID: unbound variable" before any reaping
+  could happen (and the same crash risk existed in the process-bridge reaper).
+  The reaper now derives the current shell PID portably — `BASHPID` when
+  available, otherwise the PPID of a child `sh` (verified equivalent to
+  `BASHPID` on bash 4+) — so orphaned-bridge cleanup works on macOS and other
+  older-bash systems.
 
 ### Changed
 - **Provider keys are per-provider.** `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`,

@@ -205,7 +205,10 @@ since v0.4.2 it also reaps orphaned standalone bridge containers
 (`codeseeq-bridge-<port>-<owner-pid>` whose owner PID is gone) before picking
 a new port, so the range recovers automatically. Reaping is disabled entirely
 by `CODESEEQ_KEEP_BRIDGE_CONTAINER=true` (for users who intentionally keep a
-bridge for external-mode reuse). To reclaim ports from older versions
+bridge for external-mode reuse). The reaper derives its own PID portably
+(`$BASHPID` when available, otherwise the parent PID of a child `sh`), so it
+also runs correctly on macOS bash 3.2 where `$BASHPID` is unset. To reclaim
+ports from older versions
 immediately:
 
 ```bash
