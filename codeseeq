@@ -1186,14 +1186,23 @@ bridge_reap_orphans() {
   log_dev_inode="$(stat -Lc '%d:%i' "$CODESEEQ_BRIDGE_LOG" 2>/dev/null || stat -Lf '%d:%i' "$CODESEEQ_BRIDGE_LOG" 2>/dev/null || true)"
   [[ -n "$log_dev_inode" ]] || return 0
 
-  local stale fd_inode ppid
+  local stale fd_inode ppid cur_pid
   while IFS= read -r stale; do
     [[ -n "$stale" ]] || continue
     case "$stale" in
       /proc/*) stale="${stale#/proc/}"; stale="${stale%%/*}" ;;
     esac
     [[ "$stale" =~ ^[0-9]+$ ]] || continue
-    [[ "$stale" == "$$" || "$stale" == "$BASHPID" || "$stale" == "$PPID" ]] && continue
+    # BASHPID is a bash 4+ variable; macOS ships bash 3.2 where it is unset,
+    # and `set -u` would abort the whole script ("BASHPID: unbound variable").
+    # Derive the PID of the shell running this loop portably: a child `sh`'s
+    # PPID is this shell's PID (verified equivalent to BASHPID on bash 4+).
+    if [[ -n "${BASHPID:-}" ]]; then
+      cur_pid="$BASHPID"
+    else
+      cur_pid="$(sh -c 'echo "$PPID"')"
+    fi
+    [[ "$stale" == "$$" || "$stale" == "$cur_pid" || "$stale" == "$PPID" ]] && continue
     fd_inode="$(stat -Lc '%d:%i' "/proc/${stale}/fd/1" 2>/dev/null || stat -Lf '%d:%i' "/proc/${stale}/fd/1" 2>/dev/null || true)"
     [[ "$fd_inode" == "$log_dev_inode" ]] || continue
     ppid="$(awk '/^PPid:/{print $2}' "/proc/${stale}/status" 2>/dev/null || true)"
