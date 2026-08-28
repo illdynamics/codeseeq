@@ -341,28 +341,56 @@ normalize_model() {
       alias_thinking="true"
       ;;
     *)
-      # New provider slugs: <provider>@<model> (anthropic, google, grok,
-      # venice, local). A trailing "-thinking" enables thinking; local
-      # accepts any manually-typed model name.
-      local owner upstream
-      if [[ "$model" == *@* ]]; then
-        owner="${model%%@*}"
-        upstream="${model#*@}"
-        case "$owner" in
-          anthropic|google|grok|venice|deepseek|local)
-            [[ -n "$upstream" ]] || die "unsupported model: ${model} (empty model name after @)"
-            PROVIDER_MODEL="$model"
-            alias_thinking="false"
-            case "$upstream" in
-              *-thinking|thinking) alias_thinking="true" ;;
-            esac
-            ;;
-          *)
-            die "unsupported provider: ${owner} in model ${model}. supported providers: deepseek, qwibus, anthropic, google, grok, venice, local"
-            ;;
-        esac
+      # GGUF local-model selection: gguf@<path> or a bare .gguf path.
+      # Resolve to an absolute path now (validation happens in the bridge)
+      # so Codex and the bridge always see the same canonical slug.
+      local gguf_path="" gguf_lower=""
+      if [[ "$model" == gguf@* ]]; then
+        gguf_path="${model#gguf@}"
       else
-        die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx, or <provider>@<model> with provider in anthropic, google, grok, venice, local"
+        gguf_lower="$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$gguf_lower" == *.gguf ]]; then
+          gguf_path="$model"
+        fi
+      fi
+      if [[ -n "$gguf_path" ]]; then
+        gguf_path="$(printf '%s' "$gguf_path" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [[ -n "$gguf_path" ]] || die "gguf model path is empty"
+        if command -v python3 >/dev/null 2>&1; then
+          PROVIDER_MODEL="gguf@$(python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$gguf_path")"
+        else
+          case "$gguf_path" in
+            /*) PROVIDER_MODEL="gguf@${gguf_path}" ;;
+            ~/*) PROVIDER_MODEL="gguf@${HOME}${gguf_path#\~}" ;;
+            *) PROVIDER_MODEL="gguf@$(pwd -P)/${gguf_path}" ;;
+          esac
+        fi
+        alias_thinking="false"
+        CODESEEQ_PROVIDER="gguf"
+      else
+        # New provider slugs: <provider>@<model> (anthropic, google, grok,
+        # venice, local). A trailing "-thinking" enables thinking; local
+        # accepts any manually-typed model name.
+        local owner upstream
+        if [[ "$model" == *@* ]]; then
+          owner="${model%%@*}"
+          upstream="${model#*@}"
+          case "$owner" in
+            anthropic|google|grok|venice|deepseek|local)
+              [[ -n "$upstream" ]] || die "unsupported model: ${model} (empty model name after @)"
+              PROVIDER_MODEL="$model"
+              alias_thinking="false"
+              case "$upstream" in
+                *-thinking|thinking) alias_thinking="true" ;;
+              esac
+              ;;
+            *)
+              die "unsupported provider: ${owner} in model ${model}. supported providers: deepseek, qwibus, anthropic, google, grok, venice, local"
+              ;;
+          esac
+        else
+          die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx, or <provider>@<model> with provider in anthropic, google, grok, venice, local"
+        fi
       fi
       ;;
   esac
@@ -522,6 +550,7 @@ write_config() {
     grok@*) provider_label="CodeSeeq Grok Bridge" ;;
     venice@*) provider_label="CodeSeeq Venice Bridge" ;;
     qwibus@*|local@*) provider_label="CodeSeeq Local Bridge" ;;
+    gguf@*) provider_label="CodeSeeq GGUF Bridge" ;;
     *) provider_label="CodeSeeq DeepSeek Bridge" ;;
   esac
   cat > "$CODESEEQ_CODEX_HOME/config.toml" <<EOF
@@ -604,10 +633,10 @@ provider_key_env_for_model() {
     grok) printf 'GROK_API_KEY'; return 0 ;;
     venice) printf 'VENICE_API_KEY'; return 0 ;;
     deepseek) printf 'DEEPSEEK_API_KEY'; return 0 ;;
-    local|qwibus) printf ''; return 0 ;;
+    local|qwibus|gguf) printf ''; return 0 ;;
   esac
   case "$model" in
-    qwibus@*|local@*) printf '' ;;
+    qwibus@*|local@*|gguf@*) printf '' ;;
     anthropic@*) printf 'ANTHROPIC_API_KEY' ;;
     google@*) printf 'GOOGLE_API_KEY' ;;
     grok@*) printf 'GROK_API_KEY' ;;

@@ -45,3 +45,6 @@ codeseeq-images/
 
 # Bridge backup artifacts
 bin/*.bak-*
+
+# Agent team coordination
+TODO.md

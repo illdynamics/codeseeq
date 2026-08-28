@@ -4,14 +4,14 @@
 
 Run `codeseeq` instead of `codex`. Same flags, same interactive TUI, same tool calls.
 Your prompts go to the provider you choose — DeepSeek, Anthropic (Claude), Google
-(Gemini), Grok (xAI), Venice.ai, or a local OpenAI-compatible gateway — no OpenAI
-account or API key needed. Configure everything interactively with `codeseeq config`.
+(Gemini), Grok (xAI), Venice.ai, a local OpenAI-compatible gateway, or a local
+GGUF model — no OpenAI account or API key needed. Configure everything interactively with `codeseeq config`.
 
 <p align="center">
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.4.2` (from [`VERSION`](./VERSION)).
+Current version: `v0.4.4` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -95,6 +95,44 @@ codeseeq --model deepseek-v4-pro "review this repo"
 codeseeq -p myprofile "say hi"
 ```
 
+### Run a local GGUF model
+
+CodeSeeq can run Codex against a local
+[llama.cpp](https://github.com/ggml-org/llama.cpp) GGUF model without any hosted
+API key. It launches `llama-server` for you, routes the existing
+chat-completions translation to it, and tears it down cleanly.
+**Prerequisite:** `llama-server` on `PATH`, or set
+`CODESEEQ_GGUF_LLAMA_SERVER_PATH` to its full path.
+
+```bash
+# by full path
+codeseeq --model /absolute/path/to/llama-3.2-3b-instruct-q4_k_m.gguf "prompt"
+
+# by environment variable
+CODESEEQ_MODEL=/absolute/path/to/model.gguf codeseeq run "prompt"
+
+# explicit provider-prefixed slug (equivalent)
+CODESEEQ_MODEL='gguf@/absolute/path/to/model.gguf' codeseeq
+
+# or add it through the config wizard (choose the "GGUF" provider)
+codeseeq config
+```
+
+Optional tuning:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `CODESEEQ_GGUF_CONTEXT_WINDOW` | llama-server `-c` context size | 8192 |
+| `CODESEEQ_GGUF_MAX_OUTPUT_TOKENS` | max output tokens | 2048 |
+| `CODESEEQ_GGUF_N_GPU_LAYERS` | `-ngl` offload layers | 0 |
+| `CODESEEQ_GGUF_THREADS` | `-t` CPU threads | auto |
+| `CODESEEQ_GGUF_PARALLEL` | `-np` parallel sequences | 1 |
+| `CODESEEQ_GGUF_TIMEOUT_SECONDS` | per-request timeout | 600 |
+| `CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS` | health-poll timeout | 300 |
+| `CODESEEQ_GGUF_ENABLE_THINKING` | enable thinking (if supported) | false |
+| `GGUF_BASE_URL` | advanced: reuse an already-running GGUF server | unset |
+| `GGUF_API_KEY` | optional `--api-key` for the local server | unset |
+
 ### Host-native mode (no Docker/Podman needed)
 
 ```bash
@@ -160,7 +198,7 @@ npm install -g @openai/codex
 
 ## How It Works
 
-CodeSeeq does not fork or patch Codex. It launches the upstream Codex CLI with an isolated generated `config.toml`. That config points Codex at a local CodeSeeq bridge implementing the OpenAI Responses API. The bridge translates requests to the configured provider — OpenAI-compatible chat completions for DeepSeek, Google, Grok, Venice.ai, and local gateways, and the native Messages API for Anthropic — then converts responses back to the format Codex expects. The generated config includes privacy hardening settings: live web search, disabled analytics/feedback/OTel/history, and provider-only auth with no OpenAI key aliasing.
+CodeSeeq does not fork or patch Codex. It launches the upstream Codex CLI with an isolated generated `config.toml`. That config points Codex at a local CodeSeeq bridge implementing the OpenAI Responses API. The bridge translates requests to the configured provider — OpenAI-compatible chat completions for DeepSeek, Google, Grok, Venice.ai, local gateways, and GGUF, and the native Messages API for Anthropic — then converts responses back to the format Codex expects. The generated config includes privacy hardening settings: live web search, disabled analytics/feedback/OTel/history, and provider-only auth with no OpenAI key aliasing.
 
 ## Bridge Modes
 
@@ -483,6 +521,7 @@ CodeSeeq supports these providers (choose them with `codeseeq config`):
 | Grok (xAI) | `GROK_API_KEY` | `grok-4`, `grok-3`, `grok-3-mini`, `grok-3-fast` (+ thinking variants) |
 | Venice.ai | `VENICE_API_KEY` | `venice-qwen-3-32b`, `venice-qwen-3-14b`, `venice-deepseek-r1-0528`, `venice-llama-3.3-70b`, `venice-qwen-2.5-coder-32b` |
 | Local | none (optional `LOCAL_API_KEY`) | any OpenAI-compatible model name typed manually, e.g. `local@llama-4-maverick` |
+| GGUF | none | a local `.gguf` file path, e.g. `gguf@/path/to/model.gguf` (spawns `llama-server`) |
 | Qwibus | none | `qwibus-qwikk`, `qwibus-qmplx` (legacy local gateway) |
 
 Model slugs use the `provider@model` form (`deepseek@deepseek-v4-flash`,
@@ -598,7 +637,7 @@ CodeSeeq applies privacy hardening by default:
 
 | Setting | Value |
 |---------|-------|
-| **Model provider** | Your choice (deepseek / anthropic / google / grok / venice / local), always via the local bridge |
+| **Model provider** | Your choice (deepseek / anthropic / google / grok / venice / local / gguf), always via the local bridge |
 | **Web search** | Live (not cached) |
 | **Analytics** | Disabled |
 | **Feedback** | Disabled |
@@ -625,8 +664,8 @@ To pin an exact release, set `CODESEEQ_RELEASE_TAG`. To forbid auto-fetching ent
 set `CODESEEQ_ALLOW_LATEST_RELEASE=false` (a pinned `CODESEEQ_RELEASE_TAG` is then required):
 
 ```bash
-CODESEEQ_RELEASE_TAG=v0.4.2 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
-CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.4.2 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_RELEASE_TAG=v0.4.4 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.4.4 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
 ```
 
 ### Uncensored Mode

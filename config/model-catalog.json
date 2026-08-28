@@ -786,6 +786,32 @@
         "local",
         "no-API-key"
       ]
+    },
+    {
+      "id": "gguf-local-model",
+      "provider_model": "gguf@local-model",
+      "provider": "gguf",
+      "upstream_model": "local-model",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "http://127.0.0.1:1",
+      "chat_url": "http://127.0.0.1:1/v1/chat/completions",
+      "temperature": 0.7,
+      "top_p": null,
+      "top_k": null,
+      "api_key": null,
+      "context_window": 8192,
+      "max_output_tokens": 2048,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "via-open-responses-if-supported",
+      "notes": "Local GGUF model served by llama.cpp llama-server. Path is typed manually (e.g. /path/to/model.gguf).",
+      "recommended_for": [
+        "local",
+        "no-API-key"
+      ]
     }
   ],
   "providers": {
@@ -847,6 +873,11 @@
       "models": [
         "local"
       ]
+    },
+    "gguf": {
+      "label": "GGUF",
+      "api_key_env": null,
+      "models": []
     }
   }
 }

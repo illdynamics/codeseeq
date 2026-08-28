@@ -41,6 +41,7 @@ unset CODESEEQ_OPENRESPONSES_PORT CODESEEQ_OPENRESPONSES_URL 2>/dev/null || true
 unset CODESEEQ_WORKDIR_HOST CODESEEQ_WORKDIR 2>/dev/null || true
 unset DEEPSEEK_API_KEY DEEPSEEK_BASE_URL DEEPSEEK_CHAT_URL 2>/dev/null || true
 unset VENICE_API_KEY BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY 2>/dev/null || true
+unset CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES 2>/dev/null || true
 
 shell_files=()
 while IFS= read -r f; do
@@ -234,6 +235,11 @@ fi
 note "checking bridge chat-endpoint derivation under base-URL overrides"
 if ! scripts/test-bridge-chat-url.py; then
   fail "bridge chat-endpoint derivation regression test failed"
+fi
+
+note "checking bridge GGUF local-model provider"
+if ! scripts/test-bridge-gguf.py; then
+  fail "bridge GGUF local-model provider regression test failed"
 fi
 
 note "checking orphaned bridge container reaping"

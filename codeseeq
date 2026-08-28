@@ -153,6 +153,20 @@ LEGACY_SYSTEM_PROMPT_PATH="${WORKDIR_HOST}/.codeseeq/system-prompt.md"
 : "${CODESEEQ_REQUEST_MAX_RETRIES:=2}"
 : "${CODESEEQ_STREAM_IDLE_TIMEOUT_MS:=600000}"
 
+# --- GGUF local-model (llama.cpp) configuration ---
+: "${CODESEEQ_GGUF_LLAMA_SERVER_PATH:=}"
+: "${CODESEEQ_GGUF_CONTEXT_WINDOW:=8192}"
+: "${CODESEEQ_GGUF_MAX_OUTPUT_TOKENS:=2048}"
+: "${CODESEEQ_GGUF_N_GPU_LAYERS:=0}"
+: "${CODESEEQ_GGUF_THREADS:=}"
+: "${CODESEEQ_GGUF_PARALLEL:=1}"
+: "${CODESEEQ_GGUF_PORT:=}"
+: "${CODESEEQ_GGUF_TIMEOUT_SECONDS:=600}"
+: "${CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS:=300}"
+: "${CODESEEQ_GGUF_ENABLE_THINKING:=false}"
+: "${GGUF_BASE_URL:=}"
+: "${GGUF_API_KEY:=}"
+
 # --- Bridge mode configuration ---
 : "${CODESEEQ_BRIDGE_MODE:=auto}"
 : "${CODESEEQ_BRIDGE_HOST:=127.0.0.1}"
@@ -592,29 +606,57 @@ normalize_model() {
       alias_thinking="true"
       ;;
     *)
-      # New provider slugs: <provider>@<model> with provider in
-      # anthropic|google|grok|venice|local (deepseek/qwibus handled above).
-      # A trailing "-thinking" suffix enables thinking; local accepts any
-      # manually-typed model name.
-      local owner upstream
-      if [[ "$model" == *@* ]]; then
-        owner="${model%%@*}"
-        upstream="${model#*@}"
-        case "$owner" in
-          anthropic|google|grok|venice|deepseek|local)
-            [[ -n "$upstream" ]] || die "unsupported model: ${model} (empty model name after @)"
-            PROVIDER_MODEL="$model"
-            alias_thinking="false"
-            case "$upstream" in
-              *-thinking|thinking) alias_thinking="true" ;;
-            esac
-            ;;
-          *)
-            die "unsupported provider: ${owner} in model ${model}. supported providers: deepseek, qwibus, anthropic, google, grok, venice, local"
-            ;;
-        esac
+      # GGUF local-model selection: gguf@<path> or a bare .gguf path.
+      # Resolve to an absolute path now (validation happens in the bridge)
+      # so Codex and the bridge always see the same canonical slug.
+      local gguf_path="" gguf_lower=""
+      if [[ "$model" == gguf@* ]]; then
+        gguf_path="${model#gguf@}"
       else
-        die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx, or <provider>@<model> with provider in anthropic, google, grok, venice, local"
+        gguf_lower="$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$gguf_lower" == *.gguf ]]; then
+          gguf_path="$model"
+        fi
+      fi
+      if [[ -n "$gguf_path" ]]; then
+        gguf_path="$(printf '%s' "$gguf_path" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [[ -n "$gguf_path" ]] || die "gguf model path is empty"
+        if command -v python3 >/dev/null 2>&1; then
+          PROVIDER_MODEL="gguf@$(python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$gguf_path")"
+        else
+          case "$gguf_path" in
+            /*) PROVIDER_MODEL="gguf@${gguf_path}" ;;
+            ~/*) PROVIDER_MODEL="gguf@${HOME}${gguf_path#\~}" ;;
+            *) PROVIDER_MODEL="gguf@$(pwd -P)/${gguf_path}" ;;
+          esac
+        fi
+        alias_thinking="false"
+        CODESEEQ_PROVIDER="gguf"
+      else
+        # New provider slugs: <provider>@<model> with provider in
+        # anthropic|google|grok|venice|local (deepseek/qwibus handled above).
+        # A trailing "-thinking" suffix enables thinking; local accepts any
+        # manually-typed model name.
+        local owner upstream
+        if [[ "$model" == *@* ]]; then
+          owner="${model%%@*}"
+          upstream="${model#*@}"
+          case "$owner" in
+            anthropic|google|grok|venice|deepseek|local)
+              [[ -n "$upstream" ]] || die "unsupported model: ${model} (empty model name after @)"
+              PROVIDER_MODEL="$model"
+              alias_thinking="false"
+              case "$upstream" in
+                *-thinking|thinking) alias_thinking="true" ;;
+              esac
+              ;;
+            *)
+              die "unsupported provider: ${owner} in model ${model}. supported providers: deepseek, qwibus, anthropic, google, grok, venice, local"
+              ;;
+          esac
+        else
+          die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx, or <provider>@<model> with provider in anthropic, google, grok, venice, local"
+        fi
       fi
       ;;
   esac
@@ -806,10 +848,10 @@ provider_key_env_for_model() {
     grok) printf 'GROK_API_KEY'; return 0 ;;
     venice) printf 'VENICE_API_KEY'; return 0 ;;
     deepseek) printf 'DEEPSEEK_API_KEY'; return 0 ;;
-    local|qwibus) printf ''; return 0 ;;
+    local|qwibus|gguf) printf ''; return 0 ;;
   esac
   case "$model" in
-    qwibus@*|local@*) printf '' ;;
+    qwibus@*|local@*|gguf@*) printf '' ;;
     anthropic@*) printf 'ANTHROPIC_API_KEY' ;;
     google@*) printf 'GOOGLE_API_KEY' ;;
     grok@*) printf 'GROK_API_KEY' ;;
@@ -922,6 +964,7 @@ write_host_config() {
     grok@*) provider_label="CodeSeeq Grok Bridge" ;;
     venice@*) provider_label="CodeSeeq Venice Bridge" ;;
     qwibus@*|local@*) provider_label="CodeSeeq Local Bridge" ;;
+    gguf@*) provider_label="CodeSeeq GGUF Bridge" ;;
     *) provider_label="CodeSeeq DeepSeek Bridge" ;;
   esac
   cat > "$HOST_CODEX_HOME/config.toml" <<EOF
@@ -1038,7 +1081,7 @@ select_host_bridge_port() {
 # standalone bridge container and the Codex container. Per-model keys use the
 # documented CODESEEQ_<MODEL>_<SUFFIX> scheme (provider prefix stripped).
 codeseeq_bridge_env_names() {
-  printf '%s\n'     DEEPSEEK_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GROK_API_KEY     BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY VENICE_API_KEY     LOCAL_API_KEY DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     ANTHROPIC_BASE_URL GOOGLE_BASE_URL GROK_BASE_URL VENICE_BASE_URL LOCAL_BASE_URL     CODESEEQ_PROVIDER CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS QWIBUS_NO_API_KEY
+  printf '%s\n'     DEEPSEEK_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GROK_API_KEY     BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY VENICE_API_KEY     LOCAL_API_KEY DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     ANTHROPIC_BASE_URL GOOGLE_BASE_URL GROK_BASE_URL VENICE_BASE_URL LOCAL_BASE_URL     CODESEEQ_PROVIDER CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS QWIBUS_NO_API_KEY     GGUF_API_KEY GGUF_BASE_URL CODESEEQ_GGUF_LLAMA_SERVER_PATH     CODESEEQ_GGUF_CONTEXT_WINDOW CODESEEQ_GGUF_MAX_OUTPUT_TOKENS     CODESEEQ_GGUF_N_GPU_LAYERS CODESEEQ_GGUF_THREADS CODESEEQ_GGUF_PARALLEL     CODESEEQ_GGUF_PORT CODESEEQ_GGUF_TIMEOUT_SECONDS CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS     CODESEEQ_GGUF_ENABLE_THINKING
 
   local key suffix
   # Per-model keys use the CODESEEQ_<MODEL>_<SUFFIX> scheme: the bridge's
@@ -1974,7 +2017,7 @@ config_json_path() {
 }
 
 config_provider_list() {
-  printf '%s\n' anthropic google grok deepseek venice local
+  printf '%s\n' anthropic google grok deepseek venice local gguf
 }
 
 config_provider_label() {
@@ -1985,6 +2028,7 @@ config_provider_label() {
     deepseek) printf 'DeepSeek' ;;
     venice) printf 'Venice.ai' ;;
     local) printf 'Local (OpenAI-compatible gateway)' ;;
+    gguf) printf 'GGUF (local llama.cpp)' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -2388,6 +2432,11 @@ cmd_config() {
     model="$(cfg_prompt "Local model name (e.g. llama-4-maverick)" "")"
     [[ -n "$model" ]] || { printf 'Model name is required.\n' >&2; return 1; }
     [[ "$model" == local@* ]] || model="local@${model}"
+  elif [[ "$provider" == "gguf" ]]; then
+    printf '\n'
+    model="$(cfg_prompt "Absolute path to .gguf model file (e.g. /path/to/model.gguf)" "")"
+    [[ -n "$model" ]] || { printf 'GGUF model path is required.\n' >&2; return 1; }
+    [[ "$model" == gguf@* ]] || model="gguf@${model}"
   else
     local -a model_items=()
     local line
@@ -2411,6 +2460,12 @@ cmd_config() {
     key_env="LOCAL_API_KEY"
     key="$(cfg_prompt "API key (optional for local gateways, Enter to skip)" "")"
     base_url="$(cfg_prompt "Local gateway base URL" "$base_url")"
+  elif [[ "$provider" == "gguf" ]]; then
+    # Keyless; the bridge derives its base URL from the spawned llama-server.
+    key_env=""
+    key=""
+    base_url_env=""
+    base_url=""
   else
     [[ -n "$key_env" ]] || die "internal error: no API-key env for provider ${provider}"
     local existing=""

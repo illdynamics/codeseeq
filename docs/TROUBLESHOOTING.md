@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `v0.4.2`
+Current version: `v0.4.4`
 
 ## `./codeseeq` is not executable
 
@@ -486,3 +486,38 @@ a tag and don't see the release step:
 
 The workflow also needs `contents: write` permission for the release job, which
 is set in the CI config.
+
+
+## GGUF model: `llama-server` not found
+
+The bridge needs the llama.cpp `llama-server` binary to serve a local `.gguf`
+model. If it is missing you get:
+
+```
+gguf provider requires llama.cpp llama-server. Set CODESEEQ_GGUF_LLAMA_SERVER_PATH
+or install llama.cpp (see https://github.com/ggml-org/llama.cpp).
+```
+
+Fix:
+
+```bash
+# install llama.cpp, or point CodeSeeq at an existing binary
+export CODESEEQ_GGUF_LLAMA_SERVER_PATH=/path/to/llama-server
+codeseeq --model /path/to/model.gguf "hello"
+```
+
+`codeseeq doctor` / `GET /health` also reports `gguf_binary` as `not-found`
+when the binary is unavailable.
+
+## GGUF model: file not found
+
+The selected `.gguf` path must exist and be readable. A missing path fails with
+a clean `gguf model file not found: <path>` error rather than a traceback:
+
+```bash
+CODESEEQ_MODEL=/does/not/exist/model.gguf codeseeq "hello"
+# -> gguf model file not found: /does/not/exist/model.gguf
+```
+
+Check the path, expand `~` (the wrapper/bridge resolve it), and make sure the
+file is an actual `.gguf` file.

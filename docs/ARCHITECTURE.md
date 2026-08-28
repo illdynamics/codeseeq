@@ -1,6 +1,6 @@
 # Architecture
 
-Current version: `v0.4.2`
+Current version: `v0.4.4`
 
 ## Runtime Modes
 
@@ -22,7 +22,7 @@ host ./codeseeq
   -> Codex inside the container, cwd=/workspace
   -> local bridge inside the same container
   -> http://127.0.0.1:8080/v1/responses
-  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local)
+  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF)
 ```
 
 Default Codex settings: `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`.
@@ -34,7 +34,7 @@ host ./codeseeq -y/--yolo/--sandbox danger-full-access ...
   -> bridge starts as process or container sidecar
   -> local host Codex, cwd=current host checkout
   -> isolated CODEX_HOME=$PWD/.codeseeq
-  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local) through the bridge
+  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF) through the bridge
 ```
 
 Host runtime runs Codex directly on the host checkout without container sandboxing.
@@ -60,7 +60,7 @@ CodeSeeq controls how the translation bridge is started via `CODESEEQ_BRIDGE_MOD
 wrapper (./codeseeq)
   -> python3 bin/codeseeq-bridge.py   (host-native child process)
   -> Codex                             (host or container)
-  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local)
+  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF)
 ```
 
 Process mode is the recommended path for host runtime. It removes the bridge
@@ -225,7 +225,7 @@ stdin prompts.
 3. **`bin/codeseeq-bridge.py`** — FastAPI bridge implementing `/v1/responses`
    (the OpenAI Responses API wire format). Converts Codex Responses requests
    to the configured provider (OpenAI-compatible chat completions for DeepSeek/
-Google/Grok/Venice/local, Anthropic Messages for Claude). Normalizes model aliases, streaming events,
+Google/Grok/Venice/local/GGUF, Anthropic Messages for Claude). Normalizes model aliases, streaming events,
    function/tool calls, and diagnostic web/doc paths.
 
 4. **`@openai/codex`** — Installed in the image for safe mode. Used from the
@@ -247,6 +247,27 @@ Google/Grok/Venice/local, Anthropic Messages for Claude). Normalizes model alias
 These two catalogs are intentionally distinct and both are used; neither is
 redundant (the bridge consumes `model-catalog.json`, while Codex consumes
 `codex-model-catalog.json`).
+
+### GGUF / local llama.cpp
+
+CodeSeeq can run Codex against a local GGUF model served by
+[llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server`. Selecting a
+model by its full `.gguf` path (`--model /path/to/model.gguf`,
+`CODESEEQ_MODEL=/path/to/model.gguf`, or `gguf@/path/to/model.gguf`) resolves a
+dedicated `gguf` provider spec. On the first `/v1/responses` request for that
+path, the bridge launches `llama-server` as a child process on a free loopback
+port (bind-probe, never exposed beyond `127.0.0.1`), health-polls `/health`
+until ready, then proxies the existing chat-completions translation to it. One
+server is reused per path per bridge process, and every child is torn down via
+`atexit` plus the parent-death watchdog so a killed wrapper cannot leak an
+inference process.
+
+`gguf` is keyless like `local` (an optional `GGUF_API_KEY` is honoured when
+set) and its endpoint is `{base}/v1/chat/completions`. Tuning is via
+`CODESEEQ_GGUF_*` (`CONTEXT_WINDOW`, `MAX_OUTPUT_TOKENS`, `N_GPU_LAYERS`,
+`THREADS`, `PARALLEL`, `TIMEOUT_SECONDS`, `STARTUP_TIMEOUT_SECONDS`,
+`ENABLE_THINKING`) plus `CODESEEQ_GGUF_LLAMA_SERVER_PATH` for an explicit
+binary and `GGUF_BASE_URL` to reuse an already-running server.
 
 ## Interactive Menu Compatibility
 

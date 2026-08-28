@@ -2,6 +2,18 @@
 """
 codeseeq-bridge: OpenAI Responses API <-> provider translation bridge.
 
+v0.4.4 patches:
+- GGUF llama-server fixed port: CODESEEQ_GGUF_PORT pins the loopback
+  --port instead of auto-select; -c/-ngl/-np/--port map 1:1 to
+  CODESEEQ_GGUF_CONTEXT_WINDOW / CODESEEQ_GGUF_N_GPU_LAYERS /
+  CODESEEQ_GGUF_PARALLEL / CODESEEQ_GGUF_PORT (env > JSON config > default).
+
+v0.4.3 patches:
+- GGUF local-model provider: select a model by its .gguf path (bare or
+  gguf@<path>); the bridge lazily launches llama.cpp llama-server on a
+  free loopback port, health-checks it, reuses one server per path, and
+  tears it down on shutdown/parent-death.
+
 v0.4.2 patches:
 - Multi-provider routing: DeepSeek (OpenAI-compatible chat completions),
   Anthropic Claude (native Messages API, streaming + non-streaming,
@@ -85,13 +97,16 @@ Prior patches:
 from __future__ import annotations
 
 import asyncio
+import atexit
 import difflib
 import html
 import json
 import os
 import re
+import shutil
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import tempfile
@@ -304,6 +319,7 @@ class ModelSpec:
         "max_output_tokens",
         "timeout_seconds",
         "system_prompt",
+        "gguf_path",
     )
 
     def __init__(
@@ -323,6 +339,7 @@ class ModelSpec:
         system_prompt: Optional[str],
         provider: str = "deepseek",
         api_key_env: Optional[str] = "DEEPSEEK_API_KEY",
+        gguf_path: Optional[str] = None,
     ) -> None:
         self.slug = slug
         self.deepseek_model = deepseek_model
@@ -339,6 +356,7 @@ class ModelSpec:
         self.max_output_tokens = max_output_tokens
         self.timeout_seconds = timeout_seconds
         self.system_prompt = system_prompt
+        self.gguf_path = gguf_path
 
 
 # Canonical model slugs -> upstream model name + thinking flag.
@@ -371,6 +389,7 @@ PROVIDER_GOOGLE = "google"
 PROVIDER_GROK = "grok"
 PROVIDER_VENICE = "venice"
 PROVIDER_LOCAL = "local"
+PROVIDER_GGUF = "gguf"
 
 OPENAI_COMPAT_PROVIDERS = frozenset(
     {
@@ -379,6 +398,7 @@ OPENAI_COMPAT_PROVIDERS = frozenset(
         PROVIDER_VENICE,
         PROVIDER_GOOGLE,
         PROVIDER_LOCAL,
+        PROVIDER_GGUF,
     }
 )
 
@@ -393,6 +413,7 @@ PROVIDER_API_KEY_ENV = {
     PROVIDER_GROK: "GROK_API_KEY",
     PROVIDER_VENICE: "VENICE_API_KEY",
     PROVIDER_LOCAL: "LOCAL_API_KEY",
+    PROVIDER_GGUF: None,
 }
 
 # Generic provider base-URL override env vars, checked in order per provider.
@@ -403,6 +424,7 @@ PROVIDER_BASE_URL_ENV = {
     PROVIDER_GROK: ("GROK_BASE_URL", "OPENAI_BASE_URL", "CODESEEQ_BASE_URL"),
     PROVIDER_VENICE: ("VENICE_BASE_URL", "OPENAI_BASE_URL", "CODESEEQ_BASE_URL"),
     PROVIDER_LOCAL: ("LOCAL_BASE_URL", "OPENAI_BASE_URL", "CODESEEQ_BASE_URL"),
+    PROVIDER_GGUF: ("GGUF_BASE_URL", "LOCAL_BASE_URL", "OPENAI_BASE_URL", "CODESEEQ_BASE_URL"),
 }
 
 # Provider base URLs (used as default_base for each model when no override).
@@ -413,6 +435,7 @@ PROVIDER_DEFAULT_BASE_URL = {
     PROVIDER_GROK: "https://api.x.ai",
     PROVIDER_VENICE: "https://api.venice.ai",
     PROVIDER_LOCAL: "http://127.0.0.1:1337",
+    PROVIDER_GGUF: "http://127.0.0.1:1",
 }
 
 
@@ -436,6 +459,8 @@ def _derive_chat_url(provider: str, base_url: str) -> str:
     if provider == PROVIDER_VENICE:
         return f"{base}/api/v1/chat/completions"
     if provider == PROVIDER_LOCAL:
+        return f"{base}/v1/chat/completions"
+    if provider == PROVIDER_GGUF:
         return f"{base}/v1/chat/completions"
     return f"{base}/chat/completions"  # deepseek
 
@@ -585,6 +610,7 @@ def _build_model_specs() -> Dict[str, ModelSpec]:
             system_prompt=sys_prompt,
             provider=provider,
             api_key_env=PROVIDER_API_KEY_ENV.get(provider),
+            gguf_path=None,
         )
 
     return {
@@ -1043,6 +1069,268 @@ def _apply_catalog_overrides(specs: Dict[str, ModelSpec]) -> Dict[str, ModelSpec
 
 
 MODEL_SPECS: Dict[str, ModelSpec] = _apply_catalog_overrides(_build_model_specs())
+
+
+# ---------------------------------------------------------------------------
+# GGUF / local llama.cpp server manager
+# ---------------------------------------------------------------------------
+
+MISSING_GGUF_BINARY_MSG = (
+    "gguf provider requires llama.cpp llama-server. "
+    "Set CODESEEQ_GGUF_LLAMA_SERVER_PATH or install llama.cpp "
+    "(see https://github.com/ggml-org/llama.cpp)."
+)
+
+
+class GGUFServerError(Exception):
+    """Raised when a GGUF llama-server cannot be launched or become healthy."""
+
+
+class _GGUFServer:
+    __slots__ = ("path", "port", "process", "base_url", "chat_url")
+
+    def __init__(self, path: str, port: int, process: Any) -> None:
+        self.path = path
+        self.port = port
+        self.process = process
+        self.base_url = f"http://127.0.0.1:{port}"
+        self.chat_url = f"{self.base_url}/v1/chat/completions"
+
+
+class GGUFServerManager:
+    """Lazily launch, reuse, and tear down llama-server processes.
+
+    One server is kept per absolute GGUF path per bridge process. Ports are
+    chosen with a bind-probe on 127.0.0.1 (never exposed beyond loopback).
+    """
+
+    def __init__(self) -> None:
+        self._servers: Dict[str, _GGUFServer] = {}
+        self._locks: Dict[str, asyncio.Lock] = {}
+
+    # -- binary discovery -------------------------------------------------
+    def _find_binary(self) -> Optional[str]:
+        explicit = os.environ.get("CODESEEQ_GGUF_LLAMA_SERVER_PATH", "").strip()
+        if explicit:
+            if os.path.isfile(explicit) and os.access(explicit, os.X_OK):
+                return explicit
+            return None
+        on_path = shutil.which("llama-server")
+        if on_path:
+            return on_path
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        repo_root = os.path.dirname(script_dir)
+        for cand in (
+            os.path.join(script_dir, "llama-server"),
+            os.path.join(repo_root, "llama-server"),
+        ):
+            if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                return cand
+        return None
+
+    @staticmethod
+    def _free_port() -> int:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+        sock.close()
+        return port
+
+    @staticmethod
+    def _argv(binary: str, abs_path: str, port: int, alias: str) -> List[str]:
+        argv = [
+            binary,
+            "-m",
+            abs_path,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--alias",
+            alias,
+        ]
+        ctx = os.environ.get("CODESEEQ_GGUF_CONTEXT_WINDOW", "8192").strip()
+        if ctx:
+            argv += ["-c", ctx]
+        ngl = os.environ.get("CODESEEQ_GGUF_N_GPU_LAYERS", "").strip()
+        if ngl:
+            argv += ["-ngl", ngl]
+        threads = os.environ.get("CODESEEQ_GGUF_THREADS", "").strip()
+        if threads:
+            argv += ["-t", threads]
+        parallel = os.environ.get("CODESEEQ_GGUF_PARALLEL", "").strip()
+        if parallel:
+            argv += ["-np", parallel]
+        api_key = os.environ.get("GGUF_API_KEY", "").strip()
+        if api_key:
+            argv += ["--api-key", api_key]
+        return argv
+
+    @staticmethod
+    def _fixed_port() -> Optional[int]:
+        # A fixed loopback port for llama-server (CODESEEQ_GGUF_PORT). When
+        # unset/invalid the manager falls back to auto-select; an explicit
+        # port is used as-is so callers can pin --port (e.g. 8888).
+        raw = os.environ.get("CODESEEQ_GGUF_PORT", "").strip()
+        if not raw:
+            return None
+        try:
+            port = int(raw)
+        except ValueError:
+            return None
+        return port if 1 <= port <= 65535 else None
+
+    def _start_server(self, binary: str, abs_path: str) -> _GGUFServer:
+        alias = os.path.basename(abs_path)
+        if alias.lower().endswith(".gguf"):
+            alias = alias[:-5]
+        fixed_port = self._fixed_port()
+        last_exc: Optional[Exception] = None
+        attempts = 1 if fixed_port is not None else 3
+        for _ in range(attempts):
+            port = fixed_port if fixed_port is not None else self._free_port()
+            argv = self._argv(binary, abs_path, port, alias)
+            log(f"gguf: launching llama-server for {abs_path} on port {port}")
+            try:
+                logfile = tempfile.NamedTemporaryFile(
+                    mode="w",
+                    prefix="codeseeq-gguf-",
+                    suffix=".log",
+                    delete=False,
+                    encoding="utf-8",
+                )
+                proc = subprocess.Popen(
+                    argv,
+                    stdout=logfile,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                last_exc = exc
+                continue
+            return _GGUFServer(abs_path, port, proc)
+        raise GGUFServerError(
+            f"failed to start llama-server for {abs_path}: {last_exc}"
+        )
+
+    async def _wait_healthy(self, server: _GGUFServer) -> bool:
+        timeout = 300.0
+        raw = os.environ.get("CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS", "").strip()
+        if raw:
+            try:
+                timeout = float(raw)
+            except ValueError:
+                timeout = 300.0
+        timeout = max(1.0, timeout)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if server.process.poll() is not None:
+                return False
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    resp = await client.get(f"{server.base_url}/health")
+                if resp.status_code == 200:
+                    return True
+            except httpx.HTTPError:
+                pass
+            await asyncio.sleep(0.25)
+        return False
+
+    @staticmethod
+    def _stop_server(server: _GGUFServer) -> None:
+        proc = server.process
+        if proc is None or proc.poll() is not None:
+            return
+        pgid = None
+        try:
+            pgid = os.getpgid(proc.pid)
+        except OSError:
+            pgid = None
+        if pgid is not None:
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except OSError:
+                pass
+        else:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            if pgid is not None:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except OSError:
+                    pass
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    def _lock_for(self, path: str) -> asyncio.Lock:
+        lock = self._locks.get(path)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[path] = lock
+        return lock
+
+    async def ensure(self, path: str) -> _GGUFServer:
+        abs_path = os.path.abspath(os.path.expanduser(path))
+        async with self._lock_for(abs_path):
+            cached = self._servers.get(abs_path)
+            if cached is not None and cached.process.poll() is None:
+                if await self._wait_healthy(cached):
+                    return cached
+                self._stop_server(cached)
+                self._servers.pop(abs_path, None)
+
+            binary = self._find_binary()
+            if not binary:
+                raise GGUFServerError(MISSING_GGUF_BINARY_MSG)
+
+            server = self._start_server(binary, abs_path)
+            if not await self._wait_healthy(server):
+                self._stop_server(server)
+                raise GGUFServerError(
+                    f"gguf llama-server for {abs_path} did not become healthy "
+                    f"within CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS"
+                )
+            self._servers[abs_path] = server
+            return server
+
+    def shutdown_all(self) -> None:
+        servers = list(self._servers.values())
+        self._servers.clear()
+        for server in servers:
+            self._stop_server(server)
+
+
+GGUF_MANAGER = GGUFServerManager()
+atexit.register(GGUF_MANAGER.shutdown_all)
+
+
+def _gguf_failed_stream(response_id: str, model: str, message: str) -> AsyncIterator[str]:
+    async def gen() -> AsyncIterator[str]:
+        yield sse_event(
+            "response.failed",
+            {
+                "type": "response.failed",
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "model": model,
+                    "status": "failed",
+                    "error": {"code": "gguf_server_error", "message": message},
+                },
+            },
+        )
+
+    return gen()
+
 
 # ---------------------------------------------------------------------------
 # DSML / inline tool-call extraction
@@ -1740,6 +2028,65 @@ def normalize_model(model: str) -> "ModelSpec":
     default_thinking = env_bool("CODESEEQ_THINKING", False)
     raw = (model or "deepseek@deepseek-v4-flash").strip()
 
+    # GGUF local-model selection: bare .gguf path or gguf@<path> slug.
+    # Resolve to an absolute path and validate it exists up front; the
+    # llama-server process manager (GGUFServerManager) owns launching.
+    gguf_like = raw.lower().endswith(".gguf") or raw.lower().startswith("gguf@")
+    if gguf_like:
+        gguf_path = raw[5:] if raw.lower().startswith("gguf@") else raw
+        gguf_path = gguf_path.strip()
+        if not gguf_path:
+            raise ValueError("gguf model path is empty")
+        abs_path = os.path.abspath(os.path.expanduser(gguf_path))
+        if not os.path.isfile(abs_path):
+            raise ValueError(f"gguf model file not found: {abs_path}")
+        stem = os.path.basename(abs_path)
+        if stem.lower().endswith(".gguf"):
+            stem = stem[:-5]
+        slug = f"gguf@{abs_path}"
+
+        thinking = env_bool("CODESEEQ_THINKING", False)
+        gguf_thinking = os.environ.get("CODESEEQ_GGUF_ENABLE_THINKING")
+        if gguf_thinking is not None:
+            thinking = gguf_thinking.strip().lower() in {"1", "true", "yes", "on"}
+
+        context_window = _env_int("CODESEEQ_GGUF_CONTEXT_WINDOW") or 8192
+        max_output_tokens = _env_int("CODESEEQ_GGUF_MAX_OUTPUT_TOKENS") or 2048
+        timeout_seconds = float(_env_int("CODESEEQ_GGUF_TIMEOUT_SECONDS") or 600)
+        temperature = _env_float("CODESEEQ_GGUF_TEMPERATURE")
+        if temperature is None:
+            temperature = 0.7
+
+        # Advanced: an explicit GGUF_BASE_URL routes to an already-running
+        # OpenAI-compatible server instead of spawning llama-server.
+        external_base = _env_first("GGUF_BASE_URL")
+        if external_base:
+            base_url = external_base.rstrip("/")
+            chat_url = _derive_chat_url(PROVIDER_GGUF, base_url)
+            gguf_path_field = None
+        else:
+            base_url = PROVIDER_DEFAULT_BASE_URL[PROVIDER_GGUF]
+            chat_url = _derive_chat_url(PROVIDER_GGUF, base_url)
+            gguf_path_field = abs_path
+
+        return ModelSpec(
+            slug=slug,
+            deepseek_model=stem,
+            thinking=thinking,
+            base_url=base_url,
+            chat_url=chat_url,
+            temperature=temperature,
+            top_p=None,
+            top_k=None,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            timeout_seconds=timeout_seconds,
+            system_prompt=None,
+            provider=PROVIDER_GGUF,
+            api_key_env=None,
+            gguf_path=gguf_path_field,
+        )
+
     # Resolve aliases to a canonical slug that is present in MODEL_SPECS.
     # The two bare/wrapper non-thinking deepseek aliases keep the legacy
     # "CODESEEQ_THINKING" env override for backwards compatibility.
@@ -1813,6 +2160,7 @@ def normalize_model(model: str) -> "ModelSpec":
                         system_prompt=sys_prompt if sys_prompt is not None else template.system_prompt,
                         provider=owner,
                         api_key_env=PROVIDER_API_KEY_ENV.get(owner),
+                        gguf_path=None,
                     )
                 else:
                     spec = ModelSpec(
@@ -1830,6 +2178,7 @@ def normalize_model(model: str) -> "ModelSpec":
                         system_prompt=sys_prompt,
                         provider=owner,
                         api_key_env=PROVIDER_API_KEY_ENV.get(owner),
+                        gguf_path=None,
                     )
                 return spec
     if canonical not in MODEL_SPECS:
@@ -1854,6 +2203,7 @@ def normalize_model(model: str) -> "ModelSpec":
         system_prompt=src.system_prompt,
         provider=src.provider,
         api_key_env=src.api_key_env,
+        gguf_path=src.gguf_path,
     )
 
     # Legacy "CODESEEQ_THINKING" global toggle only affects the explicit
@@ -1889,6 +2239,7 @@ def normalize_model(model: str) -> "ModelSpec":
             system_prompt=spec.system_prompt,
             provider=effective_provider,
             api_key_env=PROVIDER_API_KEY_ENV.get(effective_provider),
+            gguf_path=spec.gguf_path,
         )
 
     return spec
@@ -3378,9 +3729,10 @@ async def health() -> Dict[str, str]:
     effective_backend = image_backend
     if image_backend == "none" and venice_key:
         effective_backend = "venice"
-    info: Dict[str, str] = {"status": "ok", "version": "0.4.2", "image_backend": effective_backend}
-    providers = sorted({spec.provider for spec in MODEL_SPECS.values()})
+    info: Dict[str, str] = {"status": "ok", "version": "0.4.4", "image_backend": effective_backend}
+    providers = sorted({spec.provider for spec in MODEL_SPECS.values()} | {PROVIDER_GGUF})
     info["providers"] = ",".join(providers)
+    info["gguf_binary"] = "found" if GGUF_MANAGER._find_binary() else "not-found"
     try:
         info["provider"] = normalize_model(os.environ.get("CODESEEQ_MODEL", "")).provider
     except Exception:
@@ -3403,6 +3755,7 @@ async def models() -> Dict[str, Any]:
                 "owned_by": spec.provider,
             }
         )
+    data.append({"id": "gguf@local-model", "object": "model", "owned_by": PROVIDER_GGUF})
     return {"object": "list", "data": data}
 
 
@@ -3425,6 +3778,7 @@ async def responses(request: Request) -> Any:
     thinking_enabled = spec.thinking
     model_chat_url = spec.chat_url
     model_timeout = spec.timeout_seconds
+    stream = bool(body.get("stream", False))
 
     # Resolve the API key for the configured provider. qwibus and local
     # gateways are keyless by default (local honours an optional
@@ -3436,6 +3790,22 @@ async def responses(request: Request) -> Any:
         require_provider_key(provider)
 
     response_id = f"resp_{uuid.uuid4().hex[:20]}"
+
+    if spec.provider == PROVIDER_GGUF and spec.gguf_path:
+        try:
+            server = await GGUF_MANAGER.ensure(spec.gguf_path)
+        except GGUFServerError as exc:
+            log(f"gguf server error: {exc}")
+            if stream:
+                return StreamingResponse(
+                    _gguf_failed_stream(response_id, provider_model, str(exc)),
+                    media_type="text/event-stream",
+                )
+            return JSONResponse(status_code=502, content={"error": str(exc)})
+        model_chat_url = server.chat_url
+        spec.chat_url = server.chat_url
+        spec.base_url = server.base_url
+        log(f"gguf server ready at {server.base_url}")
 
     # --- bridge built-in helpers (smoke test paths) -----------------------
     bridge_tool = body.get("codeseeq_tool")
@@ -3516,8 +3886,6 @@ async def responses(request: Request) -> Any:
         if system_parts:
             rest.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
         messages = rest
-
-    stream = bool(body.get("stream", False))
 
     is_anthropic = provider == PROVIDER_ANTHROPIC
     key = provider_api_key(provider)
@@ -4322,6 +4690,10 @@ def _install_parent_watchdog() -> None:
             pass
         finally:
             log("parent process exited; bridge shutting down")
+            try:
+                GGUF_MANAGER.shutdown_all()
+            except Exception:  # pragma: no cover - best effort
+                pass
             try:
                 os.kill(os.getpid(), signal.SIGTERM)
             except OSError:  # pragma: no cover - already gone

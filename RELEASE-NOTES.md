@@ -1,3 +1,33 @@
+## v0.4.4 - 2026-08-28
+
+### Added
+- **GGUF llama-server fixed port (`CODESEEQ_GGUF_PORT`).** The GGUF bridge can
+  now pin the llama-server loopback port via `--port` (e.g. `8888`) instead of
+  auto-selecting a free port. The llama-server tuning flags `-c` (context),
+  `-ngl` (GPU layers), `-np` (parallel) and `--port` are all settable via
+  environment variables or JSON config keys (precedence: env > JSON config >
+  default): `CODESEEQ_GGUF_CONTEXT_WINDOW`, `CODESEEQ_GGUF_N_GPU_LAYERS`,
+  `CODESEEQ_GGUF_PARALLEL`, and `CODESEEQ_GGUF_PORT`. `.env.example` documents
+  the 1:1 flag mapping.
+
+## v0.4.3 - 2026-08-28
+
+### Added
+- **Local GGUF model support (`gguf` provider).** Select a model by its full
+  `.gguf` path via `--model /path/to/model.gguf`, `CODESEEQ_MODEL=/path/to/model.gguf`,
+  or the explicit `gguf@/path/to/model.gguf` slug. The bridge lazily launches
+  llama.cpp `llama-server` on a free loopback port, health-checks `/health`,
+  reuses one server per path per bridge process, and tears it down via `atexit`
+  + the parent-death watchdog so a killed wrapper cannot leak an inference
+  process. `codeseeq config` gains a "GGUF (local llama.cpp)" provider that
+  prompts for the model path.
+- **GGUF tuning knobs.** `CODESEEQ_GGUF_CONTEXT_WINDOW`,
+  `CODESEEQ_GGUF_MAX_OUTPUT_TOKENS`, `CODESEEQ_GGUF_N_GPU_LAYERS`,
+  `CODESEEQ_GGUF_THREADS`, `CODESEEQ_GGUF_PARALLEL`,
+  `CODESEEQ_GGUF_TIMEOUT_SECONDS`, `CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS`,
+  `CODESEEQ_GGUF_ENABLE_THINKING`, `CODESEEQ_GGUF_LLAMA_SERVER_PATH`, and the
+  optional `GGUF_BASE_URL` / `GGUF_API_KEY` are documented in `.env.example`.
+
 ## v0.4.2 - 2026-08-19
 
 ### Added
