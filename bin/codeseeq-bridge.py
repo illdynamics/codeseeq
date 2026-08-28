@@ -2,7 +2,7 @@
 """
 codeseeq-bridge: OpenAI Responses API <-> provider translation bridge.
 
-v0.4.4 patches:
+v0.4.5 patches:
 - GGUF llama-server fixed port: CODESEEQ_GGUF_PORT pins the loopback
   --port instead of auto-select; -c/-ngl/-np/--port map 1:1 to
   CODESEEQ_GGUF_CONTEXT_WINDOW / CODESEEQ_GGUF_N_GPU_LAYERS /
@@ -2867,6 +2867,26 @@ def collect_registered_tool_names(tools: Any) -> List[str]:
     return names
 
 
+def normalize_deepseek_reasoning_effort(value: Any) -> Optional[str]:
+    """Normalize a DeepSeek reasoning-effort value to ``low``/``high``/``max``.
+
+    DeepSeek accepts ``low``, ``high`` and ``max`` (default ``high``). For
+    compatibility, ``medium`` and ``xhigh`` are aliases for ``high`` and the
+    legacy CodeSeeq value ``minimal`` is treated as ``low``. Returns ``None``
+    for empty or unsupported values so the caller can omit the field.
+    """
+    if not isinstance(value, str):
+        return None
+    effort = value.strip().lower()
+    if effort in {"low", "high", "max"}:
+        return effort
+    if effort in {"medium", "xhigh"}:
+        return "high"
+    if effort == "minimal":
+        return "low"
+    return None
+
+
 def deepseek_payload(
     body: Dict[str, Any],
     spec: "ModelSpec",
@@ -2960,18 +2980,25 @@ def deepseek_payload(
     if spec.slug.startswith("qwibus") and not thinking_enabled:
         payload["enable_thinking"] = False
 
-    # FIXED - only send when enabled; omit entirely for non-thinking models
+    # Thinking mode is toggled independently of reasoning effort. When
+    # thinking is disabled we omit the field entirely (DeepSeek defaults to
+    # its own mode), matching prior behavior.
     if thinking_enabled:
         payload["thinking"] = {"type": "enabled"}
+
+    # DeepSeek reasoning_effort is a top-level parameter independent of the
+    # thinking toggle and applies to every DeepSeek model (flash, pro, and
+    # their -thinking variants). It is NOT sent to other providers that share
+    # this payload builder (grok/google/venice/local/gguf/qwibus).
+    if spec.provider == PROVIDER_DEEPSEEK:
         reasoning = body.get("reasoning")
         if not isinstance(reasoning, dict):
             reasoning = {}
-        effort = reasoning.get("effort") or os.environ.get("CODESEEQ_REASONING_EFFORT", "")
-        if effort and effort in {"minimal", "low", "medium", "high", "xhigh", "max"}:
-            if effort in {"low", "medium"}:
-                effort = "high"
-            if effort == "xhigh":
-                effort = "max"
+        # CODESEEQ_REASONING_EFFORT (config default or -R flag) wins over any
+        # reasoning.effort that Codex may pass in the Responses body.
+        effort = os.environ.get("CODESEEQ_REASONING_EFFORT", "") or reasoning.get("effort", "")
+        effort = normalize_deepseek_reasoning_effort(effort)
+        if effort:
             payload["reasoning_effort"] = effort
 
     return payload
@@ -3729,7 +3756,7 @@ async def health() -> Dict[str, str]:
     effective_backend = image_backend
     if image_backend == "none" and venice_key:
         effective_backend = "venice"
-    info: Dict[str, str] = {"status": "ok", "version": "0.4.4", "image_backend": effective_backend}
+    info: Dict[str, str] = {"status": "ok", "version": "0.4.5", "image_backend": effective_backend}
     providers = sorted({spec.provider for spec in MODEL_SPECS.values()} | {PROVIDER_GGUF})
     info["providers"] = ",".join(providers)
     info["gguf_binary"] = "found" if GGUF_MANAGER._find_binary() else "not-found"

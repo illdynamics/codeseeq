@@ -52,13 +52,18 @@
       "priority": 11,
       "supported_reasoning_levels": [
         {
+          "level": "low",
+          "effort": "low",
+          "description": "Low reasoning effort"
+        },
+        {
           "level": "high",
           "effort": "high",
           "description": "High reasoning effort"
         },
         {
           "level": "max",
-          "effort": "high",
+          "effort": "max",
           "description": "Maximum reasoning effort"
         }
       ],
@@ -122,13 +127,18 @@
       "priority": 21,
       "supported_reasoning_levels": [
         {
+          "level": "low",
+          "effort": "low",
+          "description": "Low reasoning effort"
+        },
+        {
           "level": "high",
           "effort": "high",
           "description": "High reasoning effort"
         },
         {
           "level": "max",
-          "effort": "high",
+          "effort": "max",
           "description": "Maximum reasoning effort"
         }
       ],

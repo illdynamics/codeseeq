@@ -105,7 +105,7 @@
       "system_prompt": "",
       "supports_streaming": true,
       "supports_tools": "via-open-responses-if-supported",
-      "notes": "Thinking mode enabled via thinking.type=enabled. reasoning_effort high/max supported in docs.",
+      "notes": "Thinking mode enabled via thinking.type=enabled. reasoning_effort low/high/max supported in docs.",
       "recommended_for": [
         "hard debugging",
         "architecture",

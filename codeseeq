@@ -32,6 +32,24 @@ bool_normalize() {
   esac
 }
 
+reasoning_effort_normalize() {
+  # Normalize a DeepSeek reasoning-effort value to low/high/max (or empty).
+  # Accepts low/high/max natively; medium/xhigh -> high; minimal -> low.
+  # Unrecognised values return non-zero so callers can reject them.
+  local v="${1:-}"
+  [[ -n "$v" ]] || { printf ''; return 0; }
+  v="$(printf '%s' "$v" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+  case "$v" in
+    low) printf 'low' ;;
+    high) printf 'high' ;;
+    max) printf 'max' ;;
+    medium|xhigh) printf 'high' ;;
+    minimal) printf 'low' ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # JSON configuration fallback (env vars override JSON config at all times)
 # ---------------------------------------------------------------------------
@@ -292,6 +310,11 @@ Bridge modes:
 Uncensored mode:
   -U, --uncensored-mode  Load Dolfino aka Dirty D uncensored system prompt
   CODESEEQ_UNCENSORED_MODE Set uncensored mode via environment
+
+DeepSeek reasoning:
+  -R, --reasoning LEVEL  Set DeepSeek reasoning effort: low, high, or max
+                         (overrides the config default)
+  CODESEEQ_REASONING_EFFORT  Set default reasoning effort (DeepSeek only)
 
 Image backend:
   --image-backend BACKEND       Set image backend: none (default) or venice
@@ -932,8 +955,9 @@ def _main() -> None:
             "supports_parallel_tool_calls": True,
             "priority": 99,
             "supported_reasoning_levels": [
+                {"level": "low", "effort": "low", "description": "Low reasoning effort"},
                 {"level": "high", "effort": "high", "description": "High reasoning effort"},
-                {"level": "max", "effort": "high", "description": "Maximum reasoning effort"},
+                {"level": "max", "effort": "max", "description": "Maximum reasoning effort"},
             ] if thinking else [],
             "input_modalities": ["text"],
             "supports_search_tool": True,
@@ -1081,7 +1105,7 @@ select_host_bridge_port() {
 # standalone bridge container and the Codex container. Per-model keys use the
 # documented CODESEEQ_<MODEL>_<SUFFIX> scheme (provider prefix stripped).
 codeseeq_bridge_env_names() {
-  printf '%s\n'     DEEPSEEK_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GROK_API_KEY     BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY VENICE_API_KEY     LOCAL_API_KEY DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     ANTHROPIC_BASE_URL GOOGLE_BASE_URL GROK_BASE_URL VENICE_BASE_URL LOCAL_BASE_URL     CODESEEQ_PROVIDER CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS QWIBUS_NO_API_KEY     GGUF_API_KEY GGUF_BASE_URL CODESEEQ_GGUF_LLAMA_SERVER_PATH     CODESEEQ_GGUF_CONTEXT_WINDOW CODESEEQ_GGUF_MAX_OUTPUT_TOKENS     CODESEEQ_GGUF_N_GPU_LAYERS CODESEEQ_GGUF_THREADS CODESEEQ_GGUF_PARALLEL     CODESEEQ_GGUF_PORT CODESEEQ_GGUF_TIMEOUT_SECONDS CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS     CODESEEQ_GGUF_ENABLE_THINKING
+  printf '%s\n'     DEEPSEEK_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GROK_API_KEY     BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY VENICE_API_KEY     LOCAL_API_KEY DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     ANTHROPIC_BASE_URL GOOGLE_BASE_URL GROK_BASE_URL VENICE_BASE_URL LOCAL_BASE_URL     CODESEEQ_PROVIDER CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS CODESEEQ_REASONING_EFFORT QWIBUS_NO_API_KEY     GGUF_API_KEY GGUF_BASE_URL CODESEEQ_GGUF_LLAMA_SERVER_PATH     CODESEEQ_GGUF_CONTEXT_WINDOW CODESEEQ_GGUF_MAX_OUTPUT_TOKENS     CODESEEQ_GGUF_N_GPU_LAYERS CODESEEQ_GGUF_THREADS CODESEEQ_GGUF_PARALLEL     CODESEEQ_GGUF_PORT CODESEEQ_GGUF_TIMEOUT_SECONDS CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS     CODESEEQ_GGUF_ENABLE_THINKING
 
   local key suffix
   # Per-model keys use the CODESEEQ_<MODEL>_<SUFFIX> scheme: the bridge's
@@ -1763,6 +1787,7 @@ collect_env() {
   CONTAINER_ENV_ARGS+=(
     -e "CODESEEQ_MODEL=${CODESEEQ_MODEL}"
     -e "CODESEEQ_THINKING=${CODESEEQ_THINKING}"
+    -e "CODESEEQ_REASONING_EFFORT=${CODESEEQ_REASONING_EFFORT}"
     -e "CODESEEQ_APPROVAL_POLICY=${CODESEEQ_APPROVAL_POLICY}"
     -e "CODESEEQ_SANDBOX_MODE=${CODESEEQ_SANDBOX_MODE}"
     -e "CODESEEQ_YOLO=${CODESEEQ_YOLO:-false}"
@@ -2234,8 +2259,8 @@ PYCFG
 }
 
 config_write_json() {
-  # config_write_json <provider> <model> <key_env> <key> <base_url_env> <base_url>
-  local provider="$1" model="$2" key_env="$3" key="$4" base_url_env="$5" base_url="$6"
+  # config_write_json <provider> <model> <key_env> <key> <base_url_env> <base_url> <reasoning>
+  local provider="$1" model="$2" key_env="$3" key="$4" base_url_env="$5" base_url="$6" reasoning="${7:-}"
   local path
   path="$(config_json_path)"
   mkdir -p "$(dirname "$path")"
@@ -2252,6 +2277,7 @@ config_write_json() {
          CODESEEQ_CONFIG_WRITE_KEY="$key" \
          CODESEEQ_CONFIG_WRITE_BASE_URL_ENV="$base_url_env" \
          CODESEEQ_CONFIG_WRITE_BASE_URL="$base_url" \
+         CODESEEQ_CONFIG_WRITE_REASONING="$reasoning" \
          python3 - "$tmp" "$path" <<'PYCFG'
 import json, os, sys
 out_path, in_path = sys.argv[1], sys.argv[2]
@@ -2261,6 +2287,7 @@ key_env = os.environ.get("CODESEEQ_CONFIG_WRITE_KEY_ENV", "")
 key = os.environ.get("CODESEEQ_CONFIG_WRITE_KEY", "")
 base_url_env = os.environ.get("CODESEEQ_CONFIG_WRITE_BASE_URL_ENV", "")
 base_url = os.environ.get("CODESEEQ_CONFIG_WRITE_BASE_URL", "")
+reasoning = os.environ.get("CODESEEQ_CONFIG_WRITE_REASONING", "")
 
 data = {}
 try:
@@ -2290,6 +2317,10 @@ if base_url_env and base_url:
     data[base_url_env] = base_url
 elif base_url_env:
     data.pop(base_url_env, None)
+if reasoning:
+    data["CODESEEQ_REASONING_EFFORT"] = reasoning
+else:
+    data.pop("CODESEEQ_REASONING_EFFORT", None)
 
 with open(out_path, "w", encoding="utf-8") as fh:
     json.dump(data, fh, indent=2, ensure_ascii=False)
@@ -2309,7 +2340,8 @@ PYCFG
     local -a jq_base=(jq -n \
       --arg provider "$provider" --arg model "$model" \
       --arg key_env "$key_env" --arg key "$key" \
-      --arg base_url_env "$base_url_env" --arg base_url "$base_url")
+      --arg base_url_env "$base_url_env" --arg base_url "$base_url" \
+      --arg reasoning "$reasoning")
     if [[ -f "$path" ]]; then
       if "${jq_base[@]}" --slurpfile keep "$path" '
         ($keep[0] // {})
@@ -2320,7 +2352,8 @@ PYCFG
         | .CODESEEQ_MODEL = $model
         | .CODESEEQ_PROVIDER = $provider
         | if ($key_env != "" and $key != "") then .[$key_env] = $key else . end
-        | if ($base_url_env != "" and $base_url != "") then .[$base_url_env] = $base_url else . end' \
+        | if ($base_url_env != "" and $base_url != "") then .[$base_url_env] = $base_url else . end
+        | if ($reasoning != "") then .CODESEEQ_REASONING_EFFORT = $reasoning else del(.CODESEEQ_REASONING_EFFORT) end' \
         > "$tmp" 2>/dev/null; then
         wrote=true
       fi
@@ -2328,7 +2361,8 @@ PYCFG
       if "${jq_base[@]}" '
         {CODESEEQ_MODEL: $model, CODESEEQ_PROVIDER: $provider}
         | if ($key_env != "" and $key != "") then .[$key_env] = $key else . end
-        | if ($base_url_env != "" and $base_url != "") then .[$base_url_env] = $base_url else . end' \
+        | if ($base_url_env != "" and $base_url != "") then .[$base_url_env] = $base_url else . end
+        | if ($reasoning != "") then .CODESEEQ_REASONING_EFFORT = $reasoning else del(.CODESEEQ_REASONING_EFFORT) end' \
         > "$tmp" 2>/dev/null; then
         wrote=true
       fi
@@ -2383,6 +2417,9 @@ base_envs = {"anthropic": "ANTHROPIC_BASE_URL", "google": "GOOGLE_BASE_URL",
 base_env = base_envs.get(provider, "")
 if base_env and data.get(base_env):
     print(f"Base URL: {data[base_env]}")
+reasoning = data.get("CODESEEQ_REASONING_EFFORT")
+if reasoning:
+    print(f"Reasoning effort (default, DeepSeek only): {reasoning}")
 print("Note: an environment variable always overrides the config file value.")
 PYCFG
   else
@@ -2449,6 +2486,17 @@ cmd_config() {
     model="$(cfg_select "Select a model ($(config_provider_label "$provider")):" "${model_items[@]}")" || { printf '\nConfiguration cancelled.\n' >&2; return 1; }
   fi
 
+  # ── Screen 2.5: DeepSeek default reasoning effort ───────────
+  local reasoning=""
+  if [[ "$provider" == "deepseek" ]]; then
+    printf '\n'
+    reasoning="$(cfg_select "Default DeepSeek reasoning effort (-R overrides):" \
+      "high|High (recommended default)" \
+      "low|Low (faster, less thorough)" \
+      "max|Max (most thorough, slowest)")" || reasoning=""
+    [[ -n "$reasoning" ]] || reasoning="high"
+  fi
+
   # ── Screen 3: API key / endpoint ─────────────────────────────
   local key_env="" key="" base_url_env="" base_url=""
   key_env="$(config_provider_key_env "$provider")"
@@ -2498,7 +2546,7 @@ PYCFG
     [[ -n "$key" ]] || { printf 'API key is required for provider %s.\n' "$provider" >&2; return 1; }
   fi
 
-  config_write_json "$provider" "$model" "$key_env" "$key" "$base_url_env" "$base_url"
+  config_write_json "$provider" "$model" "$key_env" "$key" "$base_url_env" "$base_url" "$reasoning"
 
   printf '\n'
   printf 'CodeSeeq configuration saved:\n'
@@ -2511,6 +2559,9 @@ PYCFG
   fi
   if [[ -n "$base_url_env" && -n "$base_url" ]]; then
     printf '  Base URL: %s=%s\n' "$base_url_env" "$base_url"
+  fi
+  if [[ "$provider" == "deepseek" && -n "$reasoning" ]]; then
+    printf '  Reasoning effort (default): %s\n' "$reasoning"
   fi
   printf '\nCodeSeeq is ready to use. Try: codeseeq -y "hello"\n'
 }
@@ -3128,6 +3179,20 @@ while (( $# > 0 )); do
       ;;
     --no-bridge-reuse)
       CODESEEQ_BRIDGE_REUSE=0
+      shift
+      ;;
+    -R|--reasoning|--reasoning-effort)
+      [[ $# -ge 2 ]] || die "$1 requires a value (low, high, or max)"
+      _r="$(reasoning_effort_normalize "$2")" || die "$1 requires low, high, or max (got: $2)"
+      CODESEEQ_REASONING_EFFORT="$_r"
+      export CODESEEQ_REASONING_EFFORT
+      shift 2
+      ;;
+    -R=*|--reasoning=*|--reasoning-effort=*)
+      _r="${1#*=}"
+      _r="$(reasoning_effort_normalize "$_r")" || die "$1 requires low, high, or max (got: ${1#*=})"
+      CODESEEQ_REASONING_EFFORT="$_r"
+      export CODESEEQ_REASONING_EFFORT
       shift
       ;;
     -U|--uncensored-mode)

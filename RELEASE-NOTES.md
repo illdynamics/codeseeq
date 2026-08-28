@@ -1,3 +1,25 @@
+## v0.4.5 - 2026-08-28
+
+### Added
+- **DeepSeek reasoning-effort control (`-R` / `CODESEEQ_REASONING_EFFORT`).**
+  A new `-R low|high|max` (also `--reasoning` / `--reasoning-effort`) command-line
+  switch sets DeepSeek's `reasoning_effort` for the run and overrides any
+  config-file default. `codeseeq config` now records a default reasoning effort
+  for DeepSeek (written as `CODESEEQ_REASONING_EFFORT` in the JSON config), and
+  `codeseeq config status` displays it. The bridge only forwards
+  `reasoning_effort` for DeepSeek models (flash, pro, and their `-thinking`
+  variants) and leaves other providers untouched.
+- **Correct DeepSeek `reasoning_effort` mapping.** Per the DeepSeek API docs the
+  accepted levels are `low`, `high` and `max` (default `high`). `medium` and
+  `xhigh` are compatibility aliases for `high`; the legacy `minimal` value is
+  treated as `low`. The previous mapping (which collapsed `low` to `high` and
+  promoted `xhigh` to `max`) is fixed.
+
+### Changed
+- `CODESEEQ_REASONING_EFFORT` is now forwarded through the bridge launcher,
+  in-container entrypoint, and Codex container environment so the value set via
+  `-R` or config actually reaches the DeepSeek provider.
+
 ## v0.4.4 - 2026-08-28
 
 ### Added
