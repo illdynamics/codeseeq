@@ -567,6 +567,51 @@ system_cmd() {
   esac
 }
 
+# Detect a GGUF local-model selection (bare .gguf path, gguf@<path>, or the
+# gguf provider from config). GGUF models are files served by a host
+# llama-server, so callers can use this to keep the bridge on the host.
+is_gguf_model() {
+  local model="${1:-${CODESEEQ_MODEL:-${PROVIDER_MODEL:-}}}"
+  local lower
+  [[ "${CODESEEQ_PROVIDER:-}" == "gguf" ]] && return 0
+  lower="$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')"
+  [[ "$lower" == gguf@* || "$lower" == *.gguf ]] && return 0
+  return 1
+}
+
+# Check whether the model actually requested for this invocation is GGUF.
+# `is_gguf_model` alone only sees the env/config value; the CLI may override it
+# with `-m`/`--model` in any argv position (including after a `run` command),
+# so scan the remaining args for a gguf model flag as well.
+requested_gguf_model() {
+  is_gguf_model && return 0
+  local arg value
+  while (( $# > 0 )); do
+    arg="$1"
+    case "$arg" in
+      -m|--model)
+        [[ $# -ge 2 ]] || return 1
+        value="$2"
+        is_gguf_model "$value" && return 0
+        shift 2
+        ;;
+      --model=*)
+        value="${arg#--model=}"
+        is_gguf_model "$value" && return 0
+        shift
+        ;;
+      --)
+        # Everything after `--` is literal prompt text, never a model flag.
+        return 1
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  return 1
+}
+
 normalize_model() {
   local model="$1"
   local thinking_override="${2:-}"
@@ -3315,6 +3360,29 @@ runtime_mode="$(runtime_mode_resolve)"
 
 use_host=false
 log "runtime_mode=$runtime_mode cmd_arg=$cmd_arg"
+
+# GGUF local models are resolved and served on the HOST filesystem by a host
+# llama-server. Never run them through the container: the bridge would resolve
+# the .gguf path inside the container namespace (where the model does not
+# exist) and could not launch the host llama-server binary.
+if requested_gguf_model "$@"; then
+  if [[ "$runtime_mode" == "container" ]]; then
+    warn "gguf local models run on the host; forcing host runtime (ignoring CODESEEQ_RUNTIME_MODE=container)"
+  else
+    log "gguf model detected; using host runtime"
+  fi
+  use_host=true
+  # The GGUF bridge must also run on the host so it can see the .gguf file and
+  # launch the host llama-server binary. An auto/container bridge would resolve
+  # the path inside the bridge container and hit the same not-found error.
+  if [[ "${CODESEEQ_BRIDGE_MODE:-auto}" != "external" ]]; then
+    if [[ "${CODESEEQ_BRIDGE_MODE:-auto}" == "container" ]]; then
+      warn "gguf bridge must run on the host; forcing process bridge mode"
+    fi
+    CODESEEQ_BRIDGE_MODE=process
+  fi
+fi
+
 if [[ "$runtime_mode" == "host" ]]; then
   use_host=true
   log "runtime: explicit host"

@@ -521,3 +521,10 @@ CODESEEQ_MODEL=/does/not/exist/model.gguf codeseeq "hello"
 
 Check the path, expand `~` (the wrapper/bridge resolve it), and make sure the
 file is an actual `.gguf` file.
+
+If you were running in container runtime, CodeSeeq auto-selects host runtime
+for GGUF models so the `.gguf` path is resolved on the host filesystem instead
+of inside the container. If the file exists on the host but you still see this
+error, confirm the host runtime prerequisites are installed: the Codex CLI,
+Python with the bridge dependencies, and `llama-server` (or
+`CODESEEQ_GGUF_LLAMA_SERVER_PATH`).

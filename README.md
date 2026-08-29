@@ -104,6 +104,10 @@ chat-completions translation to it, and tears it down cleanly.
 **Prerequisite:** `llama-server` on `PATH`, or set
 `CODESEEQ_GGUF_LLAMA_SERVER_PATH` to its full path.
 
+GGUF models are resolved and served on the host: CodeSeeq automatically selects
+host runtime (and host process bridge mode) for a `.gguf` model so the file path
+is looked up on the host filesystem rather than inside the container.
+
 ```bash
 # by full path
 codeseeq --model /absolute/path/to/llama-3.2-3b-instruct-q4_k_m.gguf "prompt"
