@@ -36,6 +36,7 @@ COPY bin/codeseeq-healthcheck /usr/local/bin/codeseeq-healthcheck
 COPY bin/codeseeq-print-config /usr/local/bin/codeseeq-print-config
 COPY config/model-catalog.json /etc/codeseeq/model-catalog.json
 COPY config/codex-model-catalog.json /etc/codeseeq/codex-model-catalog.json
+COPY config/gguf-models.json /etc/codeseeq/gguf-models.json
 
 RUN chmod +x \
     /usr/local/bin/codeseeq-entrypoint \

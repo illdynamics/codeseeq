@@ -122,11 +122,12 @@ CODESEEQ_MODEL='gguf@/absolute/path/to/model.gguf' codeseeq
 codeseeq config
 ```
 
-Optional tuning:
+Optional tuning (global defaults — see below for per-model overrides):
 
 | Variable | Purpose | Default |
 |---|---|---|
 | `CODESEEQ_GGUF_CONTEXT_WINDOW` | llama-server `-c` context size | 8192 |
+| `CODESEEQ_GGUF_MODELS_JSON` | path to the per-model GGUF config JSON | `config/gguf-models.json` |
 | `CODESEEQ_GGUF_MAX_OUTPUT_TOKENS` | max output tokens | 2048 |
 | `CODESEEQ_GGUF_N_GPU_LAYERS` | `-ngl` offload layers | 0 |
 | `CODESEEQ_GGUF_THREADS` | `-t` CPU threads | auto |
@@ -136,6 +137,44 @@ Optional tuning:
 | `CODESEEQ_GGUF_ENABLE_THINKING` | enable thinking (if supported) | false |
 | `GGUF_BASE_URL` | advanced: reuse an already-running GGUF server | unset |
 | `GGUF_API_KEY` | optional `--api-key` for the local server | unset |
+
+#### Per-model GGUF settings
+
+Each `.gguf` model can carry its own llama-server tuning via
+`config/gguf-models.json` (host) / `/etc/codeseeq/gguf-models.json` (container).
+The file maps a model path (absolute, `~/`-prefixed, basename, or basename
+without the `.gguf` suffix) to any of the `CODESEEQ_GGUF_*` knobs. Per-model
+values win over the global env vars, which win over the built-in defaults.
+The resolved context window is applied everywhere consistently: the
+`llama-server -c` flag, the Codex model catalog (`context_window` /
+`truncation_policy`), and `model_context_window` in the generated `config.toml`
+(previously the merged catalog hardcoded 131072 while the server stayed at the
+8192 default, so raising the window appeared to "reset back to 8192").
+
+```json
+{
+  "models": {
+    "~/Qoding/ai/Qwen3.5-9B-The-Defiant-Fable-Uncnr-Heretic-NEO-MAX-Q8_0.gguf": {
+      "context_window": 131072,
+      "max_output_tokens": 2048,
+      "n_gpu_layers": "all",
+      "parallel": 1,
+      "port": 8888,
+      "enable_thinking": false
+    },
+    "~/Qoding/ai/Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-LOW-MTP-IQ4_XS.gguf": {
+      "context_window": 20480,
+      "max_output_tokens": 2048,
+      "n_gpu_layers": "all",
+      "parallel": 1
+    }
+  }
+}
+```
+
+Supported keys: `context_window`, `max_output_tokens`, `n_gpu_layers`,
+`threads`, `parallel`, `port`, `timeout_seconds`, `temperature`,
+`enable_thinking`. Point at a custom file with `CODESEEQ_GGUF_MODELS_JSON`.
 
 ### Host-native mode (no Docker/Podman needed)
 

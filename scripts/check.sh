@@ -286,6 +286,36 @@ print('OK')
   fail "entrypoint did not merge local@model into codex model catalog"
 fi
 
+note "checking entrypoint applies per-model GGUF context window"
+mkdir -p "${tmp_check_dir}/gguf-catalog"
+cat > "${tmp_check_dir}/gguf-models.json" <<'EOF'
+{"models": {"/nonexistent/gguf-test.gguf": {"context_window": 20480}}}
+EOF
+if ! CODESEEQ_CODEX_HOME="${tmp_check_dir}/gguf-catalog/.codeseeq" \
+  CODESEEQ_WORKDIR="${tmp_check_dir}/workspace-gguf" \
+  CODESEEQ_RUNTIME_DIR="${tmp_check_dir}/run-gguf" \
+  CODESEEQ_LOG_DIR="${tmp_check_dir}/log-gguf" \
+  CODESEEQ_HOST_MODEL_CATALOG_JSON="${repo_root}/config/codex-model-catalog.json" \
+  CODESEEQ_GGUF_MODELS_JSON="${tmp_check_dir}/gguf-models.json" \
+  CODESEEQ_MODEL="gguf@/nonexistent/gguf-test.gguf" \
+  CODESEEQ_PROVIDER="gguf" \
+  ./bin/codeseeq-entrypoint config > "${tmp_check_dir}/config-gguf.out" 2>/dev/null; then
+  fail "codeseeq-entrypoint config with gguf model failed"
+elif ! python3 -c "
+import json
+d = json.load(open('${tmp_check_dir}/gguf-catalog/.codeseeq/codex-model-catalog.json'))
+slugs = {m.get('slug'): m for m in d.get('models', [])}
+e = slugs.get('gguf@/nonexistent/gguf-test.gguf')
+assert e and e.get('context_window') == 20480, (e or {}).get('context_window')
+assert e.get('max_context_window') == 20480 and e.get('truncation_policy', {}).get('limit') == 20480
+assert slugs.get('gguf@local-model', {}).get('context_window') == 20480
+toml = open('${tmp_check_dir}/gguf-catalog/.codeseeq/config.toml').read()
+assert 'model_context_window = 20480' in toml, toml
+print('OK')
+"; then
+  fail "entrypoint did not apply per-model GGUF context window"
+fi
+
 note "checking system prompt injection config"
 system_prompt_file="${tmp_check_dir}/system-prompt.md"
 cat > "$system_prompt_file" <<'EOF'

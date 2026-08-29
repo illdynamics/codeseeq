@@ -221,6 +221,66 @@ check(
     str(with_empty),
 )
 
+# 10) Per-model GGUF config (config/gguf-models.json / CODESEEQ_GGUF_MODELS_JSON):
+#     per-model values win over the global env vars, which win over defaults.
+import json as _json
+per_model_dir = tempfile.mkdtemp(prefix="codeseeq-gguf-permodel-")
+pm_a = os.path.join(per_model_dir, "alpha.gguf")
+pm_b = os.path.join(per_model_dir, "beta.gguf")
+pm_c = os.path.join(per_model_dir, "gamma.gguf")
+for p in (pm_a, pm_b, pm_c):
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write("fake gguf")
+pm_cfg = os.path.join(per_model_dir, "gguf-models.json")
+with open(pm_cfg, "w", encoding="utf-8") as fh:
+    _json.dump({
+        "models": {
+            # absolute-path key
+            pm_a: {"context_window": 131072, "max_output_tokens": 4096,
+                   "n_gpu_layers": "all", "parallel": 1, "port": 8888},
+            # basename key
+            "beta.gguf": {"context_window": 20480, "n_gpu_layers": 99},
+        }
+    }, fh)
+bridge._gguf_models_cache = None
+os.environ["CODESEEQ_GGUF_MODELS_JSON"] = pm_cfg
+
+sa = bridge.normalize_model(pm_a)
+sb = bridge.normalize_model(pm_b)
+check("per-model context_window (absolute key)", sa.context_window == 131072, sa.context_window)
+check("per-model max_output_tokens", sa.max_output_tokens == 4096, sa.max_output_tokens)
+check("per-model context_window (basename key)", sb.context_window == 20480, sb.context_window)
+
+argv_a = bridge.GGUFServerManager._argv("/fake/llama-server", pm_a, 8888, "alpha")
+argv_b = bridge.GGUFServerManager._argv("/fake/llama-server", pm_b, 9999, "beta")
+check("per-model -c flag (absolute key)", argv_a[argv_a.index("-c") + 1] == "131072", str(argv_a))
+check("per-model -ngl flag (string passthrough)", argv_a[argv_a.index("-ngl") + 1] == "all", str(argv_a))
+check("per-model -np flag", argv_a[argv_a.index("-np") + 1] == "1", str(argv_a))
+check("per-model -c flag (basename key)", argv_b[argv_b.index("-c") + 1] == "20480", str(argv_b))
+check("per-model -ngl flag (int passthrough)", argv_b[argv_b.index("-ngl") + 1] == "99", str(argv_b))
+check("per-model port setting", bridge._gguf_int_setting(pm_a, "port") == 8888,
+      str(bridge._gguf_int_setting(pm_a, "port")))
+
+# Per-model config beats the global env var.
+os.environ["CODESEEQ_GGUF_CONTEXT_WINDOW"] = "8192"
+argv_a2 = bridge.GGUFServerManager._argv("/fake/llama-server", pm_a, 8888, "alpha")
+check("per-model -c wins over global env", argv_a2[argv_a2.index("-c") + 1] == "131072", str(argv_a2))
+check("spec.context_window wins over global env",
+      bridge.normalize_model(pm_a).context_window == 131072,
+      str(bridge.normalize_model(pm_a).context_window))
+
+# Global env fallback when the model has no per-model entry.
+sc = bridge.normalize_model(pm_c)
+check("global env fallback without per-model entry", sc.context_window == 8192, sc.context_window)
+
+os.environ.pop("CODESEEQ_GGUF_MODELS_JSON", None)
+os.environ.pop("CODESEEQ_GGUF_CONTEXT_WINDOW", None)
+bridge._gguf_models_cache = None
+for p in (pm_a, pm_b, pm_c):
+    os.remove(p)
+os.remove(pm_cfg)
+os.rmdir(per_model_dir)
+
 os.remove(gguf_path)
 os.rmdir(tmp)
 

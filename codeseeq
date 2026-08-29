@@ -939,6 +939,70 @@ require_deepseek_key() {
   # CodeSeeq privacy hardening: OPENAI_API_KEY is no longer auto-populated from provider keys
 }
 
+# ---------------------------------------------------------------------------
+# Per-model GGUF configuration (config/gguf-models.json)
+# ---------------------------------------------------------------------------
+# GGUF models can carry their own llama-server settings (context window,
+# max output tokens, GPU layers, threads, parallel slots, port, timeout,
+# thinking). The per-model JSON wins over the global CODESEEQ_GGUF_* env
+# vars, which win over the built-in defaults.
+
+gguf_models_config_candidates() {
+  if [[ -n "${CODESEEQ_GGUF_MODELS_JSON:-}" && -f "${CODESEEQ_GGUF_MODELS_JSON}" ]]; then
+    printf '%s\n' "${CODESEEQ_GGUF_MODELS_JSON}"
+  fi
+  local static="${CODESEEQ_HOST_MODEL_CATALOG_JSON:-${CODESEEQ_INSTALL_ROOT}/config/codex-model-catalog.json}"
+  printf '%s\n' "$(dirname "$static")/gguf-models.json"
+  printf '%s\n' "/etc/codeseeq/gguf-models.json"
+}
+
+# Resolve the effective GGUF context window for a model path:
+# per-model config > CODESEEQ_GGUF_CONTEXT_WINDOW > 8192. Prints the number.
+resolve_gguf_context_window() {
+  local path="$1"
+  local fallback="${CODESEEQ_GGUF_CONTEXT_WINDOW:-8192}"
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$fallback"
+    return 0
+  fi
+  local candidates="" c
+  while IFS= read -r c; do
+    [[ -n "$c" && -f "$c" ]] || continue
+    candidates="${candidates}${candidates:+,}$c"
+  done < <(gguf_models_config_candidates)
+  CODESEEQ_GGUF_RESOLVE_CANDIDATES="$candidates" \
+  CODESEEQ_GGUF_RESOLVE_FALLBACK="$fallback" \
+  python3 - "$path" <<'PYGGUF'
+import json, os, sys
+path = os.path.abspath(os.path.expanduser(sys.argv[1]))
+cands = [c for c in os.environ.get("CODESEEQ_GGUF_RESOLVE_CANDIDATES", "").split(",") if c]
+fallback = os.environ.get("CODESEEQ_GGUF_RESOLVE_FALLBACK", "8192")
+value = None
+for cand in cands:
+    try:
+        with open(cand, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        continue
+    models = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(models, dict):
+        continue
+    base = os.path.basename(path)
+    stem = base[:-5] if base.lower().endswith(".gguf") else base
+    tilde = os.path.join("~", os.path.relpath(path, os.path.expanduser("~")))
+    for key in (path, tilde, base, stem, "gguf@" + path):
+        entry = models.get(key)
+        if isinstance(entry, dict) and entry.get("context_window") is not None:
+            value = entry["context_window"]
+            break
+    if value is not None:
+        break
+if value is None:
+    value = fallback
+print(value)
+PYGGUF
+}
+
 # Merge the static Codex model catalog with the currently configured model so
 # Codex accepts any model selected via `codeseeq config` (including arbitrary
 # local@<model> names). Writes to <output>; points at the static catalog when
@@ -956,15 +1020,37 @@ write_merged_codex_catalog() {
     return 0
   fi
   mkdir -p "$(dirname "$output")"
+  # Per-model GGUF context/max-tokens flow into the Codex catalog so the
+  # client-side truncation matches the llama-server -c flag (previously the
+  # merged entry was hardcoded to 131072 while the server defaulted to 8192).
+  local catalog_ctx=131072 catalog_max_tokens=32768 catalog_is_gguf=0
+  local model_lower gguf_model_path=""
+  model_lower="$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$model" == gguf@* ]]; then
+    gguf_model_path="${model#gguf@}"
+  elif [[ "$model_lower" == *.gguf ]]; then
+    gguf_model_path="$model"
+  fi
+  if [[ -n "$gguf_model_path" ]]; then
+    catalog_is_gguf=1
+    catalog_ctx="$(resolve_gguf_context_window "$gguf_model_path")"
+    catalog_max_tokens="${CODESEEQ_GGUF_MAX_OUTPUT_TOKENS:-2048}"
+  fi
   CODESEEQ_CATALOG_STATIC="$static" \
   CODESEEQ_CATALOG_OUTPUT="$output" \
   CODESEEQ_CATALOG_MODEL="$model" \
+  CODESEEQ_CATALOG_CTX="$catalog_ctx" \
+  CODESEEQ_CATALOG_MAX_TOKENS="$catalog_max_tokens" \
+  CODESEEQ_CATALOG_IS_GGUF="$catalog_is_gguf" \
   python3 - <<'PYCAT'
 import json, os
 
 static = os.environ["CODESEEQ_CATALOG_STATIC"]
 output = os.environ["CODESEEQ_CATALOG_OUTPUT"]
 model = os.environ.get("CODESEEQ_CATALOG_MODEL", "")
+catalog_ctx = int(os.environ.get("CODESEEQ_CATALOG_CTX", "131072"))
+catalog_max_tokens = int(os.environ.get("CODESEEQ_CATALOG_MAX_TOKENS", "32768"))
+catalog_is_gguf = os.environ.get("CODESEEQ_CATALOG_IS_GGUF", "") == "1"
 
 def _main() -> None:
     try:
@@ -987,16 +1073,16 @@ def _main() -> None:
             "description": "User-configured model (via codeseeq config)",
             "base_instructions": "",
             "enable_thinking": thinking,
-            "context_window": 131072,
-            "max_context_window": 131072,
-            "max_output_tokens": 32768,
+            "context_window": catalog_ctx,
+            "max_context_window": catalog_ctx,
+            "max_output_tokens": catalog_max_tokens,
             "timeout_seconds": 600,
             "supports_reasoning_summaries": thinking,
             "supported_in_api": True,
             "visibility": "list",
             "shell_type": "default",
             "web_search_tool_type": "text",
-            "truncation_policy": {"mode": "tokens", "limit": 131072},
+            "truncation_policy": {"mode": "tokens", "limit": catalog_ctx},
             "supports_parallel_tool_calls": True,
             "priority": 99,
             "supported_reasoning_levels": [
@@ -1009,6 +1095,15 @@ def _main() -> None:
             "support_verbosity": False,
             "experimental_supported_tools": [],
         })
+    # Keep the generic gguf@local-model placeholder in sync with the resolved
+    # context so Codex never truncates a GGUF session at the stale static 8192.
+    if catalog_is_gguf:
+        for m in models:
+            if isinstance(m, dict) and m.get("slug") == "gguf@local-model":
+                m["context_window"] = catalog_ctx
+                m["max_context_window"] = catalog_ctx
+                m["max_output_tokens"] = catalog_max_tokens
+                m["truncation_policy"] = {"mode": "tokens", "limit": catalog_ctx}
     try:
         with open(output, "w", encoding="utf-8") as fh:
             json.dump(cat, fh, indent=2, ensure_ascii=False)
@@ -1036,6 +1131,13 @@ write_host_config() {
     gguf@*) provider_label="CodeSeeq GGUF Bridge" ;;
     *) provider_label="CodeSeeq DeepSeek Bridge" ;;
   esac
+  # GGUF models use their resolved per-model context window so the Codex
+  # client window matches the llama-server -c flag; other providers keep the
+  # generic CODESEEQ_CONTEXT_WINDOW (default 1000000).
+  local model_context_window="${CODESEEQ_CONTEXT_WINDOW}"
+  case "${PROVIDER_MODEL:-}" in
+    gguf@*) model_context_window="$(resolve_gguf_context_window "${PROVIDER_MODEL#gguf@}")" ;;
+  esac
   cat > "$HOST_CODEX_HOME/config.toml" <<EOF
 model = "${PROVIDER_MODEL}"
 model_provider = "codeseeq"
@@ -1044,7 +1146,7 @@ model_catalog_json = "${HOST_CODEX_HOME}/codex-model-catalog.json"
 approval_policy = "${CODESEEQ_APPROVAL_POLICY}"
 sandbox_mode = "${CODESEEQ_SANDBOX_MODE}"
 
-model_context_window = ${CODESEEQ_CONTEXT_WINDOW}
+model_context_window = ${model_context_window}
 model_supports_reasoning_summaries = false
 model_reasoning_summary = "none"
 

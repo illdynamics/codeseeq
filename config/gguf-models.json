@@ -1,0 +1,24 @@
+{
+  "models": {
+    "~/Qoding/ai/Qwen3.5-9B-The-Defiant-Fable-Uncnr-Heretic-NEO-MAX-Q8_0.gguf": {
+      "context_window": 131072,
+      "max_output_tokens": 2048,
+      "n_gpu_layers": "all",
+      "parallel": 1,
+      "threads": null,
+      "port": null,
+      "timeout_seconds": 600,
+      "enable_thinking": false
+    },
+    "~/Qoding/ai/Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-LOW-MTP-IQ4_XS.gguf": {
+      "context_window": 20480,
+      "max_output_tokens": 2048,
+      "n_gpu_layers": "all",
+      "parallel": 1,
+      "threads": null,
+      "port": null,
+      "timeout_seconds": 600,
+      "enable_thinking": false
+    }
+  }
+}

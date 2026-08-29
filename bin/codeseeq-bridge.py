@@ -1075,6 +1075,99 @@ MODEL_SPECS: Dict[str, ModelSpec] = _apply_catalog_overrides(_build_model_specs(
 # GGUF / local llama.cpp server manager
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Per-model GGUF configuration (config/gguf-models.json)
+# ---------------------------------------------------------------------------
+# Optional per-model settings for GGUF models, keyed by file path (absolute,
+# ~-expanded, or basename). Each entry may set any of the CODESEEQ_GGUF_*
+# knobs (context_window, max_output_tokens, n_gpu_layers, parallel, threads,
+# port, timeout_seconds, temperature, enable_thinking). Precedence:
+# per-model config > global CODESEEQ_GGUF_* env var > built-in default.
+
+_GGUF_MODELS_JSON_ENV = "CODESEEQ_GGUF_MODELS_JSON"
+_GGUF_MODELS_JSON_DEFAULT = "/etc/codeseeq/gguf-models.json"
+
+_gguf_models_cache: Optional[Dict[str, Any]] = None
+
+
+def _gguf_models_config_path() -> Optional[str]:
+    """Locate the per-model GGUF JSON config (env var wins, then repo copy,
+    then the container default)."""
+    explicit = os.environ.get(_GGUF_MODELS_JSON_ENV, "").strip()
+    if explicit:
+        return explicit
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_candidate = os.path.join(script_dir, "..", "config", "gguf-models.json")
+    if os.path.isfile(repo_candidate):
+        return repo_candidate
+    if os.path.isfile(_GGUF_MODELS_JSON_DEFAULT):
+        return _GGUF_MODELS_JSON_DEFAULT
+    return None
+
+
+def _load_gguf_models_config() -> Dict[str, Any]:
+    """Parse the per-model GGUF config into {key: {setting: value}}."""
+    global _gguf_models_cache
+    if _gguf_models_cache is not None:
+        return _gguf_models_cache
+    _gguf_models_cache = {}
+    path = _gguf_models_config_path()
+    if not path or not os.path.isfile(path):
+        return _gguf_models_cache
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return _gguf_models_cache
+    models = data.get("models") if isinstance(data, dict) else None
+    if isinstance(models, dict):
+        _gguf_models_cache = models
+    return _gguf_models_cache
+
+
+def _gguf_model_settings(path: str) -> Dict[str, Any]:
+    """Per-model settings dict for a GGUF file ({} when none configured).
+
+    Config keys may be written as an absolute path, a ~/ path, the bare
+    basename, or the basename without the .gguf suffix; keys are normalized
+    the same way as the requested path before matching.
+    """
+    config = _load_gguf_models_config()
+    if not config:
+        return {}
+    abs_path = os.path.abspath(os.path.expanduser(path))
+    base = os.path.basename(abs_path)
+    stem = base[:-5] if base.lower().endswith(".gguf") else base
+    tilde_path = os.path.join("~", os.path.relpath(abs_path, os.path.expanduser("~")))
+    wanted = (abs_path, tilde_path, base, stem, f"gguf@{abs_path}")
+    for key in wanted:
+        entry = config.get(key)
+        if isinstance(entry, dict):
+            return entry
+    # Also honor config keys that use a different spelling of the same file
+    # (e.g. absolute vs ~-prefixed); normalize every key once.
+    normalized = {os.path.abspath(os.path.expanduser(str(k))): v for k, v in config.items()}
+    entry = normalized.get(abs_path)
+    if isinstance(entry, dict):
+        return entry
+    return {}
+
+
+def _gguf_setting(path: str, name: str) -> Any:
+    """Per-model GGUF setting value (None when not configured)."""
+    return _gguf_model_settings(path).get(name)
+
+
+def _gguf_int_setting(path: str, name: str) -> Optional[int]:
+    value = _gguf_setting(path, name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 MISSING_GGUF_BINARY_MSG = (
     "gguf provider requires llama.cpp llama-server. "
     "Set CODESEEQ_GGUF_LLAMA_SERVER_PATH or install llama.cpp "
@@ -1150,16 +1243,25 @@ class GGUFServerManager:
             "--alias",
             alias,
         ]
-        ctx = os.environ.get("CODESEEQ_GGUF_CONTEXT_WINDOW", "8192").strip()
+
+        def _flag(name: str, env_name: str, default: str) -> str:
+            # Per-model config wins over the global env var, which wins over
+            # the built-in default (mirrors _resolve_model precedence).
+            per_model = _gguf_setting(abs_path, name)
+            if per_model is not None and str(per_model) != "":
+                return str(per_model)
+            return os.environ.get(env_name, default).strip()
+
+        ctx = _flag("context_window", "CODESEEQ_GGUF_CONTEXT_WINDOW", "8192")
         if ctx:
             argv += ["-c", ctx]
-        ngl = os.environ.get("CODESEEQ_GGUF_N_GPU_LAYERS", "").strip()
+        ngl = _flag("n_gpu_layers", "CODESEEQ_GGUF_N_GPU_LAYERS", "")
         if ngl:
             argv += ["-ngl", ngl]
-        threads = os.environ.get("CODESEEQ_GGUF_THREADS", "").strip()
+        threads = _flag("threads", "CODESEEQ_GGUF_THREADS", "")
         if threads:
             argv += ["-t", threads]
-        parallel = os.environ.get("CODESEEQ_GGUF_PARALLEL", "").strip()
+        parallel = _flag("parallel", "CODESEEQ_GGUF_PARALLEL", "")
         if parallel:
             argv += ["-np", parallel]
         api_key = os.environ.get("GGUF_API_KEY", "").strip()
@@ -1185,7 +1287,12 @@ class GGUFServerManager:
         alias = os.path.basename(abs_path)
         if alias.lower().endswith(".gguf"):
             alias = alias[:-5]
-        fixed_port = self._fixed_port()
+        # Per-model port (config/gguf-models.json "port") wins over the global
+        # CODESEEQ_GGUF_PORT env var; otherwise auto-select a free port.
+        per_model_port = _gguf_int_setting(abs_path, "port")
+        fixed_port = (
+            per_model_port if per_model_port is not None else self._fixed_port()
+        )
         last_exc: Optional[Exception] = None
         attempts = 1 if fixed_port is not None else 3
         for _ in range(attempts):
@@ -2045,17 +2152,46 @@ def normalize_model(model: str) -> "ModelSpec":
             stem = stem[:-5]
         slug = f"gguf@{abs_path}"
 
+        # Per-model settings (config/gguf-models.json) win over the global
+        # CODESEEQ_GGUF_* env vars, which win over built-in defaults.
         thinking = env_bool("CODESEEQ_THINKING", False)
+        per_model_thinking = _gguf_setting(abs_path, "enable_thinking")
         gguf_thinking = os.environ.get("CODESEEQ_GGUF_ENABLE_THINKING")
-        if gguf_thinking is not None:
+        if per_model_thinking is not None:
+            if isinstance(per_model_thinking, str):
+                thinking = per_model_thinking.strip().lower() in {"1", "true", "yes", "on"}
+            else:
+                thinking = bool(per_model_thinking)
+        elif gguf_thinking is not None:
             thinking = gguf_thinking.strip().lower() in {"1", "true", "yes", "on"}
 
-        context_window = _env_int("CODESEEQ_GGUF_CONTEXT_WINDOW") or 8192
-        max_output_tokens = _env_int("CODESEEQ_GGUF_MAX_OUTPUT_TOKENS") or 2048
-        timeout_seconds = float(_env_int("CODESEEQ_GGUF_TIMEOUT_SECONDS") or 600)
-        temperature = _env_float("CODESEEQ_GGUF_TEMPERATURE")
+        context_window = _gguf_int_setting(abs_path, "context_window")
+        if context_window is None:
+            context_window = _env_int("CODESEEQ_GGUF_CONTEXT_WINDOW") or 8192
+
+        max_output_tokens = _gguf_int_setting(abs_path, "max_output_tokens")
+        if max_output_tokens is None:
+            max_output_tokens = _env_int("CODESEEQ_GGUF_MAX_OUTPUT_TOKENS") or 2048
+
+        timeout_seconds = _gguf_setting(abs_path, "timeout_seconds")
+        if timeout_seconds is None:
+            timeout_seconds = float(_env_int("CODESEEQ_GGUF_TIMEOUT_SECONDS") or 600)
+        else:
+            try:
+                timeout_seconds = float(timeout_seconds)
+            except (TypeError, ValueError):
+                timeout_seconds = float(_env_int("CODESEEQ_GGUF_TIMEOUT_SECONDS") or 600)
+
+        temperature = _gguf_setting(abs_path, "temperature")
         if temperature is None:
-            temperature = 0.7
+            temperature = _env_float("CODESEEQ_GGUF_TEMPERATURE")
+            if temperature is None:
+                temperature = 0.7
+        else:
+            try:
+                temperature = float(temperature)
+            except (TypeError, ValueError):
+                temperature = 0.7
 
         # Advanced: an explicit GGUF_BASE_URL routes to an already-running
         # OpenAI-compatible server instead of spawning llama-server.
