@@ -957,7 +957,7 @@ def _main() -> None:
             "supported_reasoning_levels": [
                 {"level": "low", "effort": "low", "description": "Low reasoning effort"},
                 {"level": "high", "effort": "high", "description": "High reasoning effort"},
-                {"level": "max", "effort": "max", "description": "Maximum reasoning effort"},
+                {"level": "xhigh", "effort": "xhigh", "description": "Extra-high reasoning effort"},
             ] if thinking else [],
             "input_modalities": ["text"],
             "supports_search_tool": True,

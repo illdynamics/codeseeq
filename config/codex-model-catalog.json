@@ -62,9 +62,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
-          "effort": "max",
-          "description": "Maximum reasoning effort"
+          "level": "xhigh",
+          "effort": "xhigh",
+          "description": "Extra-high reasoning effort"
         }
       ],
       "input_modalities": [
@@ -137,9 +137,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
-          "effort": "max",
-          "description": "Maximum reasoning effort"
+          "level": "xhigh",
+          "effort": "xhigh",
+          "description": "Extra-high reasoning effort"
         }
       ],
       "input_modalities": [
@@ -219,9 +219,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
+          "level": "xhigh",
           "effort": "high",
-          "description": "Maximum reasoning effort"
+          "description": "Extra-high reasoning effort"
         }
       ],
       "input_modalities": [
@@ -327,9 +327,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
+          "level": "xhigh",
           "effort": "high",
-          "description": "Maximum reasoning effort"
+          "description": "Extra-high reasoning effort"
         }
       ],
       "input_modalities": [
@@ -402,9 +402,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
+          "level": "xhigh",
           "effort": "high",
-          "description": "Maximum reasoning effort"
+          "description": "Extra-high reasoning effort"
         }
       ],
       "input_modalities": [
@@ -509,9 +509,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
+          "level": "xhigh",
           "effort": "high",
-          "description": "Maximum reasoning effort"
+          "description": "Extra-high reasoning effort"
         }
       ],
       "input_modalities": [
@@ -552,9 +552,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
+          "level": "xhigh",
           "effort": "high",
-          "description": "Maximum reasoning effort"
+          "description": "Extra-high reasoning effort"
         }
       ],
       "input_modalities": [
@@ -659,9 +659,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
+          "level": "xhigh",
           "effort": "high",
-          "description": "Maximum reasoning effort"
+          "description": "Extra-high reasoning effort"
         }
       ],
       "input_modalities": [
@@ -734,9 +734,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
+          "level": "xhigh",
           "effort": "high",
-          "description": "Maximum reasoning effort"
+          "description": "Extra-high reasoning effort"
         }
       ],
       "input_modalities": [
@@ -777,9 +777,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
+          "level": "xhigh",
           "effort": "high",
-          "description": "Maximum reasoning effort"
+          "description": "Extra-high reasoning effort"
         }
       ],
       "input_modalities": [
@@ -852,9 +852,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
+          "level": "xhigh",
           "effort": "high",
-          "description": "Maximum reasoning effort"
+          "description": "Extra-high reasoning effort"
         }
       ],
       "input_modalities": [
@@ -1087,9 +1087,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
+          "level": "xhigh",
           "effort": "high",
-          "description": "Maximum reasoning effort"
+          "description": "Extra-high reasoning effort"
         }
       ],
       "input_modalities": [
