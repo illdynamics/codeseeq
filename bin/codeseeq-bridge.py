@@ -2430,6 +2430,33 @@ def input_to_messages(input_data: Any) -> List[Dict[str, Any]]:
     return messages
 
 
+def collapse_system_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge all system-role messages into one leading system message.
+
+    OpenAI Chat Completions expects (and strict llama.cpp Jinja chat templates
+    require) a single system message at the beginning. Codex forwards its
+    developer instructions as a system-role message and the bridge adds a
+    tool-steering system message, so a request can carry several system
+    messages. Strict templates such as Qwen3's raise "System message must be
+    at the beginning" when a second system message appears later, and laxer
+    templates render only the first one. Keeping non-system messages in order
+    and joining the system text with blank lines preserves all instructions.
+    """
+    system_parts: List[str] = []
+    rest: List[Dict[str, Any]] = []
+    for message in messages:
+        if message.get("role") == "system":
+            if message.get("content"):
+                system_parts.append(str(message["content"]))
+            # Empty system messages carry no content and only risk tripping a
+            # strict "system must be first" template check, so drop them.
+            continue
+        rest.append(message)
+    if system_parts:
+        rest.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
+    return rest
+
+
 def parse_json_arguments(raw: str) -> Dict[str, Any]:
     try:
         parsed = json.loads(raw or "{}")
@@ -3894,25 +3921,12 @@ async def responses(request: Request) -> Any:
     if spec.system_prompt:
         messages.insert(0, {"role": "system", "content": spec.system_prompt})
 
-    # Qwen3-family chat templates (lightning-mlx) render ONLY the first
-    # system message when tools are present; every additional system message
-    # is silently dropped by the template. Codex also forwards its developer
-    # instructions as a system-role message (input_to_messages maps
-    # role "developer" -> "system"), so a request can carry three system
-    # messages (/no_think, developer instructions, tool steering). Collapse
-    # them into a single system message for qwibus models so all content
-    # reaches the model and the MLX log shows roles=['system','user'].
-    if spec.slug.startswith("qwibus"):
-        system_parts: List[str] = []
-        rest: List[Dict[str, Any]] = []
-        for _m in messages:
-            if _m.get("role") == "system" and _m.get("content"):
-                system_parts.append(str(_m["content"]))
-            else:
-                rest.append(_m)
-        if system_parts:
-            rest.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
-        messages = rest
+    # Collapse multiple system-role messages (developer instructions, tool
+    # steering, per-model system prompt) into a single leading system message
+    # for every chat-completions provider. Anthropic extracts its own system
+    # prompt separately in anthropic_payload, so it is left untouched here.
+    if provider != PROVIDER_ANTHROPIC:
+        messages = collapse_system_messages(messages)
 
     is_anthropic = provider == PROVIDER_ANTHROPIC
     key = provider_api_key(provider)

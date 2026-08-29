@@ -528,3 +528,36 @@ of inside the container. If the file exists on the host but you still see this
 error, confirm the host runtime prerequisites are installed: the Codex CLI,
 Python with the bridge dependencies, and `llama-server` (or
 `CODESEEQ_GGUF_LLAMA_SERVER_PATH`).
+
+## Reuse an already-running llama-server (don't spawn a second GGUF server)
+
+If you already started `llama-server` yourself and just want CodeSeeq to talk
+to that endpoint instead of launching a new one, use the `local` provider:
+
+```bash
+# llama-server listens on http://127.0.0.1:8080 by default
+export LOCAL_BASE_URL=http://127.0.0.1:8080
+codeseeq --model 'local@<alias-or-model-name>' "hello"
+```
+
+The part after `local@` is the upstream model name CodeSeeq sends to the
+server, so use the same `--alias` you started `llama-server` with (or the GGUF
+filename stem if you did not pass `--alias`). This path never validates or
+spawns a `.gguf` file.
+
+If you prefer to keep using `gguf@` while reusing an existing server, set
+`GGUF_BASE_URL`; the bridge then skips spawning and routes to
+`{GGUF_BASE_URL}/v1/chat/completions`. Note that `gguf@<path>` still requires
+the `.gguf` file to exist locally for model resolution:
+
+```bash
+export GGUF_BASE_URL=http://127.0.0.1:8080
+codeseeq --model /path/to/model.gguf "hello"
+```
+
+> Strict llama.cpp chat templates (for example Qwen3-style GGUF models) reject
+> multiple `system` messages with `Jinja Exception: System message must be at
+> the beginning.` CodeSeeq collapses Codex's developer instructions, tool
+> steering, and any per-model system prompt into a single leading system
+> message before forwarding, so both the `gguf` and `local` paths work against
+> these templates.

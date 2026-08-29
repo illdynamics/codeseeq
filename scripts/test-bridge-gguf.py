@@ -183,6 +183,44 @@ os.environ.pop("CODESEEQ_GGUF_PORT", None)
 check("unset fixed port -> None", bridge.GGUFServerManager._fixed_port() is None,
       str(bridge.GGUFServerManager._fixed_port()))
 
+# 9) System-message collapse (strict Qwen3-style llama.cpp Jinja templates
+#    raise "System message must be at the beginning" when a second system
+#    message appears after the first one).
+collapsed = bridge.collapse_system_messages([
+    {"role": "system", "content": "developer instructions"},
+    {"role": "system", "content": "tool steering"},
+    {"role": "user", "content": "say hi"},
+])
+check(
+    "multiple system messages collapse to a single leading system",
+    [m["role"] for m in collapsed] == ["system", "user"],
+    str(collapsed),
+)
+check(
+    "collapsed system content preserves both instructions",
+    collapsed[0]["content"] == "developer instructions\n\ntool steering",
+    collapsed[0]["content"],
+)
+
+unchanged = bridge.collapse_system_messages([
+    {"role": "user", "content": "no system message here"},
+])
+check(
+    "no-system message list is unchanged",
+    unchanged == [{"role": "user", "content": "no system message here"}],
+    str(unchanged),
+)
+
+with_empty = bridge.collapse_system_messages([
+    {"role": "system", "content": ""},
+    {"role": "user", "content": "hello"},
+])
+check(
+    "empty system messages are dropped",
+    with_empty == [{"role": "user", "content": "hello"}],
+    str(with_empty),
+)
+
 os.remove(gguf_path)
 os.rmdir(tmp)
 
