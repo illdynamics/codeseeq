@@ -62,9 +62,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "xhigh",
-          "effort": "xhigh",
-          "description": "Extra-high reasoning effort"
+          "level": "max",
+          "effort": "max",
+          "description": "Max reasoning effort"
         }
       ],
       "input_modalities": [
@@ -137,9 +137,9 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "xhigh",
-          "effort": "xhigh",
-          "description": "Extra-high reasoning effort"
+          "level": "max",
+          "effort": "max",
+          "description": "Max reasoning effort"
         }
       ],
       "input_modalities": [

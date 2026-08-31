@@ -3034,9 +3034,11 @@ def normalize_deepseek_reasoning_effort(value: Any) -> Optional[str]:
     """Normalize a DeepSeek reasoning-effort value to ``low``/``high``/``max``.
 
     DeepSeek accepts ``low``, ``high`` and ``max`` (default ``high``). For
-    compatibility, ``medium`` and ``xhigh`` are aliases for ``high`` and the
-    legacy CodeSeeq value ``minimal`` is treated as ``low``. Returns ``None``
-    for empty or unsupported values so the caller can omit the field.
+    compatibility, ``medium`` and ``xhigh`` are aliases for ``high``, the
+    legacy CodeSeeq value ``minimal`` is treated as ``low``, and ``ultra``
+    (Codex ``model_reasoning_effort``) maps to ``max`` — the top DeepSeek
+    effort level. Returns ``None`` for empty or unsupported values so the
+    caller can omit the field.
     """
     if not isinstance(value, str):
         return None
@@ -3045,8 +3047,10 @@ def normalize_deepseek_reasoning_effort(value: Any) -> Optional[str]:
         return effort
     if effort in {"medium", "xhigh"}:
         return "high"
-    if effort == "minimal":
-        return "low"
+    if effort in {"minimal", "ultra"}:
+        # minimal -> low; ultra (Codex model_reasoning_effort) -> max, the
+        # top DeepSeek effort level.
+        return "max" if effort == "ultra" else "low"
     return None
 
 

@@ -34,7 +34,8 @@ bool_normalize() {
 
 reasoning_effort_normalize() {
   # Normalize a DeepSeek reasoning-effort value to low/high/max (or empty).
-  # Accepts low/high/max natively; medium/xhigh -> high; minimal -> low.
+  # Accepts low/high/max natively; ultra -> max; medium/xhigh -> high;
+  # minimal -> low.
   # Unrecognised values return non-zero so callers can reject them.
   local v="${1:-}"
   [[ -n "$v" ]] || { printf ''; return 0; }
@@ -42,7 +43,7 @@ reasoning_effort_normalize() {
   case "$v" in
     low) printf 'low' ;;
     high) printf 'high' ;;
-    max) printf 'max' ;;
+    max|ultra) printf 'max' ;;
     medium|xhigh) printf 'high' ;;
     minimal) printf 'low' ;;
     *) return 1 ;;
