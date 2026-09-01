@@ -417,17 +417,32 @@ readonly_volume_suffix_for_runtime() {
 container_user_run_args() {
   # Return the container flag(s) that align the container process with the
   # host user so bind-mounted workspaces are writable by the container user.
-  #   podman: --userns=keep-id maps the container user (10001) to the host
-  #           user; CODESEEQ_PODMAN_USERNS overrides (empty disables).
+  #   podman: --userns=keep-id maps the container UID matching the host UID
+  #           (e.g. 1000) to the host user, so the process must ALSO run as
+  #           that UID (--user <host-uid>:<host-gid>) for host bind mounts to
+  #           be writable. CODESEEQ_PODMAN_USERNS overrides (empty disables).
   #   docker: --user <host-uid>:<host-gid> runs the container as the host
   #           user; CODESEEQ_DOCKER_USER overrides (empty disables). Only the
   #           codex workspace container needs this (bridge scope skips it).
   local scope="${1:-codex}"
+  local userns_mode=true
   if [[ "$CONTAINER" == "podman" ]]; then
     if [[ -n "${CODESEEQ_PODMAN_USERNS+x}" ]]; then
-      [[ -n "$CODESEEQ_PODMAN_USERNS" ]] && printf '--userns=%s\n' "$CODESEEQ_PODMAN_USERNS"
+      if [[ -n "$CODESEEQ_PODMAN_USERNS" ]]; then
+        printf '%s\n' "--userns=${CODESEEQ_PODMAN_USERNS}"
+        [[ "$CODESEEQ_PODMAN_USERNS" == "keep-id" ]] || userns_mode=false
+      else
+        userns_mode=false
+      fi
     else
-      printf '--userns=keep-id\n'
+      printf '%s\n' '--userns=keep-id'
+    fi
+    # keep-id only maps the host user when the container process runs as the
+    # host UID. Without --user the image's UID 10001 maps to a subordinate
+    # UID and cannot write the host-owned workspace. The bridge container
+    # (scope=bridge) binds an internal port only, so it keeps keep-id alone.
+    if [[ "$userns_mode" == "true" && "$scope" == "codex" && "$(id -u)" != "0" ]]; then
+      printf -- '--user=%s:%s\n' "$(id -u)" "$(id -g)"
     fi
     return 0
   fi
@@ -441,14 +456,28 @@ container_user_run_args() {
   fi
 }
 
-docker_user_mapping_active() {
-  # True when the codex container runs as the host user (docker --user mode).
-  [[ "$CONTAINER" == "docker" ]] || return 1
-  if [[ -n "${CODESEEQ_DOCKER_USER+x}" ]]; then
-    [[ -n "$CODESEEQ_DOCKER_USER" ]]
+user_mapping_active() {
+  # True when the codex container runs as the host user (docker --user mode
+  # or podman --userns=keep-id with a matching --user), i.e. the image's
+  # UID-10001-owned dirs (/home/codeseeq, /run/codeseeq, /var/log/codeseeq)
+  # are not writable by the container process and must be relocated under the
+  # bind-mounted workspace.
+  if [[ "$CONTAINER" == "docker" ]]; then
+    if [[ -n "${CODESEEQ_DOCKER_USER+x}" ]]; then
+      [[ -n "$CODESEEQ_DOCKER_USER" ]]
+      return $?
+    fi
+    [[ "$(id -u)" != "0" ]]
     return $?
   fi
-  [[ "$(id -u)" != "0" ]]
+  if [[ "$CONTAINER" == "podman" ]]; then
+    if [[ -n "${CODESEEQ_PODMAN_USERNS+x}" && -z "$CODESEEQ_PODMAN_USERNS" ]]; then
+      return 1
+    fi
+    [[ "${CODESEEQ_PODMAN_USERNS:-keep-id}" == "keep-id" && "$(id -u)" != "0" ]]
+    return $?
+  fi
+  return 1
 }
 
 image_exists() {
@@ -2013,11 +2042,12 @@ collect_env() {
     fi
   done
 
-  # docker --user mode runs the container as the host user; the image's
-  # /home/codeseeq dirs are owned by UID 10001 and are not writable by the
-  # host user. Relocate CODEX_HOME/RUNTIME_DIR/LOG_DIR under the bind-mounted
-  # workspace so codex config, pid and log files stay writable.
-  if docker_user_mapping_active; then
+  # docker --user / podman keep-id mode runs the container as the host user;
+  # the image's /home/codeseeq dirs are owned by UID 10001 and are not
+  # writable by the host user. Relocate CODEX_HOME/RUNTIME_DIR/LOG_DIR under
+  # the bind-mounted workspace so codex config, pid and log files stay
+  # writable.
+  if user_mapping_active; then
     CONTAINER_ENV_ARGS+=(
       -e "CODESEEQ_CODEX_HOME=${WORKDIR_CONTAINER}/.codeseeq"
       -e "CODESEEQ_RUNTIME_DIR=${WORKDIR_CONTAINER}/.codeseeq/run"

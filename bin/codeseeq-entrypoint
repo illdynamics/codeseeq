@@ -111,6 +111,12 @@ INNERCFG
 
 toml_quote_file() {
   local path="$1"
+  if [[ ! -f "$path" ]]; then
+    die "system prompt file not found: $path"
+  fi
+  if [[ ! -r "$path" ]]; then
+    die "system prompt file is not readable by $(id -u): $path"
+  fi
   if command -v jq >/dev/null 2>&1; then
     jq -Rs . < "$path"
   elif command -v python3 >/dev/null 2>&1; then
@@ -246,9 +252,12 @@ resolve_system_prompt_file() {
 
   for candidate in "${candidates[@]}"; do
     if [[ -f "$candidate" && -s "$candidate" ]]; then
-      CODESEEQ_SYSTEM_PROMPT_FILE="$candidate"
-      export CODESEEQ_SYSTEM_PROMPT_FILE
-      return 0
+      if [[ -r "$candidate" ]]; then
+        CODESEEQ_SYSTEM_PROMPT_FILE="$candidate"
+        export CODESEEQ_SYSTEM_PROMPT_FILE
+        return 0
+      fi
+      warn "system prompt ${candidate} exists but is not readable by $(id -u); falling back to bundled default"
     fi
   done
 
