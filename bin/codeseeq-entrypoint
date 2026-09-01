@@ -252,6 +252,16 @@ resolve_system_prompt_file() {
     fi
   done
 
+  # Fall back to the bundled default system prompt so a fresh install
+  # reports "present" and Codex always receives developer_instructions even
+  # before the user configures a custom prompt.
+  local bundled="${CODESEEQ_DEFAULT_SYSTEM_PROMPT_FILE:-/etc/codeseeq/default-system-prompt.md}"
+  if [[ -f "$bundled" && -s "$bundled" ]]; then
+    CODESEEQ_SYSTEM_PROMPT_FILE="$bundled"
+    export CODESEEQ_SYSTEM_PROMPT_FILE
+    return 0
+  fi
+
   if [[ -n "$configured" ]]; then
     CODESEEQ_SYSTEM_PROMPT_FILE="$configured"
   else
@@ -265,11 +275,18 @@ resolve_system_prompt_file
 # Check workspace writability early.
 if [[ ! -w "$CODESEEQ_WORKDIR" ]]; then
   warn "workspace ${CODESEEQ_WORKDIR} is not writable by $(id -u). host volume mapping might have permission issues."
+  # If running as root, try to fix ownership so the workspace user can write.
+  if [[ "$(id -u)" == "0" && -n "${CODESEEQ_WORKSPACE_UID:-}" ]]; then
+    chown -R "${CODESEEQ_WORKSPACE_UID}:${CODESEEQ_WORKSPACE_GID:-${CODESEEQ_WORKSPACE_UID}}" "$CODESEEQ_WORKDIR" 2>/dev/null && \
+      log "chowned ${CODESEEQ_WORKDIR} to ${CODESEEQ_WORKSPACE_UID}" || \
+      warn "could not chown ${CODESEEQ_WORKDIR}"
+  fi
   # Attempt a tiny test write.
   if ! touch "$CODESEEQ_WORKDIR/.codeseeq-write-test" 2>/dev/null; then
     warn "write test failed in ${CODESEEQ_WORKDIR}"
+    warn "fix: launch codeseeq with CODESEEQ_PODMAN_USERNS=keep-id (podman) or CODESEEQ_DOCKER_USER=\$(id -u):\$(id -g) (docker), or chown/chmod the host workspace directory"
   else
-    rm "$CODESEEQ_WORKDIR/.codeseeq-write-test"
+    rm -f "$CODESEEQ_WORKDIR/.codeseeq-write-test"
     log "workspace is writable despite warning"
   fi
 else

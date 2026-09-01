@@ -84,6 +84,14 @@ fi
 
 chmod +x "$CODESEEQ_INSTALL_DIR/codeseeq" "$CODESEEQ_INSTALL_DIR/scripts/install-local.sh"
 
+# Seed the bundled default system prompt on first install (never overwrite).
+if [[ ! -f "${CODESEEQ_CONFIG_HOME:-${HOME}/.config/codeseeq}/system-prompt.md" && -f "${CODESEEQ_INSTALL_DIR}/config/default-system-prompt.md" ]]; then
+  mkdir -p "${CODESEEQ_CONFIG_HOME:-${HOME}/.config/codeseeq}"
+  cp -- "${CODESEEQ_INSTALL_DIR}/config/default-system-prompt.md" "${CODESEEQ_CONFIG_HOME:-${HOME}/.config/codeseeq}/system-prompt.md"
+  chmod 600 "${CODESEEQ_CONFIG_HOME:-${HOME}/.config/codeseeq}/system-prompt.md" 2>/dev/null || true
+  log "seeded default system prompt at ${CODESEEQ_CONFIG_HOME:-${HOME}/.config/codeseeq}/system-prompt.md"
+fi
+
 launcher="${CODESEEQ_BIN_DIR}/codeseeq"
 cat > "$launcher" <<EOF
 #!/usr/bin/env bash

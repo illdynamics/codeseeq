@@ -414,6 +414,43 @@ readonly_volume_suffix_for_runtime() {
   fi
 }
 
+container_user_run_args() {
+  # Return the container flag(s) that align the container process with the
+  # host user so bind-mounted workspaces are writable by the container user.
+  #   podman: --userns=keep-id maps the container user (10001) to the host
+  #           user; CODESEEQ_PODMAN_USERNS overrides (empty disables).
+  #   docker: --user <host-uid>:<host-gid> runs the container as the host
+  #           user; CODESEEQ_DOCKER_USER overrides (empty disables). Only the
+  #           codex workspace container needs this (bridge scope skips it).
+  local scope="${1:-codex}"
+  if [[ "$CONTAINER" == "podman" ]]; then
+    if [[ -n "${CODESEEQ_PODMAN_USERNS+x}" ]]; then
+      [[ -n "$CODESEEQ_PODMAN_USERNS" ]] && printf '--userns=%s\n' "$CODESEEQ_PODMAN_USERNS"
+    else
+      printf '--userns=keep-id\n'
+    fi
+    return 0
+  fi
+  if [[ "$CONTAINER" == "docker" && "$scope" == "codex" ]]; then
+    if [[ -n "${CODESEEQ_DOCKER_USER+x}" ]]; then
+      [[ -n "$CODESEEQ_DOCKER_USER" ]] && printf -- '--user=%s\n' "$CODESEEQ_DOCKER_USER"
+    elif [[ "$(id -u)" != "0" ]]; then
+      printf -- '--user=%s:%s\n' "$(id -u)" "$(id -g)"
+    fi
+    return 0
+  fi
+}
+
+docker_user_mapping_active() {
+  # True when the codex container runs as the host user (docker --user mode).
+  [[ "$CONTAINER" == "docker" ]] || return 1
+  if [[ -n "${CODESEEQ_DOCKER_USER+x}" ]]; then
+    [[ -n "$CODESEEQ_DOCKER_USER" ]]
+    return $?
+  fi
+  [[ "$(id -u)" != "0" ]]
+}
+
 image_exists() {
   if [[ "$CONTAINER" == "podman" ]]; then
     "$CONTAINER" image exists "$IMAGE" >/dev/null 2>&1
@@ -1169,11 +1206,19 @@ log_user_prompt = false
 persistence = "none"
 EOF
 
+  # Host runtime: use the user prompt when present, otherwise fall back to
+  # the bundled default system prompt so developer_instructions is never empty.
+  local effective_prompt=""
   if system_prompt_present; then
+    effective_prompt="$SYSTEM_PROMPT_PATH"
+  elif [[ -f "${CODESEEQ_INSTALL_ROOT}/config/default-system-prompt.md" && -s "${CODESEEQ_INSTALL_ROOT}/config/default-system-prompt.md" ]]; then
+    effective_prompt="${CODESEEQ_INSTALL_ROOT}/config/default-system-prompt.md"
+  fi
+  if [[ -n "$effective_prompt" ]]; then
     {
       printf '\n# CodeSeeq-managed persistent system prompt.\n'
       printf 'developer_instructions = '
-      toml_quote_file "$SYSTEM_PROMPT_PATH"
+      toml_quote_file "$effective_prompt"
       printf '\n'
     } >> "$HOST_CODEX_HOME/config.toml"
   fi
@@ -1324,9 +1369,10 @@ start_bridge_container() {
   local internal_port="${CODESEEQ_BRIDGE_CONTAINER_PORT:-8080}"
 
   local run_args=(run -d --rm --name "$name")
-  if [[ "$CONTAINER" == "podman" && -n "${CODESEEQ_PODMAN_USERNS:-}" ]]; then
-    run_args+=(--userns="$CODESEEQ_PODMAN_USERNS")
-  fi
+  local user_arg
+  while IFS= read -r user_arg; do
+    [[ -n "$user_arg" ]] && run_args+=("$user_arg")
+  done < <(container_user_run_args bridge)
   run_args+=(
     -p "127.0.0.1:${host_port}:${internal_port}"
     -e CODESEEQ_OPENRESPONSES_HOST=0.0.0.0
@@ -1960,11 +2006,24 @@ collect_env() {
     CODESEEQ_RUNTIME_DIR \
     CODESEEQ_WORKSPACE_BANNER \
     CODESEEQ_BRIDGE_TOOL_STEERING \
-    CODESEEQ_RUN_PROMPT_FILE; do
+    CODESEEQ_RUN_PROMPT_FILE \
+    CODESEEQ_IMAGE_BACKEND; do
     if [[ -n "${!name:-}" ]]; then
       CONTAINER_ENV_ARGS+=(-e "${name}=${!name}")
     fi
   done
+
+  # docker --user mode runs the container as the host user; the image's
+  # /home/codeseeq dirs are owned by UID 10001 and are not writable by the
+  # host user. Relocate CODEX_HOME/RUNTIME_DIR/LOG_DIR under the bind-mounted
+  # workspace so codex config, pid and log files stay writable.
+  if docker_user_mapping_active; then
+    CONTAINER_ENV_ARGS+=(
+      -e "CODESEEQ_CODEX_HOME=${WORKDIR_CONTAINER}/.codeseeq"
+      -e "CODESEEQ_RUNTIME_DIR=${WORKDIR_CONTAINER}/.codeseeq/run"
+      -e "CODESEEQ_LOG_DIR=${WORKDIR_CONTAINER}/.codeseeq/log"
+    )
+  fi
 
   return 0
 }
@@ -1978,6 +2037,7 @@ run_safe_container() {
   suffix="$(volume_suffix_for_runtime)"
   volume_spec="${WORKDIR_HOST}:${WORKDIR_CONTAINER}${suffix}"
   system_prompt_dir="$(dirname "$SYSTEM_PROMPT_PATH")"
+  mkdir -p "$system_prompt_dir" 2>/dev/null || true
   if [[ -d "$system_prompt_dir" ]]; then
     config_suffix="$(readonly_volume_suffix_for_runtime)"
     config_volume_spec="${system_prompt_dir}:${CONTAINER_CONFIG_HOME}${config_suffix}"
@@ -1986,9 +2046,10 @@ run_safe_container() {
   fi
 
   local run_args=(run --rm)
-  if [[ "$CONTAINER" == "podman" && -n "${CODESEEQ_PODMAN_USERNS:-}" ]]; then
-    run_args+=(--userns="$CODESEEQ_PODMAN_USERNS")
-  fi
+  local user_arg
+  while IFS= read -r user_arg; do
+    [[ -n "$user_arg" ]] && run_args+=("$user_arg")
+  done < <(container_user_run_args codex)
   if [[ -t 0 && -t 1 ]]; then
     run_args+=(-it)
   fi
@@ -2752,6 +2813,9 @@ cmd_install() {
       --exclude 'oops.md' \
       --exclude 'codeseeq-*-fix.md' \
       --exclude 'venice-image.md' \
+      --exclude 'build-error.md' \
+      --exclude 'sysprompt.md' \
+      --exclude 'version.md' \
       --exclude 'package.json' \
       --exclude 'package-lock.json' \
       "$SCRIPT_DIR/" "$CODESEEQ_INSTALL_DIR/"
@@ -2771,12 +2835,25 @@ cmd_install() {
       --exclude 'oops.md' \
       --exclude 'codeseeq-*-fix.md' \
       --exclude 'venice-image.md' \
+      --exclude 'build-error.md' \
+      --exclude 'sysprompt.md' \
+      --exclude 'version.md' \
       --exclude 'package.json' \
       --exclude 'package-lock.json' \
       -cf - . | tar -C "$CODESEEQ_INSTALL_DIR" -xf -
   fi
 
   chmod +x "$CODESEEQ_INSTALL_DIR/codeseeq" 2>/dev/null || true
+
+  # Seed the bundled default system prompt on first install so `codeseeq
+  # doctor` reports a system prompt and Codex receives developer_instructions
+  # out of the box. Never overwrite an existing user prompt.
+  if [[ ! -f "${CODESEEQ_CONFIG_HOME}/system-prompt.md" && -f "${CODESEEQ_INSTALL_DIR}/config/default-system-prompt.md" ]]; then
+    mkdir -p "$CODESEEQ_CONFIG_HOME"
+    cp -- "${CODESEEQ_INSTALL_DIR}/config/default-system-prompt.md" "${CODESEEQ_CONFIG_HOME}/system-prompt.md"
+    chmod 600 "${CODESEEQ_CONFIG_HOME}/system-prompt.md" 2>/dev/null || true
+    log "seeded default system prompt at ${CODESEEQ_CONFIG_HOME}/system-prompt.md (edit or run: codeseeq system add)"
+  fi
 
   local launcher="${CODESEEQ_BIN_DIR}/codeseeq"
   cat > "$launcher" <<-LEOF
@@ -3133,7 +3210,7 @@ PY
           continue;;
       esac
       case "$base" in
-        .DS_Store|*.pyc|*.zip|*.log|system-prompt.md|.qqignore|.qq_prompt_call-*|oops.md|codeseeq-*-fix.md|venice-image.md|package.json|package-lock.json)
+        .DS_Store|*.pyc|*.zip|*.log|system-prompt.md|.qqignore|.qq_prompt_call-*|oops.md|codeseeq-*-fix.md|venice-image.md|build-error.md|sysprompt.md|version.md|package.json|package-lock.json)
           echo "[package:check:error] forbidden file in archive: $entry" >&2
           failures=$((failures + 1))
           continue;;

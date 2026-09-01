@@ -2,6 +2,11 @@
 """
 codeseeq-bridge: OpenAI Responses API <-> provider translation bridge.
 
+v0.4.6 patches:
+- normalize_deepseek_reasoning_effort: "xhigh" now maps to DeepSeek "max"
+  (not "high"), and the "ultra" alias (Codex model_reasoning_effort ceiling)
+  also maps to "max" - so -R max / -R xhigh deliver full reasoning power.
+
 v0.4.5 patches:
 - GGUF llama-server fixed port: CODESEEQ_GGUF_PORT pins the loopback
   --port instead of auto-select; -c/-ngl/-np/--port map 1:1 to

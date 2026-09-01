@@ -66,6 +66,9 @@ zip_excludes=(
   "oops.md"
   "codeseeq-*-fix.md"
   "venice-image.md"
+  "build-error.md"
+  "sysprompt.md"
+  "version.md"
   "package.json"
   "package-lock.json"
 )
@@ -172,6 +175,9 @@ patterns = [
     "oops.md",
     "codeseeq-*-fix.md",
     "venice-image.md",
+    "build-error.md",
+    "sysprompt.md",
+    "version.md",
     "package.json",
     "package-lock.json",
 ]
@@ -290,7 +296,7 @@ validate_archive() {
     esac
 
     case "$base" in
-      .DS_Store|*.pyc|*.zip|*.log|system-prompt.md|.qqignore|.qq_prompt_call-*|oops.md|codeseeq-*-fix.md|venice-image.md|package.json|package-lock.json)
+      .DS_Store|*.pyc|*.zip|*.log|system-prompt.md|.qqignore|.qq_prompt_call-*|oops.md|codeseeq-*-fix.md|venice-image.md|build-error.md|sysprompt.md|version.md|package.json|package-lock.json)
         printf '[package:check:error] forbidden file in archive: %s\n' "$entry" >&2
         failures=$((failures + 1))
         continue

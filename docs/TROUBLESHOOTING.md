@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `v0.4.5`
+Current version: `v0.4.6`
 
 ## `./codeseeq` is not executable
 
@@ -26,6 +26,48 @@ CONTAINER=docker ./codeseeq doctor
 ```
 
 Docker Compose is not supported.
+
+## Workspace Permission Warning (container runtime)
+
+`codeseeq doctor` (or any container run) may print:
+
+```text
+[codeseeq:warn] workspace /workspace is not writable by 10001. host volume mapping might have permission issues.
+[codeseeq:warn] write test failed in /workspace
+```
+
+The container runs as UID 10001 while the bind-mounted host workspace is owned
+by your host user, so the container process cannot write files. CodeSeeq aligns
+the container user with the host user automatically:
+
+- **podman**: `--userns=keep-id` is the default. Disable/override with
+  `CODESEEQ_PODMAN_USERNS` (empty value disables the mapping).
+- **docker**: `--user <host-uid>:<host-gid>` is the default for non-root hosts
+  (writable state dirs are relocated under the workspace). Disable/override
+  with `CODESEEQ_DOCKER_USER`.
+
+Manual fallbacks if you disabled the mapping or use a custom runtime:
+
+```bash
+sudo chown -R "$(id -u):$(id -g)" /path/to/workspace
+# or
+chmod -R u+rwX /path/to/workspace
+```
+
+## System Prompt Missing
+
+`codeseeq doctor` reports `System prompt: missing` when no
+`~/.config/codeseeq/system-prompt.md` exists. A bundled default
+(`config/default-system-prompt.md`) is now seeded automatically on
+`codeseeq install` and used as a fallback in both host and container runtime,
+so `doctor` reports `present` and Codex always receives
+`developer_instructions`. Set your own prompt with:
+
+```bash
+codeseeq system add "You are terse and practical."
+codeseeq system view
+codeseeq system remove
+```
 
 ## Docker Fallback Surprises
 

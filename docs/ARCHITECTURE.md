@@ -1,6 +1,6 @@
 # Architecture
 
-Current version: `v0.4.5`
+Current version: `v0.4.6`
 
 ## Runtime Modes
 
@@ -170,9 +170,28 @@ Injection mechanism:
 codex-config-developer_instructions
 ```
 
+A bundled default prompt (`config/default-system-prompt.md`) is seeded to
+`~/.config/codeseeq/system-prompt.md` on first `codeseeq install` (when the
+user has not set one), and both the host wrapper and the container entrypoint
+fall back to it when the user prompt is absent - so `doctor` reports `present`
+and `developer_instructions` is always injected.
+
 CodeSeeq writes the stored prompt into generated Codex config as `developer_instructions`. Codex then sends it as a developer instruction, while preserving the selected model's normal base instructions. The bridge maps Codex `developer` messages to provider-compatible `system` messages.
 
 `doctor` and `config` report presence, path, bytes, lines, and mechanism without printing the full prompt. `system view/show/cat` are the explicit content-printing commands.
+
+## Workspace Permissions
+
+The container runs as UID 10001 while the bind-mounted workspace is owned by
+the host user. To keep the workspace writable, CodeSeeq maps the container
+user to the host user at launch:
+
+- podman: `--userns=keep-id` (default; override/disable via
+  `CODESEEQ_PODMAN_USERNS`).
+- docker: `--user <host-uid>:<host-gid>` (default for non-root hosts;
+  override/disable via `CODESEEQ_DOCKER_USER`). In this mode CODEX_HOME,
+  runtime and log dirs are relocated under the workspace so they stay
+  writable by the host user.
 
 ## Prompt File Flow
 

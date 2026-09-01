@@ -19,12 +19,12 @@ esac
 
 if [ -z "${CODESEEQ_RELEASE_TAG+x}" ]; then
   if [ "$ALLOW_LATEST" != "true" ]; then
-    die "CODESEEQ_ALLOW_LATEST_RELEASE is not true and CODESEEQ_RELEASE_TAG is unset; set CODESEEQ_RELEASE_TAG to a pinned release (e.g. v0.4.5) or set CODESEEQ_ALLOW_LATEST_RELEASE=true"
+    die "CODESEEQ_ALLOW_LATEST_RELEASE is not true and CODESEEQ_RELEASE_TAG is unset; set CODESEEQ_RELEASE_TAG to a pinned release (e.g. v0.4.6) or set CODESEEQ_ALLOW_LATEST_RELEASE=true"
   fi
   # Fetch the latest version from the VERSION file on the default branch
   # (single source of truth).
   VERSION_URL="https://raw.githubusercontent.com/${REPO}/main/VERSION"
-  RELEASE_TAG="$(curl -fsSL "$VERSION_URL" 2>/dev/null || echo "v0.4.5")"
+  RELEASE_TAG="$(curl -fsSL "$VERSION_URL" 2>/dev/null || echo "v0.4.6")"
   # sanitize: strip whitespace
   RELEASE_TAG="$(printf "%s" "$RELEASE_TAG" | tr -d "[:space:]")"
 else
