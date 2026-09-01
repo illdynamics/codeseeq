@@ -3033,24 +3033,37 @@ def collect_registered_tool_names(tools: Any) -> List[str]:
 def normalize_deepseek_reasoning_effort(value: Any) -> Optional[str]:
     """Normalize a DeepSeek reasoning-effort value to ``low``/``high``/``max``.
 
-    DeepSeek accepts ``low``, ``high`` and ``max`` (default ``high``). For
-    compatibility, ``medium`` and ``xhigh`` are aliases for ``high``, the
-    legacy CodeSeeq value ``minimal`` is treated as ``low``, and ``ultra``
-    (Codex ``model_reasoning_effort``) maps to ``max`` — the top DeepSeek
-    effort level. Returns ``None`` for empty or unsupported values so the
-    caller can omit the field.
+    DeepSeek accepts ``low``, ``high`` and ``max`` (default ``high``).
+    Mapping of Codex-side tokens to DeepSeek API values:
+
+      Codex token   → DeepSeek API value
+      ──────────────────────────────────
+      low           → low
+      medium        → high  (compatibility alias)
+      high          → high
+      xhigh         → max   (Codex ReasoningLevel ceiling → DeepSeek top tier)
+      max           → max   (pass-through when set directly via -R)
+      ultra         → max   (Codex model_reasoning_effort ceiling)
+      minimal       → low   (legacy alias)
+
+    Returns ``None`` for empty or unsupported values so the caller can omit
+    the field entirely.
     """
     if not isinstance(value, str):
         return None
     effort = value.strip().lower()
     if effort in {"low", "high", "max"}:
         return effort
-    if effort in {"medium", "xhigh"}:
+    if effort == "medium":
         return "high"
-    if effort in {"minimal", "ultra"}:
-        # minimal -> low; ultra (Codex model_reasoning_effort) -> max, the
-        # top DeepSeek effort level.
-        return "max" if effort == "ultra" else "low"
+    if effort in {"xhigh", "ultra"}:
+        # xhigh and ultra both map to DeepSeek's top effort level "max".
+        # xhigh is the Codex ReasoningLevel token that codeseeq uses in
+        # codex-model-catalog.json to represent the max reasoning tier
+        # (Codex's enum stops at xhigh; DeepSeek's API accepts "max").
+        return "max"
+    if effort == "minimal":
+        return "low"
     return None
 
 

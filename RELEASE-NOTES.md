@@ -1,3 +1,22 @@
+## v0.4.6 - 2026-09-01
+
+### Fixed
+- **Codex CLI JSON parse crash on `max` reasoning level** (critical boot fix).
+  `codex-model-catalog.json` used `"level": "max"` for DeepSeek V4 Flash Thinking
+  and DeepSeek V4 Pro Thinking entries. Codex CLI v0.130.0's Rust parser only
+  accepts the `ReasoningLevel` enum variants `none | minimal | low | medium | high | xhigh`;
+  `max` is not a valid variant, causing an immediate fatal parse error on every
+  launch when either of those models was referenced. Fixed by renaming the catalog
+  token to `"level": "xhigh"` (the Codex ceiling) while keeping `"effort": "max"`
+  so the bridge still sends the correct `reasoning_effort: max` value to the
+  DeepSeek API.
+- **`normalize_deepseek_reasoning_effort`: `xhigh` now maps to `"max"`** (not `"high"`).
+  The previous mapping collapsed Codex's `xhigh` token to DeepSeek's `high` effort,
+  silently downgrading any request for maximum reasoning. Now `xhigh` correctly
+  maps to `max` — the top DeepSeek effort tier — making `-R max` / `-R xhigh`
+  behave identically and deliver full reasoning power. The `ultra` alias
+  (Codex `model_reasoning_effort` ceiling) is unchanged and also maps to `max`.
+
 ## v0.4.5 - 2026-08-28
 
 ### Added

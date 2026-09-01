@@ -62,7 +62,7 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
+          "level": "xhigh",
           "effort": "max",
           "description": "Max reasoning effort"
         }
@@ -137,7 +137,7 @@
           "description": "High reasoning effort"
         },
         {
-          "level": "max",
+          "level": "xhigh",
           "effort": "max",
           "description": "Max reasoning effort"
         }
