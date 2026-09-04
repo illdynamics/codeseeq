@@ -1,6 +1,6 @@
 # Architecture
 
-Current version: `v0.4.6`
+Current version: `v0.4.7`
 
 ## Runtime Modes
 
@@ -22,7 +22,7 @@ host ./codeseeq
   -> Codex inside the container, cwd=/workspace
   -> local bridge inside the same container
   -> http://127.0.0.1:8080/v1/responses
-  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF)
+  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF / MLX)
 ```
 
 Default Codex settings: `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`.
@@ -34,7 +34,7 @@ host ./codeseeq -y/--yolo/--sandbox danger-full-access ...
   -> bridge starts as process or container sidecar
   -> local host Codex, cwd=current host checkout
   -> isolated CODEX_HOME=$PWD/.codeseeq
-  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF) through the bridge
+  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF / MLX) through the bridge
 ```
 
 Host runtime runs Codex directly on the host checkout without container sandboxing.
@@ -60,7 +60,7 @@ CodeSeeq controls how the translation bridge is started via `CODESEEQ_BRIDGE_MOD
 wrapper (./codeseeq)
   -> python3 bin/codeseeq-bridge.py   (host-native child process)
   -> Codex                             (host or container)
-  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF)
+  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF / MLX)
 ```
 
 Process mode is the recommended path for host runtime. It removes the bridge
@@ -244,7 +244,7 @@ stdin prompts.
 3. **`bin/codeseeq-bridge.py`** — FastAPI bridge implementing `/v1/responses`
    (the OpenAI Responses API wire format). Converts Codex Responses requests
    to the configured provider (OpenAI-compatible chat completions for DeepSeek/
-Google/Grok/Venice/local/GGUF, Anthropic Messages for Claude). Normalizes model aliases, streaming events,
+Google/Grok/Venice/local/GGUF/MLX, Anthropic Messages for Claude. Normalizes model aliases, streaming events,
    function/tool calls, and diagnostic web/doc paths.
 
 4. **`@openai/codex`** — Installed in the image for safe mode. Used from the
@@ -287,6 +287,34 @@ set) and its endpoint is `{base}/v1/chat/completions`. Tuning is via
 `THREADS`, `PARALLEL`, `TIMEOUT_SECONDS`, `STARTUP_TIMEOUT_SECONDS`,
 `ENABLE_THINKING`) plus `CODESEEQ_GGUF_LLAMA_SERVER_PATH` for an explicit
 binary and `GGUF_BASE_URL` to reuse an already-running server.
+### MLX / Apple MLX (`mlx@<dir>`)
+
+MLX support mirrors the GGUF provider for local Apple Silicon models. Selecting
+a model by `mlx@<path-to-model-directory>` (e.g.
+`codeseeq -m mlx@~/Qoding/ai/My-Model-mlx-4bit -y "prompt"`) resolves a
+dedicated `mlx` provider spec. The directory must contain an MLX conversion
+(`config.json` + `*.safetensors`). On the first `/v1/responses` request the
+bridge launches Apple's `mlx_lm.server` (`python -m mlx_lm.server` or the
+modern `python -m mlx_lm server` form, auto-detected) as a child process on a
+free loopback port, health-polls `/health` / `/v1/models`, then proxies the
+existing chat-completions translation to it. One server is reused per directory
+per bridge process and children are torn down via `atexit` plus the
+parent-death watchdog (same guarantees as llama.cpp above).
+
+`mlx` is keyless like `gguf`/`local` (an optional `MLX_API_KEY` is honoured for
+external servers). Its endpoint is `{base}/v1/chat/completions` (a trailing
+`/v1` on the base URL is not doubled). Tuning is via `CODESEEQ_MLX_*`
+(`CONTEXT_WINDOW`, `MAX_OUTPUT_TOKENS`, `PORT`, `TIMEOUT_SECONDS`,
+`STARTUP_TIMEOUT_SECONDS`, `ENABLE_THINKING`, `SERVER_ARGS`) plus
+`CODESEEQ_MLX_PYTHON` for the interpreter that has `mlx_lm`, per-model
+`config/mlx-models.json`, and `CODESEEQ_MLX_BASE_URL` / `MLX_BASE_URL` to reuse
+an already-running server (generic loopback `OPENAI_BASE_URL` /
+`CODESEEQ_BASE_URL` also select external mode for mlx; non-loopback generic
+base URLs are ignored so a hosted-API fallback can never hijack a local
+model). The model's own `config.json` context
+(`max_position_embeddings` / `model_max_length`, including nested
+`text_config`) is applied to the Codex catalog when no override is set.
+
 
 ## Interactive Menu Compatibility
 

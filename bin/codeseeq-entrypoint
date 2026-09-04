@@ -665,7 +665,14 @@ write_config() {
 
   local provider_env provider_label
   provider_env="$(provider_key_env_for_model)"
-  provider_env="${provider_env:-DEEPSEEK_API_KEY}"
+  if [[ -z "$provider_env" ]]; then
+    # Keyless providers (gguf / mlx / local / qwibus): Codex still requires
+    # the env_key variable to EXIST in the environment, so point it at an
+    # internal sentinel that is always exported (never used as a real
+    # credential; the bridge omits Authorization for keyless providers).
+    provider_env="CODESEEQ_KEYLESS_TOKEN"
+    export CODESEEQ_KEYLESS_TOKEN="codeseeq-keyless-local-provider"
+  fi
   case "${PROVIDER_MODEL:-}" in
     anthropic@*) provider_label="CodeSeeq Anthropic Bridge" ;;
     google@*) provider_label="CodeSeeq Google Bridge" ;;

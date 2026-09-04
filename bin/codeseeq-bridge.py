@@ -2,6 +2,20 @@
 """
 codeseeq-bridge: OpenAI Responses API <-> provider translation bridge.
 
+v0.4.7 patches:
+- MLX local-model provider: select a local Apple MLX model directory with
+  mlx@<path> (e.g. mlx@~/Qoding/ai/My-Model-mlx-4bit). The bridge lazily
+  launches Apple's mlx_lm.server on a free loopback port (or a pinned
+  CODESEEQ_MLX_PORT), health-checks it, reuses one server per directory, and
+  tears it down on shutdown/parent-death - the same lifecycle llama.cpp has
+  for gguf. Tuning mirrors the gguf knobs: per-model config/mlx-models.json >
+  CODESEEQ_MLX_* env vars > model config.json / built-in defaults. An already
+  running OpenAI-compatible MLX server can be reused instead by setting
+  MLX_BASE_URL / CODESEEQ_MLX_BASE_URL / OPENAI_BASE_URL / CODESEEQ_BASE_URL
+  (base URL may end with /v1). Keyless; host runtime + host process bridge are
+  forced just like gguf so the model directory resolves on the host.
+- GGUF/MLX external base-URL derivation no longer doubles a trailing /v1.
+
 v0.4.6 patches:
 - normalize_deepseek_reasoning_effort: "xhigh" now maps to DeepSeek "max"
   (not "high"), and the "ultra" alias (Codex model_reasoning_effort ceiling)
@@ -116,6 +130,7 @@ import sys
 import threading
 import tempfile
 import time
+import urllib.parse
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
@@ -325,6 +340,7 @@ class ModelSpec:
         "timeout_seconds",
         "system_prompt",
         "gguf_path",
+        "mlx_path",
     )
 
     def __init__(
@@ -345,6 +361,7 @@ class ModelSpec:
         provider: str = "deepseek",
         api_key_env: Optional[str] = "DEEPSEEK_API_KEY",
         gguf_path: Optional[str] = None,
+        mlx_path: Optional[str] = None,
     ) -> None:
         self.slug = slug
         self.deepseek_model = deepseek_model
@@ -362,6 +379,7 @@ class ModelSpec:
         self.timeout_seconds = timeout_seconds
         self.system_prompt = system_prompt
         self.gguf_path = gguf_path
+        self.mlx_path = mlx_path
 
 
 # Canonical model slugs -> upstream model name + thinking flag.
@@ -395,6 +413,7 @@ PROVIDER_GROK = "grok"
 PROVIDER_VENICE = "venice"
 PROVIDER_LOCAL = "local"
 PROVIDER_GGUF = "gguf"
+PROVIDER_MLX = "mlx"
 
 OPENAI_COMPAT_PROVIDERS = frozenset(
     {
@@ -404,6 +423,7 @@ OPENAI_COMPAT_PROVIDERS = frozenset(
         PROVIDER_GOOGLE,
         PROVIDER_LOCAL,
         PROVIDER_GGUF,
+        PROVIDER_MLX,
     }
 )
 
@@ -419,6 +439,7 @@ PROVIDER_API_KEY_ENV = {
     PROVIDER_VENICE: "VENICE_API_KEY",
     PROVIDER_LOCAL: "LOCAL_API_KEY",
     PROVIDER_GGUF: None,
+    PROVIDER_MLX: None,
 }
 
 # Generic provider base-URL override env vars, checked in order per provider.
@@ -430,6 +451,13 @@ PROVIDER_BASE_URL_ENV = {
     PROVIDER_VENICE: ("VENICE_BASE_URL", "OPENAI_BASE_URL", "CODESEEQ_BASE_URL"),
     PROVIDER_LOCAL: ("LOCAL_BASE_URL", "OPENAI_BASE_URL", "CODESEEQ_BASE_URL"),
     PROVIDER_GGUF: ("GGUF_BASE_URL", "LOCAL_BASE_URL", "OPENAI_BASE_URL", "CODESEEQ_BASE_URL"),
+    PROVIDER_MLX: (
+        "MLX_BASE_URL",
+        "CODESEEQ_MLX_BASE_URL",
+        "LOCAL_BASE_URL",
+        "OPENAI_BASE_URL",
+        "CODESEEQ_BASE_URL",
+    ),
 }
 
 # Provider base URLs (used as default_base for each model when no override).
@@ -441,7 +469,21 @@ PROVIDER_DEFAULT_BASE_URL = {
     PROVIDER_VENICE: "https://api.venice.ai",
     PROVIDER_LOCAL: "http://127.0.0.1:1337",
     PROVIDER_GGUF: "http://127.0.0.1:1",
+    PROVIDER_MLX: "http://127.0.0.1:1",
 }
+
+
+def _url_is_loopback(url: str) -> bool:
+    """True when a base URL targets the local machine (hostname resolves to a
+    loopback address or is literally 127.0.0.1/localhost/0.0.0.0)."""
+    try:
+        host = urllib.parse.urlparse(url).hostname or ""
+    except Exception:
+        return False
+    host = host.lower()
+    if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
+        return True
+    return host == "127.0.0.1"
 
 
 def _derive_chat_url(provider: str, base_url: str) -> str:
@@ -465,7 +507,12 @@ def _derive_chat_url(provider: str, base_url: str) -> str:
         return f"{base}/api/v1/chat/completions"
     if provider == PROVIDER_LOCAL:
         return f"{base}/v1/chat/completions"
-    if provider == PROVIDER_GGUF:
+    if provider in (PROVIDER_GGUF, PROVIDER_MLX):
+        # GGUF (llama.cpp) and MLX (mlx_lm.server) expose OpenAI-compatible
+        # APIs under /v1. Accept an external base URL with OR without a
+        # trailing /v1 (e.g. http://127.0.0.1:8888/v1) without doubling it.
+        if base.endswith("/v1"):
+            base = base[:-3]
         return f"{base}/v1/chat/completions"
     return f"{base}/chat/completions"  # deepseek
 
@@ -616,6 +663,7 @@ def _build_model_specs() -> Dict[str, ModelSpec]:
             provider=provider,
             api_key_env=PROVIDER_API_KEY_ENV.get(provider),
             gguf_path=None,
+            mlx_path=None,
         )
 
     return {
@@ -1445,6 +1493,451 @@ def _gguf_failed_stream(response_id: str, model: str, message: str) -> AsyncIter
 
 
 # ---------------------------------------------------------------------------
+# MLX / Apple MLX (mlx_lm.server) local-model server manager
+# ---------------------------------------------------------------------------
+# MLX models are Hugging-Face-style directories containing an MLX conversion
+# (config.json + *.safetensors + tokenizer files), e.g. the output of
+# `python -m mlx_lm.convert --hf-path ... -q`. Like the GGUF provider, the
+# mlx provider lazily launches Apple's OpenAI-compatible mlx_lm server on a
+# free loopback port, health-checks it, reuses one server per directory, and
+# tears it down on shutdown / parent-death. An already-running mlx_lm server
+# can be reused instead by setting MLX_BASE_URL / CODESEEQ_MLX_BASE_URL /
+# OPENAI_BASE_URL / CODESEEQ_BASE_URL (the bridge then never spawns one).
+
+# ---------------------------------------------------------------------------
+# Per-model MLX configuration (config/mlx-models.json)
+# ---------------------------------------------------------------------------
+# Optional per-model settings for MLX model directories, keyed by path
+# (absolute, ~-expanded, basename, or trailing path component). Each entry
+# may set any of the CODESEEQ_MLX_* knobs (context_window, max_output_tokens,
+# port, timeout_seconds, temperature, top_p, top_k, enable_thinking,
+# server_args). Precedence:
+# per-model config > global CODESEEQ_MLX_* env var > built-in default.
+
+_MLX_MODELS_JSON_ENV = "CODESEEQ_MLX_MODELS_JSON"
+_MLX_MODELS_JSON_DEFAULT = "/etc/codeseeq/mlx-models.json"
+
+_mlx_models_cache: Optional[Dict[str, Any]] = None
+
+
+def _mlx_models_config_path() -> Optional[str]:
+    """Locate the per-model MLX JSON config (env var wins, then repo copy,
+    then the container default)."""
+    explicit = os.environ.get(_MLX_MODELS_JSON_ENV, "").strip()
+    if explicit:
+        return explicit
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_candidate = os.path.join(script_dir, "..", "config", "mlx-models.json")
+    if os.path.isfile(repo_candidate):
+        return repo_candidate
+    if os.path.isfile(_MLX_MODELS_JSON_DEFAULT):
+        return _MLX_MODELS_JSON_DEFAULT
+    return None
+
+
+def _load_mlx_models_config() -> Dict[str, Any]:
+    """Parse the per-model MLX config into {key: {setting: value}}."""
+    global _mlx_models_cache
+    if _mlx_models_cache is not None:
+        return _mlx_models_cache
+    _mlx_models_cache = {}
+    path = _mlx_models_config_path()
+    if not path or not os.path.isfile(path):
+        return _mlx_models_cache
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return _mlx_models_cache
+    models = data.get("models") if isinstance(data, dict) else None
+    if isinstance(models, dict):
+        _mlx_models_cache = models
+    return _mlx_models_cache
+
+
+def _mlx_model_settings(path: str) -> Dict[str, Any]:
+    """Per-model settings dict for an MLX model dir ({} when unset).
+
+    Config keys may be an absolute path, a ~/ path, the basename, or the
+    trailing path component; keys are normalized the same way as the
+    requested path before matching.
+    """
+    config = _load_mlx_models_config()
+    if not config:
+        return {}
+    abs_path = os.path.abspath(os.path.expanduser(path))
+    base = os.path.basename(abs_path)
+    tilde_path = os.path.join("~", os.path.relpath(abs_path, os.path.expanduser("~")))
+    wanted = (abs_path, tilde_path, base, f"mlx@{abs_path}")
+    for key in wanted:
+        entry = config.get(key)
+        if isinstance(entry, dict):
+            return entry
+    normalized = {os.path.abspath(os.path.expanduser(str(k))): v for k, v in config.items()}
+    entry = normalized.get(abs_path)
+    if isinstance(entry, dict):
+        return entry
+    return {}
+
+
+def _mlx_setting(path: str, name: str) -> Any:
+    """Per-model MLX setting value (None when not configured)."""
+    return _mlx_model_settings(path).get(name)
+
+
+def _mlx_int_setting(path: str, name: str) -> Optional[int]:
+    value = _mlx_setting(path, name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mlx_model_context_from_config(abs_path: str) -> Optional[int]:
+    """Best-effort context window from the MLX model's config.json.
+
+    Modern MLX conversions nest the LLM text config under "text_config"
+    (multimodal models) or keep "max_position_embeddings" /
+    "model_max_length" at the top level. Returns None when unreadable.
+    """
+    cfg_path = os.path.join(abs_path, "config.json")
+    if not os.path.isfile(cfg_path):
+        return None
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    for container in (cfg, cfg.get("text_config")):
+        if not isinstance(container, dict):
+            continue
+        for key in ("max_position_embeddings", "model_max_length"):
+            value = container.get(key)
+            if isinstance(value, int) and value > 0:
+                return value
+    return None
+
+
+MISSING_MLX_BINARY_MSG = (
+    "mlx provider requires Apple MLX + mlx-lm. "
+    "Install with: python3 -m pip install mlx-lm  "
+    "(see https://github.com/ml-explore/mlx-lm), or set "
+    "CODESEEQ_MLX_PYTHON to the interpreter that has mlx_lm installed."
+)
+
+
+class MLXServerError(Exception):
+    """Raised when an MLX mlx_lm server cannot be launched or become healthy."""
+
+
+class _MLXServer:
+    __slots__ = ("path", "port", "process", "base_url", "chat_url")
+
+    def __init__(self, path: str, port: int, process: Any) -> None:
+        self.path = path
+        self.port = port
+        self.process = process
+        self.base_url = f"http://127.0.0.1:{port}"
+        self.chat_url = f"{self.base_url}/v1/chat/completions"
+
+
+class MLXServerManager:
+    """Lazily launch, reuse, and tear down mlx_lm.server processes.
+
+    One server is kept per absolute MLX model directory per bridge process.
+    Ports are chosen with a bind-probe on 127.0.0.1 (never exposed beyond
+    loopback) unless CODESEEQ_MLX_PORT pins one.
+    """
+
+    def __init__(self) -> None:
+        self._servers: Dict[str, _MLXServer] = {}
+        self._locks: Dict[str, asyncio.Lock] = {}
+        self._python_cache: Dict[str, Optional[str]] = {}
+        self._module_form_cache: Dict[str, bool] = {}
+
+    # -- interpreter discovery --------------------------------------------
+    def _find_python(self) -> Optional[str]:
+        explicit = os.environ.get("CODESEEQ_MLX_PYTHON", "").strip()
+        if explicit:
+            if os.path.isfile(explicit) and os.access(explicit, os.X_OK):
+                return explicit
+            return None
+        if self._python_cache:
+            return next(iter(self._python_cache.values()))
+        on_path = shutil.which("python3")
+        if on_path:
+            # Resolve version-manager shims to the real interpreter so the
+            # child process is a direct grandchild (parent-watchdog safety).
+            try:
+                real = subprocess.run(
+                    [on_path, "-c", "import sys; print(sys.executable)"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+                if real.returncode == 0 and real.stdout.strip():
+                    self._python_cache["path"] = real.stdout.strip()
+                    return self._python_cache["path"]
+            except Exception:
+                pass
+            self._python_cache["path"] = on_path
+            return on_path
+        return None
+
+    def _mlx_available(self, python: str) -> bool:
+        """True when `python` can import mlx_lm (checked once per python)."""
+        if python in self._module_form_cache:
+            return self._module_form_cache[python]
+        try:
+            proc = subprocess.run(
+                [python, "-c", "import mlx_lm"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            ok = proc.returncode == 0
+        except Exception:
+            ok = False
+        self._module_form_cache[python] = ok
+        return ok
+
+    def _use_modern_cli(self, python: str) -> bool:
+        """Prefer `python -m mlx_lm server` (modern CLI, >= ~0.21); fall back
+        to the still-supported `python -m mlx_lm.server` module form."""
+        key = "modern:" + python
+        if key in self._module_form_cache:
+            return bool(self._module_form_cache[key])
+        try:
+            proc = subprocess.run(
+                [python, "-m", "mlx_lm", "--help"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            modern = proc.returncode == 0 and "server" in (proc.stdout + proc.stderr)
+        except Exception:
+            modern = False
+        self._module_form_cache[key] = modern
+        return modern
+
+    # -- argv construction -------------------------------------------------
+    @staticmethod
+    def _argv(python: str, abs_path: str, port: int, modern_cli: bool, alias: str) -> List[str]:
+        if modern_cli:
+            argv = [python, "-m", "mlx_lm", "server"]
+        else:
+            argv = [python, "-m", "mlx_lm.server"]
+        argv += [
+            "--model",
+            abs_path,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ]
+        # Optional extra server flags (per-model "server_args" wins over the
+        # CODESEEQ_MLX_SERVER_ARGS env var), e.g. --adapter-path, --draft-model,
+        # --trust-remote-code, --cache-size, --log-level. Values are split on
+        # shell-like whitespace so a quoted JSON arg survives.
+        extra_raw = os.environ.get("CODESEEQ_MLX_SERVER_ARGS", "").strip()
+        per_model_extra = _mlx_setting(abs_path, "server_args")
+        if per_model_extra is not None and str(per_model_extra).strip():
+            extra_raw = str(per_model_extra).strip()
+        if extra_raw:
+            try:
+                import shlex
+                argv += shlex.split(extra_raw)
+            except ValueError:
+                argv += extra_raw.split()
+        # Informational only: --alias is not a mlx_lm.server flag, so the
+        # served model id stays the directory basename (mlx_lm reports the
+        # model name it loaded); nothing else needs the alias.
+        return argv
+
+    @staticmethod
+    def _fixed_port() -> Optional[int]:
+        raw = os.environ.get("CODESEEQ_MLX_PORT", "").strip()
+        if not raw:
+            return None
+        try:
+            port = int(raw)
+        except ValueError:
+            return None
+        return port if 1 <= port <= 65535 else None
+
+    @staticmethod
+    def _free_port() -> int:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+        sock.close()
+        return port
+
+    def _start_server(self, python: str, abs_path: str) -> _MLXServer:
+        alias = os.path.basename(abs_path)
+        per_model_port = _mlx_int_setting(abs_path, "port")
+        fixed_port = per_model_port if per_model_port is not None else self._fixed_port()
+        modern_cli = self._use_modern_cli(python)
+        last_exc: Optional[Exception] = None
+        attempts = 1 if fixed_port is not None else 3
+        for _ in range(attempts):
+            port = fixed_port if fixed_port is not None else self._free_port()
+            argv = self._argv(python, abs_path, port, modern_cli, alias)
+            log(f"mlx: launching mlx_lm server for {abs_path} on port {port}")
+            try:
+                logfile = tempfile.NamedTemporaryFile(
+                    mode="w",
+                    prefix="codeseeq-mlx-",
+                    suffix=".log",
+                    delete=False,
+                    encoding="utf-8",
+                )
+                proc = subprocess.Popen(
+                    argv,
+                    stdout=logfile,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                last_exc = exc
+                continue
+            return _MLXServer(abs_path, port, proc)
+        raise MLXServerError(
+            f"failed to start mlx_lm server for {abs_path}: {last_exc}"
+        )
+
+    async def _wait_healthy(self, server: _MLXServer) -> bool:
+        timeout = 600.0
+        raw = os.environ.get("CODESEEQ_MLX_STARTUP_TIMEOUT_SECONDS", "").strip()
+        if raw:
+            try:
+                timeout = float(raw)
+            except ValueError:
+                timeout = 600.0
+        timeout = max(1.0, timeout)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if server.process.poll() is not None:
+                return False
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    resp = await client.get(f"{server.base_url}/health")
+                    if resp.status_code == 200:
+                        return True
+                    # Older/newer mlx_lm builds expose /v1/models instead.
+                    resp2 = await client.get(f"{server.base_url}/v1/models")
+                    if resp2.status_code == 200:
+                        return True
+            except httpx.HTTPError:
+                pass
+            await asyncio.sleep(0.25)
+        return False
+
+    @staticmethod
+    def _stop_server(server: _MLXServer) -> None:
+        proc = server.process
+        if proc is None or proc.poll() is not None:
+            return
+        pgid = None
+        try:
+            pgid = os.getpgid(proc.pid)
+        except OSError:
+            pgid = None
+        if pgid is not None:
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except OSError:
+                pass
+        else:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            if pgid is not None:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except OSError:
+                    pass
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    def _lock_for(self, path: str) -> asyncio.Lock:
+        lock = self._locks.get(path)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[path] = lock
+        return lock
+
+    async def ensure(self, path: str) -> _MLXServer:
+        abs_path = os.path.abspath(os.path.expanduser(path))
+        async with self._lock_for(abs_path):
+            cached = self._servers.get(abs_path)
+            if cached is not None and cached.process.poll() is None:
+                if await self._wait_healthy(cached):
+                    return cached
+                self._stop_server(cached)
+                self._servers.pop(abs_path, None)
+
+            python = self._find_python()
+            if not python or not self._mlx_available(python):
+                raise MLXServerError(MISSING_MLX_BINARY_MSG)
+
+            server = self._start_server(python, abs_path)
+            if not await self._wait_healthy(server):
+                self._stop_server(server)
+                raise MLXServerError(
+                    f"mlx mlx_lm server for {abs_path} did not become healthy "
+                    f"within CODESEEQ_MLX_STARTUP_TIMEOUT_SECONDS"
+                )
+            self._servers[abs_path] = server
+            return server
+
+    def shutdown_all(self) -> None:
+        servers = list(self._servers.values())
+        self._servers.clear()
+        for server in servers:
+            self._stop_server(server)
+
+
+MLX_MANAGER = MLXServerManager()
+atexit.register(MLX_MANAGER.shutdown_all)
+
+
+def _mlx_failed_stream(response_id: str, model: str, message: str) -> AsyncIterator[str]:
+    async def gen() -> AsyncIterator[str]:
+        yield sse_event(
+            "response.failed",
+            {
+                "type": "response.failed",
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "model": model,
+                    "status": "failed",
+                    "error": {"code": "mlx_server_error", "message": message},
+                },
+            },
+        )
+
+    return gen()
+
+
+
+# ---------------------------------------------------------------------------
 # DSML / inline tool-call extraction
 # ---------------------------------------------------------------------------
 
@@ -2226,9 +2719,143 @@ def normalize_model(model: str) -> "ModelSpec":
             provider=PROVIDER_GGUF,
             api_key_env=None,
             gguf_path=gguf_path_field,
+            mlx_path=None,
+        )
+
+    # MLX local-model selection: mlx@<directory> slug, where <directory> is
+    # an Apple MLX conversion (config.json + *.safetensors + tokenizer files).
+    # The mlx_lm server process manager (MLXServerManager) owns launching; when
+    # an external base URL override is set (MLX_BASE_URL / CODESEEQ_MLX_BASE_URL
+    # / a loopback OPENAI_BASE_URL / CODESEEQ_BASE_URL) the bridge routes to
+    # the already running server instead and never spawns one.
+    if raw.lower().startswith("mlx@"):
+        mlx_path = raw[4:]
+        mlx_path = mlx_path.strip()
+        if not mlx_path:
+            raise ValueError("mlx model path is empty")
+        abs_path = os.path.abspath(os.path.expanduser(mlx_path))
+        if not os.path.isdir(abs_path):
+            raise ValueError(f"mlx model directory not found: {abs_path}")
+        cfg_check = os.path.join(abs_path, "config.json")
+        has_weights = any(
+            fname.lower().endswith((".safetensors", ".npz"))
+            for fname in os.listdir(abs_path)
+        ) if os.path.isdir(abs_path) else False
+        if not os.path.isfile(cfg_check):
+            raise ValueError(
+                f"mlx model directory has no config.json (is it an MLX "
+                f"conversion?): {abs_path}"
+            )
+        if not has_weights:
+            raise ValueError(
+                f"mlx model directory has no .safetensors weights "
+                f"(convert with `python -m mlx_lm.convert`): {abs_path}"
+            )
+        base = os.path.basename(abs_path)
+        slug = f"mlx@{abs_path}"
+
+        # Per-model settings (config/mlx-models.json) win over the global
+        # CODESEEQ_MLX_* env vars, which win over built-in defaults.
+        thinking = env_bool("CODESEEQ_THINKING", False)
+        per_model_thinking = _mlx_setting(abs_path, "enable_thinking")
+        mlx_thinking = os.environ.get("CODESEEQ_MLX_ENABLE_THINKING")
+        if per_model_thinking is not None:
+            if isinstance(per_model_thinking, str):
+                thinking = per_model_thinking.strip().lower() in {"1", "true", "yes", "on"}
+            else:
+                thinking = bool(per_model_thinking)
+        elif mlx_thinking is not None:
+            thinking = mlx_thinking.strip().lower() in {"1", "true", "yes", "on"}
+
+        context_window = _mlx_int_setting(abs_path, "context_window")
+        if context_window is None:
+            context_window = _env_int("CODESEEQ_MLX_CONTEXT_WINDOW")
+        if context_window is None:
+            context_window = _mlx_model_context_from_config(abs_path)
+        if context_window is None:
+            context_window = 8192
+
+        max_output_tokens = _mlx_int_setting(abs_path, "max_output_tokens")
+        if max_output_tokens is None:
+            max_output_tokens = _env_int("CODESEEQ_MLX_MAX_OUTPUT_TOKENS") or 2048
+
+        timeout_seconds = _mlx_setting(abs_path, "timeout_seconds")
+        if timeout_seconds is None:
+            timeout_seconds = float(_env_int("CODESEEQ_MLX_TIMEOUT_SECONDS") or 600)
+        else:
+            try:
+                timeout_seconds = float(timeout_seconds)
+            except (TypeError, ValueError):
+                timeout_seconds = float(_env_int("CODESEEQ_MLX_TIMEOUT_SECONDS") or 600)
+
+        temperature = _mlx_setting(abs_path, "temperature")
+        if temperature is None:
+            temperature = _env_float("CODESEEQ_MLX_TEMPERATURE")
+        if temperature is None:
+            temperature = _env_float("CODESEEQ_TEMPERATURE")
+        if temperature is None:
+            temperature = 0.7
+        else:
+            try:
+                temperature = float(temperature)
+            except (TypeError, ValueError):
+                temperature = 0.7
+
+        top_p = _mlx_setting(abs_path, "top_p")
+        if top_p is None:
+            top_p = _env_float("CODESEEQ_MLX_TOP_P")
+        else:
+            try:
+                top_p = float(top_p)
+            except (TypeError, ValueError):
+                top_p = None
+
+        top_k = _mlx_int_setting(abs_path, "top_k")
+        if top_k is None:
+            top_k = _env_int("CODESEEQ_MLX_TOP_K")
+
+        # External already-running mlx_lm server (or any OpenAI-compatible
+        # MLX gateway): route to it without spawning a managed server.
+        # MLX-specific env vars always mean "external". The generic
+        # OPENAI_BASE_URL / CODESEEQ_BASE_URL fallbacks only select external
+        # mode when they point at loopback - an ambient generic base URL (e.g.
+        # CODESEEQ_BASE_URL=https://api.deepseek.com exported for the deepseek
+        # provider) must never hijack a local mlx model into a hosted API.
+        external_base = _env_first("MLX_BASE_URL", "CODESEEQ_MLX_BASE_URL")
+        if external_base is None:
+            generic_base = _env_first("OPENAI_BASE_URL", "CODESEEQ_BASE_URL")
+            if generic_base and _url_is_loopback(generic_base):
+                external_base = generic_base
+        if external_base:
+            base_url = external_base.rstrip("/")
+            chat_url = _derive_chat_url(PROVIDER_MLX, base_url)
+            mlx_path_field = None
+        else:
+            base_url = PROVIDER_DEFAULT_BASE_URL[PROVIDER_MLX]
+            chat_url = _derive_chat_url(PROVIDER_MLX, base_url)
+            mlx_path_field = abs_path
+
+        return ModelSpec(
+            slug=slug,
+            deepseek_model=base,
+            thinking=thinking,
+            base_url=base_url,
+            chat_url=chat_url,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            timeout_seconds=timeout_seconds,
+            system_prompt=None,
+            provider=PROVIDER_MLX,
+            api_key_env=None,
+            gguf_path=None,
+            mlx_path=mlx_path_field,
         )
 
     # Resolve aliases to a canonical slug that is present in MODEL_SPECS.
+
     # The two bare/wrapper non-thinking deepseek aliases keep the legacy
     # "CODESEEQ_THINKING" env override for backwards compatibility.
     canonical = raw
@@ -2302,6 +2929,7 @@ def normalize_model(model: str) -> "ModelSpec":
                         provider=owner,
                         api_key_env=PROVIDER_API_KEY_ENV.get(owner),
                         gguf_path=None,
+                        mlx_path=None,
                     )
                 else:
                     spec = ModelSpec(
@@ -2320,6 +2948,7 @@ def normalize_model(model: str) -> "ModelSpec":
                         provider=owner,
                         api_key_env=PROVIDER_API_KEY_ENV.get(owner),
                         gguf_path=None,
+                        mlx_path=None,
                     )
                 return spec
     if canonical not in MODEL_SPECS:
@@ -2345,6 +2974,7 @@ def normalize_model(model: str) -> "ModelSpec":
         provider=src.provider,
         api_key_env=src.api_key_env,
         gguf_path=src.gguf_path,
+        mlx_path=src.mlx_path,
     )
 
     # Legacy "CODESEEQ_THINKING" global toggle only affects the explicit
@@ -2381,6 +3011,7 @@ def normalize_model(model: str) -> "ModelSpec":
             provider=effective_provider,
             api_key_env=PROVIDER_API_KEY_ENV.get(effective_provider),
             gguf_path=spec.gguf_path,
+            mlx_path=spec.mlx_path,
         )
 
     return spec
@@ -3941,10 +4572,14 @@ async def health() -> Dict[str, str]:
     effective_backend = image_backend
     if image_backend == "none" and venice_key:
         effective_backend = "venice"
-    info: Dict[str, str] = {"status": "ok", "version": "0.4.5", "image_backend": effective_backend}
-    providers = sorted({spec.provider for spec in MODEL_SPECS.values()} | {PROVIDER_GGUF})
+    info: Dict[str, str] = {"status": "ok", "version": "0.4.7", "image_backend": effective_backend}
+    providers = sorted({spec.provider for spec in MODEL_SPECS.values()} | {PROVIDER_GGUF, PROVIDER_MLX})
     info["providers"] = ",".join(providers)
     info["gguf_binary"] = "found" if GGUF_MANAGER._find_binary() else "not-found"
+    _mlx_python = MLX_MANAGER._find_python()
+    info["mlx_available"] = (
+        "found" if (_mlx_python and MLX_MANAGER._mlx_available(_mlx_python)) else "not-found"
+    )
     try:
         info["provider"] = normalize_model(os.environ.get("CODESEEQ_MODEL", "")).provider
     except Exception:
@@ -3968,6 +4603,7 @@ async def models() -> Dict[str, Any]:
             }
         )
     data.append({"id": "gguf@local-model", "object": "model", "owned_by": PROVIDER_GGUF})
+    data.append({"id": "mlx@local-model", "object": "model", "owned_by": PROVIDER_MLX})
     return {"object": "list", "data": data}
 
 
@@ -4018,6 +4654,27 @@ async def responses(request: Request) -> Any:
         spec.chat_url = server.chat_url
         spec.base_url = server.base_url
         log(f"gguf server ready at {server.base_url}")
+
+    # MLX local-model selection: lazily launch (or reuse) mlx_lm.server the
+    # same way llama.cpp is spawned for gguf. When an external base URL was
+    # configured (MLX_BASE_URL / CODESEEQ_MLX_BASE_URL / OPENAI_BASE_URL /
+    # CODESEEQ_BASE_URL) mlx_path is None and the already-running server is
+    # used directly.
+    if spec.provider == PROVIDER_MLX and spec.mlx_path:
+        try:
+            server = await MLX_MANAGER.ensure(spec.mlx_path)
+        except MLXServerError as exc:
+            log(f"mlx server error: {exc}")
+            if stream:
+                return StreamingResponse(
+                    _mlx_failed_stream(response_id, provider_model, str(exc)),
+                    media_type="text/event-stream",
+                )
+            return JSONResponse(status_code=502, content={"error": str(exc)})
+        model_chat_url = server.chat_url
+        spec.chat_url = server.chat_url
+        spec.base_url = server.base_url
+        log(f"mlx server ready at {server.base_url}")
 
     # --- bridge built-in helpers (smoke test paths) -----------------------
     bridge_tool = body.get("codeseeq_tool")
@@ -4891,6 +5548,10 @@ def _install_parent_watchdog() -> None:
             log("parent process exited; bridge shutting down")
             try:
                 GGUF_MANAGER.shutdown_all()
+            except Exception:  # pragma: no cover - best effort
+                pass
+            try:
+                MLX_MANAGER.shutdown_all()
             except Exception:  # pragma: no cover - best effort
                 pass
             try:

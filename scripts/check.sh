@@ -242,6 +242,11 @@ if ! scripts/test-bridge-gguf.py; then
   fail "bridge GGUF local-model provider regression test failed"
 fi
 
+note "checking bridge MLX local-model provider"
+if ! scripts/test-bridge-mlx.py; then
+  fail "bridge MLX local-model provider regression test failed"
+fi
+
 note "checking orphaned bridge container reaping"
 if ! scripts/test-bridge-reap-containers.py; then
   fail "orphaned bridge container reaping regression test failed"

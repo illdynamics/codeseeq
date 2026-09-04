@@ -186,6 +186,24 @@ LEGACY_SYSTEM_PROMPT_PATH="${WORKDIR_HOST}/.codeseeq/system-prompt.md"
 : "${GGUF_BASE_URL:=}"
 : "${GGUF_API_KEY:=}"
 
+# --- MLX local-model (Apple MLX / mlx-lm) configuration ---
+# MLX models are directories (mlx@<path-to-model-directory>) containing an
+# Apple MLX conversion (config.json + *.safetensors). The bridge lazily
+# launches mlx_lm.server like llama.cpp for gguf. Tuning mirrors the GGUF
+# knobs: per-model config/mlx-models.json > CODESEEQ_MLX_* env vars > the
+# model's own config.json > built-in defaults.
+: "${CODESEEQ_MLX_PYTHON:=}"
+: "${CODESEEQ_MLX_SERVER_ARGS:=}"
+: "${CODESEEQ_MLX_CONTEXT_WINDOW:=}"
+: "${CODESEEQ_MLX_MAX_OUTPUT_TOKENS:=2048}"
+: "${CODESEEQ_MLX_PORT:=}"
+: "${CODESEEQ_MLX_TIMEOUT_SECONDS:=600}"
+: "${CODESEEQ_MLX_STARTUP_TIMEOUT_SECONDS:=600}"
+: "${CODESEEQ_MLX_ENABLE_THINKING:=false}"
+: "${MLX_BASE_URL:=}"
+: "${CODESEEQ_MLX_BASE_URL:=}"
+: "${MLX_API_KEY:=}"
+
 # --- Bridge mode configuration ---
 : "${CODESEEQ_BRIDGE_MODE:=auto}"
 : "${CODESEEQ_BRIDGE_HOST:=127.0.0.1}"
@@ -281,10 +299,26 @@ CodeSeeq commands:
 
 Configure the LLM:
   codeseeq config       TUI: pick provider (anthropic, google, grok,
-                        deepseek, venice, local), then model, then API key.
+                        deepseek, venice, local, gguf, mlx), then model,
+                        then API key.
   The wizard writes CODESEEQ_MODEL / CODESEEQ_PROVIDER and the provider API
   key to ~/.config/codeseeq/config.json (CODESEEQ_CONFIG_HOME/config.json).
   Environment variables always override config-file values.
+
+Local GGUF / MLX models (host runtime, no API key):
+  GGUF: codeseeq --model /path/to/model.gguf "prompt"
+        codeseeq -m gguf@/path/to/model.gguf -y run "prompt"
+        The bridge launches llama.cpp llama-server for you.
+  MLX:  codeseeq -m mlx@/path/to/model-directory -y run "prompt"
+        CODESEEQ_MLX_PORT=8888 codeseeq -m mlx@<dir> -y run "prompt"
+        The bridge launches Apple mlx_lm.server for you (requires mlx-lm:
+        python3 -m pip install mlx-lm). Set CODESEEQ_MLX_PYTHON to the
+        interpreter that has mlx_lm if it is not the default python3.
+  Reuse an already-running local server instead:
+        GGUF: GGUF_BASE_URL=http://127.0.0.1:8888 codeseeq -m gguf@<file> ...
+        MLX:  CODESEEQ_BASE_URL=http://127.0.0.1:8888/v1 codeseeq -m mlx@<dir> ...
+  Per-model tuning: config/gguf-models.json / config/mlx-models.json (see
+  README; gguf knobs are CODESEEQ_GGUF_*, mlx knobs are CODESEEQ_MLX_*).
 
 Prompt files:
   codeseeq run -f task.md
@@ -679,6 +713,51 @@ requested_gguf_model() {
   return 1
 }
 
+# Detect an MLX local-model selection (mlx@<directory> or the mlx provider
+# from config). MLX models are directories served by a host mlx_lm server, so
+# callers use this to keep the bridge on the host exactly like GGUF.
+is_mlx_model() {
+  local model="${1:-${CODESEEQ_MODEL:-${PROVIDER_MODEL:-}}}"
+  local lower
+  [[ "${CODESEEQ_PROVIDER:-}" == "mlx" ]] && return 0
+  lower="$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')"
+  [[ "$lower" == mlx@* ]] && return 0
+  return 1
+}
+
+# Check whether the model actually requested for this invocation is MLX.
+# `is_mlx_model` alone only sees the env/config value; the CLI may override it
+# with `-m`/`--model` in any argv position (including after a `run` command),
+# so scan the remaining args for an mlx model flag as well.
+requested_mlx_model() {
+  is_mlx_model && return 0
+  local arg value
+  while (( $# > 0 )); do
+    arg="$1"
+    case "$arg" in
+      -m|--model)
+        [[ $# -ge 2 ]] || return 1
+        value="$2"
+        is_mlx_model "$value" && return 0
+        shift 2
+        ;;
+      --model=*)
+        value="${arg#--model=}"
+        is_mlx_model "$value" && return 0
+        shift
+        ;;
+      --)
+        # Everything after `--` is literal prompt text, never a model flag.
+        return 1
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  return 1
+}
+
 normalize_model() {
   local model="$1"
   local thinking_override="${2:-}"
@@ -767,9 +846,28 @@ normalize_model() {
         fi
         alias_thinking="false"
         CODESEEQ_PROVIDER="gguf"
+      elif [[ "$model" == mlx@* ]]; then
+        # MLX local-model selection: mlx@<path-to-model-directory>. Resolve to
+        # an absolute directory path now (validation happens in the bridge) so
+        # Codex and the bridge always see the same canonical slug.
+        local mlx_path="${model#mlx@}"
+        mlx_path="$(printf '%s' "$mlx_path" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [[ -n "$mlx_path" ]] || die "mlx model path is empty"
+        if command -v python3 >/dev/null 2>&1; then
+          PROVIDER_MODEL="mlx@$(python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$mlx_path")"
+        else
+          case "$mlx_path" in
+            /*) PROVIDER_MODEL="mlx@${mlx_path}" ;;
+            ~/*) PROVIDER_MODEL="mlx@${HOME}${mlx_path#\~}" ;;
+            *) PROVIDER_MODEL="mlx@$(pwd -P)/${mlx_path}" ;;
+          esac
+        fi
+        alias_thinking="false"
+        CODESEEQ_PROVIDER="mlx"
       else
         # New provider slugs: <provider>@<model> with provider in
-        # anthropic|google|grok|venice|local (deepseek/qwibus handled above).
+        # anthropic|google|grok|venice|local|gguf|mlx (deepseek/qwibus handled
+        # above; gguf@/mlx@ paths are intercepted earlier).
         # A trailing "-thinking" suffix enables thinking; local accepts any
         # manually-typed model name.
         local owner upstream
@@ -786,11 +884,11 @@ normalize_model() {
               esac
               ;;
             *)
-              die "unsupported provider: ${owner} in model ${model}. supported providers: deepseek, qwibus, anthropic, google, grok, venice, local"
+              die "unsupported provider: ${owner} in model ${model}. supported providers: deepseek, qwibus, anthropic, google, grok, venice, local, gguf, mlx"
               ;;
           esac
         else
-          die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx, or <provider>@<model> with provider in anthropic, google, grok, venice, local"
+          die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx, gguf@<path-to-.gguf>, mlx@<path-to-model-directory>, or <provider>@<model> with provider in anthropic, google, grok, venice, local, gguf, mlx"
         fi
       fi
       ;;
@@ -983,10 +1081,10 @@ provider_key_env_for_model() {
     grok) printf 'GROK_API_KEY'; return 0 ;;
     venice) printf 'VENICE_API_KEY'; return 0 ;;
     deepseek) printf 'DEEPSEEK_API_KEY'; return 0 ;;
-    local|qwibus|gguf) printf ''; return 0 ;;
+    local|qwibus|gguf|mlx) printf ''; return 0 ;;
   esac
   case "$model" in
-    qwibus@*|local@*|gguf@*) printf '' ;;
+    qwibus@*|local@*|gguf@*|mlx@*) printf '' ;;
     anthropic@*) printf 'ANTHROPIC_API_KEY' ;;
     google@*) printf 'GOOGLE_API_KEY' ;;
     grok@*) printf 'GROK_API_KEY' ;;
@@ -1070,6 +1168,82 @@ print(value)
 PYGGUF
 }
 
+mlx_models_config_candidates() {
+  if [[ -n "${CODESEEQ_MLX_MODELS_JSON:-}" && -f "${CODESEEQ_MLX_MODELS_JSON}" ]]; then
+    printf '%s\n' "${CODESEEQ_MLX_MODELS_JSON}"
+  fi
+  local static="${CODESEEQ_HOST_MODEL_CATALOG_JSON:-${CODESEEQ_INSTALL_ROOT}/config/codex-model-catalog.json}"
+  printf '%s\n' "$(dirname "$static")/mlx-models.json"
+  printf '%s\n' "/etc/codeseeq/mlx-models.json"
+}
+
+# Resolve the effective MLX context window for a model directory:
+# per-model config > CODESEEQ_MLX_CONTEXT_WINDOW > the model's own config.json
+# (max_position_embeddings / model_max_length, incl. nested text_config) >
+# 8192. Prints the number. Mirrors resolve_gguf_context_window for gguf.
+resolve_mlx_context_window() {
+  local path="$1"
+  local fallback="${CODESEEQ_MLX_CONTEXT_WINDOW:-8192}"
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$fallback"
+    return 0
+  fi
+  local candidates="" c
+  while IFS= read -r c; do
+    [[ -n "$c" && -f "$c" ]] || continue
+    candidates="${candidates}${candidates:+,}$c"
+  done < <(mlx_models_config_candidates)
+  CODESEEQ_MLX_RESOLVE_CANDIDATES="$candidates" \
+  CODESEEQ_MLX_RESOLVE_FALLBACK="$fallback" \
+  python3 - "$path" <<'PYMLX'
+import json, os, sys
+path = os.path.abspath(os.path.expanduser(sys.argv[1]))
+cands = [c for c in os.environ.get("CODESEEQ_MLX_RESOLVE_CANDIDATES", "").split(",") if c]
+fallback = os.environ.get("CODESEEQ_MLX_RESOLVE_FALLBACK", "8192")
+value = None
+for cand in cands:
+    try:
+        with open(cand, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        continue
+    models = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(models, dict):
+        continue
+    base = os.path.basename(path)
+    tilde = os.path.join("~", os.path.relpath(path, os.path.expanduser("~")))
+    for key in (path, tilde, base, "mlx@" + path):
+        entry = models.get(key)
+        if isinstance(entry, dict) and entry.get("context_window") is not None:
+            value = entry["context_window"]
+            break
+    if value is not None:
+        break
+if value is None:
+    # Fall back to the model's own config.json (max_position_embeddings /
+    # model_max_length, top level or nested under text_config).
+    try:
+        with open(os.path.join(path, "config.json"), "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except Exception:
+        cfg = None
+    if isinstance(cfg, dict):
+        for container in (cfg, cfg.get("text_config")):
+            if not isinstance(container, dict):
+                continue
+            for key in ("max_position_embeddings", "model_max_length"):
+                candidate = container.get(key)
+                if isinstance(candidate, int) and candidate > 0:
+                    value = candidate
+                    break
+            if value is not None:
+                break
+if value is None:
+    value = fallback
+print(value)
+PYMLX
+}
+
 # Merge the static Codex model catalog with the currently configured model so
 # Codex accepts any model selected via `codeseeq config` (including arbitrary
 # local@<model> names). Writes to <output>; points at the static catalog when
@@ -1087,21 +1261,30 @@ write_merged_codex_catalog() {
     return 0
   fi
   mkdir -p "$(dirname "$output")"
-  # Per-model GGUF context/max-tokens flow into the Codex catalog so the
-  # client-side truncation matches the llama-server -c flag (previously the
-  # merged entry was hardcoded to 131072 while the server defaulted to 8192).
-  local catalog_ctx=131072 catalog_max_tokens=32768 catalog_is_gguf=0
-  local model_lower gguf_model_path=""
+  # Per-model GGUF/MLX context/max-tokens flow into the Codex catalog so the
+  # client-side truncation matches the local server's real window (previously
+  # the merged entry was hardcoded to 131072 while the server defaulted to
+  # 8192). MLX also falls back to the model's own config.json, so a 262144
+  # max_position_embeddings model is never truncated client-side.
+  local catalog_ctx=131072 catalog_max_tokens=32768 catalog_is_gguf=0 catalog_is_mlx=0
+  local model_lower gguf_model_path="" mlx_model_path=""
   model_lower="$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')"
   if [[ "$model" == gguf@* ]]; then
     gguf_model_path="${model#gguf@}"
   elif [[ "$model_lower" == *.gguf ]]; then
     gguf_model_path="$model"
   fi
+  if [[ "$model" == mlx@* ]]; then
+    mlx_model_path="${model#mlx@}"
+  fi
   if [[ -n "$gguf_model_path" ]]; then
     catalog_is_gguf=1
     catalog_ctx="$(resolve_gguf_context_window "$gguf_model_path")"
     catalog_max_tokens="${CODESEEQ_GGUF_MAX_OUTPUT_TOKENS:-2048}"
+  elif [[ -n "$mlx_model_path" ]]; then
+    catalog_is_mlx=1
+    catalog_ctx="$(resolve_mlx_context_window "$mlx_model_path")"
+    catalog_max_tokens="${CODESEEQ_MLX_MAX_OUTPUT_TOKENS:-2048}"
   fi
   CODESEEQ_CATALOG_STATIC="$static" \
   CODESEEQ_CATALOG_OUTPUT="$output" \
@@ -1109,6 +1292,7 @@ write_merged_codex_catalog() {
   CODESEEQ_CATALOG_CTX="$catalog_ctx" \
   CODESEEQ_CATALOG_MAX_TOKENS="$catalog_max_tokens" \
   CODESEEQ_CATALOG_IS_GGUF="$catalog_is_gguf" \
+  CODESEEQ_CATALOG_IS_MLX="$catalog_is_mlx" \
   python3 - <<'PYCAT'
 import json, os
 
@@ -1118,6 +1302,7 @@ model = os.environ.get("CODESEEQ_CATALOG_MODEL", "")
 catalog_ctx = int(os.environ.get("CODESEEQ_CATALOG_CTX", "131072"))
 catalog_max_tokens = int(os.environ.get("CODESEEQ_CATALOG_MAX_TOKENS", "32768"))
 catalog_is_gguf = os.environ.get("CODESEEQ_CATALOG_IS_GGUF", "") == "1"
+catalog_is_mlx = os.environ.get("CODESEEQ_CATALOG_IS_MLX", "") == "1"
 
 def _main() -> None:
     try:
@@ -1162,11 +1347,17 @@ def _main() -> None:
             "support_verbosity": False,
             "experimental_supported_tools": [],
         })
-    # Keep the generic gguf@local-model placeholder in sync with the resolved
-    # context so Codex never truncates a GGUF session at the stale static 8192.
+    # Keep the generic gguf@local-model / mlx@local-model placeholders in sync
+    # with the resolved context so Codex never truncates a local session at a
+    # stale static window.
+    placeholder = None
     if catalog_is_gguf:
+        placeholder = "gguf@local-model"
+    elif catalog_is_mlx:
+        placeholder = "mlx@local-model"
+    if placeholder:
         for m in models:
-            if isinstance(m, dict) and m.get("slug") == "gguf@local-model":
+            if isinstance(m, dict) and m.get("slug") == placeholder:
                 m["context_window"] = catalog_ctx
                 m["max_context_window"] = catalog_ctx
                 m["max_output_tokens"] = catalog_max_tokens
@@ -1188,7 +1379,14 @@ write_host_config() {
   write_merged_codex_catalog "${HOST_CODEX_HOME}/codex-model-catalog.json"
   local provider_env provider_label
   provider_env="$(provider_key_env_for_model)"
-  provider_env="${provider_env:-DEEPSEEK_API_KEY}"
+  if [[ -z "$provider_env" ]]; then
+    # Keyless providers (gguf / mlx / local / qwibus): Codex still requires
+    # the env_key variable to EXIST in the environment, so point it at an
+    # internal sentinel that is always exported. The value is never used as a
+    # real credential: the bridge omits Authorization for keyless providers.
+    provider_env="CODESEEQ_KEYLESS_TOKEN"
+    export CODESEEQ_KEYLESS_TOKEN="codeseeq-keyless-local-provider"
+  fi
   case "${PROVIDER_MODEL:-}" in
     anthropic@*) provider_label="CodeSeeq Anthropic Bridge" ;;
     google@*) provider_label="CodeSeeq Google Bridge" ;;
@@ -1196,14 +1394,16 @@ write_host_config() {
     venice@*) provider_label="CodeSeeq Venice Bridge" ;;
     qwibus@*|local@*) provider_label="CodeSeeq Local Bridge" ;;
     gguf@*) provider_label="CodeSeeq GGUF Bridge" ;;
+    mlx@*) provider_label="CodeSeeq MLX Bridge" ;;
     *) provider_label="CodeSeeq DeepSeek Bridge" ;;
   esac
-  # GGUF models use their resolved per-model context window so the Codex
-  # client window matches the llama-server -c flag; other providers keep the
-  # generic CODESEEQ_CONTEXT_WINDOW (default 1000000).
+  # GGUF/MLX models use their resolved per-model context window so the Codex
+  # client window matches the local server; other providers keep the generic
+  # CODESEEQ_CONTEXT_WINDOW (default 1000000).
   local model_context_window="${CODESEEQ_CONTEXT_WINDOW}"
   case "${PROVIDER_MODEL:-}" in
     gguf@*) model_context_window="$(resolve_gguf_context_window "${PROVIDER_MODEL#gguf@}")" ;;
+    mlx@*) model_context_window="$(resolve_mlx_context_window "${PROVIDER_MODEL#mlx@}")" ;;
   esac
   cat > "$HOST_CODEX_HOME/config.toml" <<EOF
 model = "${PROVIDER_MODEL}"
@@ -1327,7 +1527,7 @@ select_host_bridge_port() {
 # standalone bridge container and the Codex container. Per-model keys use the
 # documented CODESEEQ_<MODEL>_<SUFFIX> scheme (provider prefix stripped).
 codeseeq_bridge_env_names() {
-  printf '%s\n'     DEEPSEEK_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GROK_API_KEY     BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY VENICE_API_KEY     LOCAL_API_KEY DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     ANTHROPIC_BASE_URL GOOGLE_BASE_URL GROK_BASE_URL VENICE_BASE_URL LOCAL_BASE_URL     CODESEEQ_PROVIDER CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS CODESEEQ_REASONING_EFFORT QWIBUS_NO_API_KEY     GGUF_API_KEY GGUF_BASE_URL CODESEEQ_GGUF_LLAMA_SERVER_PATH     CODESEEQ_GGUF_CONTEXT_WINDOW CODESEEQ_GGUF_MAX_OUTPUT_TOKENS     CODESEEQ_GGUF_N_GPU_LAYERS CODESEEQ_GGUF_THREADS CODESEEQ_GGUF_PARALLEL     CODESEEQ_GGUF_PORT CODESEEQ_GGUF_TIMEOUT_SECONDS CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS     CODESEEQ_GGUF_ENABLE_THINKING
+  printf '%s\n'     DEEPSEEK_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GROK_API_KEY     BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY VENICE_API_KEY     LOCAL_API_KEY DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     ANTHROPIC_BASE_URL GOOGLE_BASE_URL GROK_BASE_URL VENICE_BASE_URL LOCAL_BASE_URL     CODESEEQ_PROVIDER CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS CODESEEQ_REASONING_EFFORT QWIBUS_NO_API_KEY     GGUF_API_KEY GGUF_BASE_URL CODESEEQ_GGUF_LLAMA_SERVER_PATH     CODESEEQ_GGUF_CONTEXT_WINDOW CODESEEQ_GGUF_MAX_OUTPUT_TOKENS     CODESEEQ_GGUF_N_GPU_LAYERS CODESEEQ_GGUF_THREADS CODESEEQ_GGUF_PARALLEL     CODESEEQ_GGUF_PORT CODESEEQ_GGUF_TIMEOUT_SECONDS CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS     CODESEEQ_GGUF_ENABLE_THINKING     MLX_API_KEY MLX_BASE_URL CODESEEQ_MLX_BASE_URL CODESEEQ_MLX_PYTHON     CODESEEQ_MLX_SERVER_ARGS CODESEEQ_MLX_CONTEXT_WINDOW CODESEEQ_MLX_MAX_OUTPUT_TOKENS     CODESEEQ_MLX_PORT CODESEEQ_MLX_TIMEOUT_SECONDS CODESEEQ_MLX_STARTUP_TIMEOUT_SECONDS     CODESEEQ_MLX_ENABLE_THINKING CODESEEQ_MLX_MODELS_JSON CODESEEQ_GGUF_MODELS_JSON
 
   local key suffix
   # Per-model keys use the CODESEEQ_<MODEL>_<SUFFIX> scheme: the bridge's
@@ -2099,6 +2299,26 @@ run_safe_container() {
 }
 
 run_host_codex() {
+  # Reflect a CLI -m/--model choice before the key check so keyless local
+  # providers (gguf@..., mlx@...) requested on the command line do not demand
+  # DEEPSEEK_API_KEY just because CODESEEQ_MODEL still holds its default. The
+  # full argument parsing below re-applies the same value.
+  local _scan_arg _scan_next
+  for (( _i = 1; _i <= $#; _i++ )); do
+    _scan_arg="${!_i}"
+    case "$_scan_arg" in
+      -m|--model)
+        _scan_next=$((_i + 1))
+        if (( _scan_next <= $# )); then
+          CODESEEQ_MODEL="${!_scan_next}"
+        fi
+        ;;
+      --model=*)
+        CODESEEQ_MODEL="${_scan_arg#--model=}"
+        ;;
+    esac
+  done
+  unset _scan_arg _scan_next _i 2>/dev/null || true
   require_deepseek_key
   command -v codex >/dev/null 2>&1 || die "host runtime requires local Codex CLI. Install it with: npm install -g @openai/codex@0.130.0 (pinned version)"
 
@@ -2281,7 +2501,7 @@ config_json_path() {
 }
 
 config_provider_list() {
-  printf '%s\n' anthropic google grok deepseek venice local gguf
+  printf '%s\n' anthropic google grok deepseek venice local gguf mlx
 }
 
 config_provider_label() {
@@ -2293,6 +2513,7 @@ config_provider_label() {
     venice) printf 'Venice.ai' ;;
     local) printf 'Local (OpenAI-compatible gateway)' ;;
     gguf) printf 'GGUF (local llama.cpp)' ;;
+    mlx) printf 'MLX (local Apple MLX)' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -2316,6 +2537,7 @@ config_provider_base_url_env() {
     deepseek) printf 'DEEPSEEK_BASE_URL' ;;
     venice) printf 'VENICE_BASE_URL' ;;
     local) printf 'LOCAL_BASE_URL' ;;
+    mlx) printf 'CODESEEQ_MLX_BASE_URL' ;;
     *) printf '' ;;
   esac
 }
@@ -2541,7 +2763,8 @@ if not isinstance(data, dict):
 stale = {"ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GROK_API_KEY",
          "DEEPSEEK_API_KEY", "VENICE_API_KEY", "LOCAL_API_KEY",
          "ANTHROPIC_BASE_URL", "GOOGLE_BASE_URL", "GROK_BASE_URL",
-         "DEEPSEEK_BASE_URL", "VENICE_BASE_URL", "LOCAL_BASE_URL"}
+         "DEEPSEEK_BASE_URL", "VENICE_BASE_URL", "LOCAL_BASE_URL",
+         "CODESEEQ_MLX_BASE_URL", "MLX_BASE_URL"}
 for k in stale:
     if k != key_env and k != base_url_env:
         data.pop(k, None)
@@ -2587,7 +2810,8 @@ PYCFG
         | del(.ANTHROPIC_API_KEY, .GOOGLE_API_KEY, .GROK_API_KEY,
               .DEEPSEEK_API_KEY, .VENICE_API_KEY, .LOCAL_API_KEY,
               .ANTHROPIC_BASE_URL, .GOOGLE_BASE_URL, .GROK_BASE_URL,
-              .DEEPSEEK_BASE_URL, .VENICE_BASE_URL, .LOCAL_BASE_URL)
+              .DEEPSEEK_BASE_URL, .VENICE_BASE_URL, .LOCAL_BASE_URL,
+              .CODESEEQ_MLX_BASE_URL, .MLX_BASE_URL)
         | .CODESEEQ_MODEL = $model
         | .CODESEEQ_PROVIDER = $provider
         | if ($key_env != "" and $key != "") then .[$key_env] = $key else . end
@@ -2713,6 +2937,11 @@ cmd_config() {
     model="$(cfg_prompt "Absolute path to .gguf model file (e.g. /path/to/model.gguf)" "")"
     [[ -n "$model" ]] || { printf 'GGUF model path is required.\n' >&2; return 1; }
     [[ "$model" == gguf@* ]] || model="gguf@${model}"
+  elif [[ "$provider" == "mlx" ]]; then
+    printf '\n'
+    model="$(cfg_prompt "Path to local MLX model directory (e.g. ~/Qoding/ai/My-Model-mlx-4bit)" "")"
+    [[ -n "$model" ]] || { printf 'MLX model directory path is required.\n' >&2; return 1; }
+    [[ "$model" == mlx@* ]] || model="mlx@${model}"
   else
     local -a model_items=()
     local line
@@ -2753,6 +2982,15 @@ cmd_config() {
     key=""
     base_url_env=""
     base_url=""
+  elif [[ "$provider" == "mlx" ]]; then
+    # Keyless. Blank base URL => the bridge spawns mlx_lm.server for the
+    # selected directory (default). Enter one only to reuse an already running
+    # mlx_lm server (e.g. http://127.0.0.1:8888/v1 or without the /v1).
+    printf '\n'
+    key_env=""
+    key=""
+    base_url_env="CODESEEQ_MLX_BASE_URL"
+    base_url="$(cfg_prompt "Reuse an already-running MLX server base URL (Enter to let CodeSeeq start the server)" "")"
   else
     [[ -n "$key_env" ]] || die "internal error: no API-key env for provider ${provider}"
     local existing=""
@@ -2793,8 +3031,8 @@ PYCFG
   printf '  Model:    %s\n' "$model"
   if [[ -n "$key_env" && -n "$key" ]]; then
     printf '  API key:  %s set in %s\n' "$key_env" "$(config_json_path)"
-  elif [[ "$provider" == "local" ]]; then
-    printf '  API key:  none (local gateway)\n'
+  elif [[ "$provider" == "local" || "$provider" == "gguf" || "$provider" == "mlx" ]]; then
+    printf '  API key:  none (local model)\n'
   fi
   if [[ -n "$base_url_env" && -n "$base_url" ]]; then
     printf '  Base URL: %s=%s\n' "$base_url_env" "$base_url"
@@ -3571,10 +3809,10 @@ runtime_mode="$(runtime_mode_resolve)"
 use_host=false
 log "runtime_mode=$runtime_mode cmd_arg=$cmd_arg"
 
-# GGUF local models are resolved and served on the HOST filesystem by a host
-# llama-server. Never run them through the container: the bridge would resolve
-# the .gguf path inside the container namespace (where the model does not
-# exist) and could not launch the host llama-server binary.
+# GGUF/MLX local models are resolved and served on the HOST filesystem by a
+# host llama-server / mlx_lm server. Never run them through the container: the
+# bridge would resolve the model path inside the container namespace (where it
+# does not exist) and could not launch the host server binary.
 if requested_gguf_model "$@"; then
   if [[ "$runtime_mode" == "container" ]]; then
     warn "gguf local models run on the host; forcing host runtime (ignoring CODESEEQ_RUNTIME_MODE=container)"
@@ -3588,6 +3826,22 @@ if requested_gguf_model "$@"; then
   if [[ "${CODESEEQ_BRIDGE_MODE:-auto}" != "external" ]]; then
     if [[ "${CODESEEQ_BRIDGE_MODE:-auto}" == "container" ]]; then
       warn "gguf bridge must run on the host; forcing process bridge mode"
+    fi
+    CODESEEQ_BRIDGE_MODE=process
+  fi
+fi
+if requested_mlx_model "$@"; then
+  if [[ "$runtime_mode" == "container" ]]; then
+    warn "mlx local models run on the host; forcing host runtime (ignoring CODESEEQ_RUNTIME_MODE=container)"
+  else
+    log "mlx model detected; using host runtime"
+  fi
+  use_host=true
+  # The MLX bridge must also run on the host so it can see the model directory
+  # and launch the host mlx_lm server (same rule as gguf above).
+  if [[ "${CODESEEQ_BRIDGE_MODE:-auto}" != "external" ]]; then
+    if [[ "${CODESEEQ_BRIDGE_MODE:-auto}" == "container" ]]; then
+      warn "mlx bridge must run on the host; forcing process bridge mode"
     fi
     CODESEEQ_BRIDGE_MODE=process
   fi

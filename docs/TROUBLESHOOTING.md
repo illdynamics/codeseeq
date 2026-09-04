@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `v0.4.6`
+Current version: `v0.4.7`
 
 ## `./codeseeq` is not executable
 
@@ -603,3 +603,64 @@ codeseeq --model /path/to/model.gguf "hello"
 > steering, and any per-model system prompt into a single leading system
 > message before forwarding, so both the `gguf` and `local` paths work against
 > these templates.
+
+## MLX model: `mlx_lm` not found
+
+The mlx provider serves a local MLX model directory by launching Apple's
+`mlx_lm.server`, so the interpreter needs `mlx-lm` installed. A missing
+installation fails with a clean message:
+
+```
+mlx provider requires Apple MLX + mlx-lm. Install with: python3 -m pip install
+mlx-lm (see https://github.com/ml-explore/mlx-lm), or set CODESEEQ_MLX_PYTHON
+to the interpreter that has mlx_lm installed.
+```
+
+If `mlx_lm` lives in a venv/conda env rather than the default `python3`:
+
+```bash
+export CODESEEQ_MLX_PYTHON=/path/to/venv/bin/python3
+codeseeq -m mlx@/path/to/model-dir "hello"
+```
+
+## MLX model: directory not found / not an MLX conversion
+
+A missing directory fails with `mlx model directory not found: <path>`. A
+directory that is not an MLX conversion fails with one of:
+
+- `mlx model directory has no config.json (is it an MLX conversion?): <path>`
+- `mlx model directory has no .safetensors weights (convert with \`python -m mlx_lm.convert\`): <path>`
+
+Convert a Hugging Face model first, e.g.:
+
+```bash
+python3 -m mlx_lm.convert --hf-path mistralai/Mistral-7B-Instruct-v0.3 -q
+```
+
+## MLX model: reuse an already-running `mlx_lm.server`
+
+`mlx_lm.server` answers `/health` before its weights are loaded, so the first
+request can block while the model loads. CodeSeeq waits for `/health`, then
+routes the existing chat-completions translation to
+`http://127.0.0.1:<port>/v1/chat/completions`.
+
+To reuse a server you started yourself instead of letting CodeSeeq spawn one,
+point the mlx provider at it with `CODESEEQ_MLX_BASE_URL` or `MLX_BASE_URL`
+(the URL may end in `/v1`; CodeSeeq does not double it):
+
+```bash
+# terminal 1
+python3 -m mlx_lm server --model /path/to/model-dir --port 8888
+
+# terminal 2
+export CODESEEQ_MLX_BASE_URL=http://127.0.0.1:8888
+codeseeq -m mlx@/path/to/model-dir "hello"
+```
+
+A generic loopback `CODESEEQ_BASE_URL` / `OPENAI_BASE_URL` also selects
+external mode for mlx; non-loopback generic base URLs are ignored for mlx so an
+ambient hosted-API fallback (e.g. `CODESEEQ_BASE_URL=https://api.deepseek.com`)
+can never hijack a local MLX model into a hosted API.
+
+`codeseeq doctor` / `GET /health` reports `mlx_available` (`found` /
+`not-found`) so you can check the interpreter discovery without a full run.

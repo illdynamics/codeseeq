@@ -11,7 +11,7 @@ GGUF model — no OpenAI account or API key needed. Configure everything interac
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.4.6` (from [`VERSION`](./VERSION)).
+Current version: `v0.4.7` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -175,6 +175,82 @@ The resolved context window is applied everywhere consistently: the
 Supported keys: `context_window`, `max_output_tokens`, `n_gpu_layers`,
 `threads`, `parallel`, `port`, `timeout_seconds`, `temperature`,
 `enable_thinking`. Point at a custom file with `CODESEEQ_GGUF_MODELS_JSON`.
+
+### Run a local MLX model (Apple Silicon)
+
+CodeSeeq can also run Codex against a local
+[Apple MLX](https://github.com/ml-explore/mlx-lm) model directory (an MLX
+conversion with `config.json` + `*.safetensors`) with the same UX as GGUF: it
+launches `mlx_lm.server` for you, routes the existing chat-completions
+translation to it, and tears it down cleanly.
+**Prerequisite:** `mlx-lm` in the default `python3` (`python3 -m pip install
+mlx-lm`), or point `CODESEEQ_MLX_PYTHON` at an interpreter that has it.
+
+MLX models are resolved and served on the host (like GGUF), so CodeSeeq
+automatically selects host runtime and host process bridge mode for an
+`mlx@<directory>` model.
+
+```bash
+# by slug (directory path, ~ is expanded)
+codeseeq -m mlx@~/Qoding/ai/My-Model-mlx-4bit -y "prompt"
+
+# environment variable form
+CODESEEQ_MODEL='mlx@/absolute/path/to/model-dir' CODESEEQ_RUNTIME_MODE=host codeseeq run "prompt"
+
+# reuse an already-running mlx_lm.server (base URL with or without /v1)
+CODESEEQ_BASE_URL='http://127.0.0.1:8888/v1' \
+CODESEEQ_TEMPERATURE='0.0' \
+CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true \
+CODESEEQ_RUNTIME_MODE=host \
+codeseeq -m mlx@<path-to-model-directory> -y run "prompt"
+
+# or add it through the config wizard (choose the "MLX" provider)
+codeseeq config
+```
+
+Optional tuning (global defaults; per-model overrides below):
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `CODESEEQ_MLX_PYTHON` | interpreter that has `mlx_lm` installed | `python3` on PATH |
+| `CODESEEQ_MLX_PORT` | fixed loopback port for `mlx_lm.server` | auto-select |
+| `CODESEEQ_MLX_CONTEXT_WINDOW` | context window override | model `config.json` |
+| `CODESEEQ_MLX_MAX_OUTPUT_TOKENS` | max output tokens | 2048 |
+| `CODESEEQ_MLX_TIMEOUT_SECONDS` | per-request timeout | 600 |
+| `CODESEEQ_MLX_STARTUP_TIMEOUT_SECONDS` | health-poll timeout | 600 |
+| `CODESEEQ_MLX_ENABLE_THINKING` | enable thinking (if supported) | false |
+| `CODESEEQ_MLX_SERVER_ARGS` | extra `mlx_lm.server` flags | unset |
+| `CODESEEQ_TEMPERATURE` | generic sampling fallback (mlx/gguf) | unset |
+| `CODESEEQ_MLX_BASE_URL` / `MLX_BASE_URL` | reuse an already-running MLX server | unset |
+| `CODESEEQ_MLX_MODELS_JSON` | path to per-model MLX config JSON | `config/mlx-models.json` |
+
+The model's own `config.json` (`max_position_embeddings` /
+`model_max_length`, including the nested `text_config` used by multimodal
+conversions) is read automatically, so a 262144-context model is never
+truncated client-side.
+
+#### Per-model MLX settings
+
+Each MLX model directory can carry its own tuning via
+`config/mlx-models.json` (host) / `/etc/codeseeq/mlx-models.json` (container),
+keyed by path (absolute, `~/`-prefixed, basename, or trailing component).
+Supported keys: `context_window`, `max_output_tokens`, `port`,
+`timeout_seconds`, `temperature`, `top_p`, `top_k`, `enable_thinking`,
+`server_args`. Precedence: **per-model JSON > `CODESEEQ_MLX_*` env vars > the
+model's own `config.json` > built-in defaults.**
+
+```json
+{
+  "models": {
+    "~/Qoding/ai/My-Model-mlx-4bit": {
+      "context_window": 32768,
+      "max_output_tokens": 4096,
+      "temperature": 0.7,
+      "enable_thinking": false
+    }
+  }
+}
+```
 
 ### Host-native mode (no Docker/Podman needed)
 
@@ -578,6 +654,7 @@ CodeSeeq supports these providers (choose them with `codeseeq config`):
 | Venice.ai | `VENICE_API_KEY` | `venice-qwen-3-32b`, `venice-qwen-3-14b`, `venice-deepseek-r1-0528`, `venice-llama-3.3-70b`, `venice-qwen-2.5-coder-32b` |
 | Local | none (optional `LOCAL_API_KEY`) | any OpenAI-compatible model name typed manually, e.g. `local@llama-4-maverick` |
 | GGUF | none | a local `.gguf` file path, e.g. `gguf@/path/to/model.gguf` (spawns `llama-server`) |
+| MLX | none | a local MLX model directory, e.g. `mlx@/path/to/model-dir` (spawns `mlx_lm.server`) |
 | Qwibus | none | `qwibus-qwikk`, `qwibus-qmplx` (legacy local gateway) |
 
 Model slugs use the `provider@model` form (`deepseek@deepseek-v4-flash`,
@@ -693,7 +770,7 @@ CodeSeeq applies privacy hardening by default:
 
 | Setting | Value |
 |---------|-------|
-| **Model provider** | Your choice (deepseek / anthropic / google / grok / venice / local / gguf), always via the local bridge |
+| **Model provider** | Your choice (deepseek / anthropic / google / grok / venice / local / gguf / mlx), always via the local bridge |
 | **Web search** | Live (not cached) |
 | **Analytics** | Disabled |
 | **Feedback** | Disabled |
@@ -720,8 +797,8 @@ To pin an exact release, set `CODESEEQ_RELEASE_TAG`. To forbid auto-fetching ent
 set `CODESEEQ_ALLOW_LATEST_RELEASE=false` (a pinned `CODESEEQ_RELEASE_TAG` is then required):
 
 ```bash
-CODESEEQ_RELEASE_TAG=v0.4.6 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
-CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.4.6 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_RELEASE_TAG=v0.4.7 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.4.7 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
 ```
 
 ### Uncensored Mode

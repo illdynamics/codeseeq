@@ -1,3 +1,43 @@
+## v0.4.7 - 2026-09-04
+
+### Added
+- **MLX local-model provider (`mlx@<path-to-model-directory>`).** CodeSeeq can
+  now run Codex against local Apple MLX model directories (MLX conversions with
+  `config.json` + `*.safetensors`), not just GGUF files. The bridge lazily
+  launches Apple's `mlx_lm.server` on a free loopback port (or a pinned
+  `CODESEEQ_MLX_PORT`), health-checks it, reuses one server per directory, and
+  tears it down on shutdown / parent-death - the same lifecycle llama.cpp has
+  for GGUF. No API key is required, and host runtime + host process bridge are
+  forced automatically (like GGUF) so the directory resolves on the host.
+  Example:
+  `CODESEEQ_RUNTIME_MODE=host codeseeq -m mlx@~/Qoding/ai/My-Model-mlx-4bit -y "prompt"`
+- **MLX tuning knobs mirror the GGUF knobs.** Per-model values in
+  `config/mlx-models.json` win over `CODESEEQ_MLX_*` env vars, which win over
+  the model's own `config.json` (`max_position_embeddings` /
+  `model_max_length`, including nested `text_config` for multimodal
+  conversions), which win over built-in defaults. Supported per-model keys:
+  `context_window`, `max_output_tokens`, `port`, `timeout_seconds`,
+  `temperature`, `top_p`, `top_k`, `enable_thinking`, `server_args`. Global
+  `CODESEEQ_TEMPERATURE` is honored as a generic sampling fallback.
+- **Reuse an already-running MLX server.** Set `CODESEEQ_MLX_BASE_URL` or
+  `MLX_BASE_URL` (or a loopback `OPENAI_BASE_URL` / `CODESEEQ_BASE_URL`, with
+  or without a trailing `/v1`) to route the mlx provider to an existing
+  OpenAI-compatible server instead of spawning one:
+  `CODESEEQ_BASE_URL=http://127.0.0.1:8888/v1 CODESEEQ_RUNTIME_MODE=host codeseeq -m mlx@<dir> -y "prompt"`
+- **`codeseeq config` provider + catalogs.** The config wizard now offers an
+  "MLX (local Apple MLX)" provider that prompts for a model directory (and an
+  optional external-server base URL), and both `model-catalog.json` /
+  `codex-model-catalog.json` gained an `mlx` provider and `mlx@local-model`
+  placeholder so the merged Codex catalog stays in sync with the resolved
+  context window at runtime.
+
+### Changed
+- GGUF / MLX external base-URL derivation no longer doubles a trailing `/v1`
+  (e.g. `http://127.0.0.1:8888/v1` now maps to
+  `http://127.0.0.1:8888/v1/chat/completions`).
+- Bridge `/health` reports `mlx_available` and exposes `mlx` in `providers`;
+  `/v1/models` lists the `mlx@local-model` placeholder.
+
 ## v0.4.6 - 2026-09-01
 
 ### Fixed

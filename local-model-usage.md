@@ -25,7 +25,48 @@ Global env (defaults in parens) — `codeseeq:174-186`, `.env.example:109-135`:
 - `qwibus` (`qwibus-qwikk` / `qwibus-qmplx`) is the legacy local-gateway provider (lightning-mlx); `local` is the general-purpose one.
 
 If you want, I can also walk through adding your own models to `config/gguf-models.json` or wire up a `local@` alias config for your exact llama-server invocation — just say which model you're running.
-tokens used
-1,530,954
-[codeseeq] stopping owned bridge process (pid=35070)
 
+## MLX local models (`mlx@<dir>`) — same lifecycle as GGUF
+
+Global env (defaults in parens) — `codeseeq` MLX config block, `.env.example` MLX block:
+
+| Var | mlx_lm.server meaning | Default |
+|---|---|---|
+| `CODESEEQ_MLX_CONTEXT_WINDOW` | context override | from the model `config.json` |
+| `CODESEEQ_MLX_MAX_OUTPUT_TOKENS` | max output tokens | 2048 |
+| `CODESEEQ_MLX_PORT` | `--port` | auto free port |
+| `CODESEEQ_MLX_PYTHON` | interpreter that has `mlx_lm` | `python3` on PATH |
+| `CODESEEQ_MLX_TIMEOUT_SECONDS` | — | 600 |
+| `CODESEEQ_MLX_STARTUP_TIMEOUT_SECONDS` | health-poll | 600 |
+| `CODESEEQ_MLX_ENABLE_THINKING` | — | false |
+| `CODESEEQ_MLX_SERVER_ARGS` | extra server flags | unset |
+| `CODESEEQ_MLX_BASE_URL` / `MLX_BASE_URL` | reuse an already-running server | unset |
+
+**Per-model** overrides live in `config/mlx-models.json` (host) /
+`/etc/codeseeq/mlx-models.json` (container); point elsewhere with
+`CODESEEQ_MLX_MODELS_JSON`. Keys can be absolute path, `~/` path, basename, or
+trailing component. Supported keys: `context_window`, `max_output_tokens`,
+`port`, `timeout_seconds`, `temperature`, `top_p`, `top_k`,
+`enable_thinking`, `server_args`. Precedence: **per-model JSON >
+`CODESEEQ_MLX_*` env var > model `config.json` (`max_position_embeddings` /
+`model_max_length`, incl. nested `text_config`) > built-in default**
+(`bin/codeseeq-bridge.py` MLX section).
+
+### MLX gotchas
+
+- **Missing mlx-lm** → clean error: `mlx provider requires Apple MLX +
+  mlx-lm. Install with: python3 -m pip install mlx-lm ... or set
+  CODESEEQ_MLX_PYTHON` (`bin/codeseeq-bridge.py` MISSING_MLX_BINARY_MSG).
+- **Missing/invalid directory** → `mlx model directory not found: <path>` /
+  `mlx model directory has no config.json` / `no .safetensors weights`.
+- mlx_lm.server is lazy: `/health` answers before the weights are loaded, so
+  the first request can block while the model loads (raise
+  `CODESEEQ_MLX_TIMEOUT_SECONDS` / `CODESEEQ_MLX_STARTUP_TIMEOUT_SECONDS` for
+  very large models).
+- Server logs go to a temp file (`codeseeq-mlx-*.log`) if you need to debug
+  startup.
+- External mode: `MLX_BASE_URL` / `CODESEEQ_MLX_BASE_URL` always mean "reuse a
+  running server"; generic `OPENAI_BASE_URL` / `CODESEEQ_BASE_URL` only select
+  external mode for mlx when they point at loopback (an ambient hosted-API
+  base URL must never hijack a local model). A trailing `/v1` in the base URL
+  is not doubled.

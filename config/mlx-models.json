@@ -1,13 +1,10 @@
 {
   "models": {
-    "~/Qoding/ai/BugTraceAI-Apex-G4-26B.MXFP4_MOE.gguf": {
+    "~/Qoding/ai/RavenX-CyberAgent-Qwen3.6-35B-A3B-Opus-4.7-OpenMythos-Pentester-BugHunter-RATH-mlx-4bit-msq": {
       "context_window": 262144,
       "max_output_tokens": 16384,
-      "n_gpu_layers": 99,
-      "parallel": 1,
-      "threads": null,
-      "port": 8888,
       "timeout_seconds": 600,
+      "temperature": 0.7,
       "enable_thinking": false
     }
   }

@@ -37,6 +37,7 @@ COPY bin/codeseeq-print-config /usr/local/bin/codeseeq-print-config
 COPY config/model-catalog.json /etc/codeseeq/model-catalog.json
 COPY config/codex-model-catalog.json /etc/codeseeq/codex-model-catalog.json
 COPY config/gguf-models.json /etc/codeseeq/gguf-models.json
+COPY config/mlx-models.json /etc/codeseeq/mlx-models.json
 COPY config/default-system-prompt.md /etc/codeseeq/default-system-prompt.md
 
 RUN chmod +x \
