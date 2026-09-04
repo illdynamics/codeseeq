@@ -39,9 +39,26 @@ unset CODESEEQ_BRIDGE_MODE CODESEEQ_RUNTIME_DIR CODESEEQ_LOG_DIR 2>/dev/null || 
 unset CODESEEQ_CONFIG_HOME CODESEEQ_CONFIG_JSON LOCAL_API_KEY 2>/dev/null || true
 unset CODESEEQ_OPENRESPONSES_PORT CODESEEQ_OPENRESPONSES_URL 2>/dev/null || true
 unset CODESEEQ_WORKDIR_HOST CODESEEQ_WORKDIR 2>/dev/null || true
+unset CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES CODESEEQ_IMAGE_BACKEND 2>/dev/null || true
+# Generic / per-provider base URLs and API keys: the bridge reads these at
+# import and request time, so an ambient value (very common on dev machines,
+# e.g. OPENAI_BASE_URL exported for the deepseek provider) silently rewrites
+# chat endpoints, flips gguf/mlx into external-server mode, and makes the
+# regression tests below non-deterministic. Every test sets exactly what it
+# needs, so scrub the whole family here.
+unset CODESEEQ_BASE_URL OPENAI_BASE_URL OPENAI_API_KEY 2>/dev/null || true
 unset DEEPSEEK_API_KEY DEEPSEEK_BASE_URL DEEPSEEK_CHAT_URL 2>/dev/null || true
-unset VENICE_API_KEY BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY 2>/dev/null || true
-unset CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES 2>/dev/null || true
+unset ANTHROPIC_API_KEY ANTHROPIC_BASE_URL 2>/dev/null || true
+unset GOOGLE_API_KEY GEMINI_API_KEY GOOGLE_BASE_URL 2>/dev/null || true
+unset GROK_API_KEY GROK_BASE_URL 2>/dev/null || true
+unset VENICE_API_KEY VENICE_BASE_URL 2>/dev/null || true
+unset LOCAL_BASE_URL LLAMA_CPP_API_KEY QWEN_API_KEY 2>/dev/null || true
+unset GGUF_BASE_URL MLX_API_KEY MLX_BASE_URL CODESEEQ_MLX_BASE_URL 2>/dev/null || true
+unset BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY 2>/dev/null || true
+unset HACKENPROOF_API_KEY LITELLM_API_KEY 2>/dev/null || true
+unset CODESEEQ_TEMPERATURE CODESEEQ_GGUF_TEMPERATURE CODESEEQ_MLX_TEMPERATURE 2>/dev/null || true
+unset CODESEEQ_GGUF_CONTEXT_WINDOW CODESEEQ_GGUF_MAX_OUTPUT_TOKENS CODESEEQ_GGUF_TIMEOUT_SECONDS CODESEEQ_GGUF_ENABLE_THINKING CODESEEQ_GGUF_PORT CODESEEQ_GGUF_SERVER_ARGS CODESEEQ_GGUF_MODELS_JSON 2>/dev/null || true
+unset CODESEEQ_MLX_CONTEXT_WINDOW CODESEEQ_MLX_MAX_OUTPUT_TOKENS CODESEEQ_MLX_TIMEOUT_SECONDS CODESEEQ_MLX_ENABLE_THINKING CODESEEQ_MLX_PORT CODESEEQ_MLX_SERVER_ARGS CODESEEQ_MLX_MODELS_JSON CODESEEQ_MLX_PYTHON CODESEEQ_MLX_STARTUP_TIMEOUT_SECONDS 2>/dev/null || true
 
 shell_files=()
 while IFS= read -r f; do

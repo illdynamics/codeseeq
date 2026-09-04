@@ -176,8 +176,21 @@ class FakeProcess:
 
 
 started = {"n": 0, "proc": None}
+orig_find = bridge.MLXServerManager._find_python
+orig_avail = bridge.MLXServerManager._mlx_available
 orig_start = bridge.MLXServerManager._start_server
 orig_wait = bridge.MLXServerManager._wait_healthy
+
+
+def fake_find(self):
+    # The lifecycle test must be hermetic: ensure() pre-flights the MLX
+    # interpreter before _start_server(), so stub both checks (CI runners
+    # have no mlx_lm installed; a dev Mac may or may not).
+    return "/usr/bin/python3"
+
+
+def fake_avail(self, python):
+    return True
 
 
 def fake_start(self, python, abs_path):
@@ -190,6 +203,8 @@ async def fake_wait(self, server):
     return True
 
 
+bridge.MLXServerManager._find_python = fake_find
+bridge.MLXServerManager._mlx_available = fake_avail
 bridge.MLXServerManager._start_server = fake_start
 bridge.MLXServerManager._wait_healthy = fake_wait
 
@@ -205,6 +220,8 @@ check("ensure reuses a single mlx server per dir", s1 is s2, "not identical")
 check("ensure starts mlx server exactly once", started["n"] == 1, str(started["n"]))
 bridge.MLX_MANAGER.shutdown_all()
 check("shutdown_all terminates the child", started["proc"].terminated, "not terminated")
+bridge.MLXServerManager._find_python = orig_find
+bridge.MLXServerManager._mlx_available = orig_avail
 bridge.MLXServerManager._start_server = orig_start
 bridge.MLXServerManager._wait_healthy = orig_wait
 
