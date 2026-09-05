@@ -4,14 +4,17 @@
 
 Run `codeseeq` instead of `codex`. Same flags, same interactive TUI, same tool calls.
 Your prompts go to the provider you choose — DeepSeek, Anthropic (Claude), Google
-(Gemini), Grok (xAI), Venice.ai, a local OpenAI-compatible gateway, or a local
-GGUF model — no OpenAI account or API key needed. Configure everything interactively with `codeseeq config`.
+(Gemini), Grok (xAI), Venice.ai, a local OpenAI-compatible gateway, a local GGUF
+model — no OpenAI account or API key needed. Or, if you have a **ChatGPT Plus /
+Pro / Team account**, sign in once with `codeseeq login` (native ChatGPT auth,
+no API key of any kind) and run against OpenAI's ChatGPT Codex models with the
+`chatgpt` provider. Configure everything interactively with `codeseeq config`.
 
 <p align="center">
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.4.7` (from [`VERSION`](./VERSION)).
+Current version: `v0.4.8` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -19,10 +22,12 @@ Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
 ### Prerequisites
 
-- **An API key for your chosen provider** — DeepSeek (`DEEPSEEK_API_KEY`), Anthropic
+- **Either** an API key for your chosen provider — DeepSeek (`DEEPSEEK_API_KEY`), Anthropic
   (`ANTHROPIC_API_KEY`), Google (`GOOGLE_API_KEY`), Grok (`GROK_API_KEY`), or Venice
   (`VENICE_API_KEY`). Set it interactively with `codeseeq config` (local gateways
-  need no key).
+  need no key). **Or** a **ChatGPT Plus / Pro / Team account** — no API key at all:
+  pick the `chatgpt` provider and run `codeseeq login` once (choose "Sign in with
+  ChatGPT").
 - **BRAVE_API_KEY** (optional) — needed for web-search pings (`ping-web`).
 - **UNSTRUCTURED_API_KEY** (optional) — needed for doc-input pings (`ping-docs`).
 - **VENICE_API_KEY** (optional) — automatically enables Venice.ai image generation when set (no `CODESEEQ_IMAGE_BACKEND` needed).
@@ -72,12 +77,14 @@ codeseeq config
 ```
 
 `codeseeq config` walks you through three screens: provider (anthropic, google,
-grok, deepseek, venice, local) → model → API key, and writes
-`~/.config/codeseeq/config.json`. Non-local providers pick a model from the
-catalog on screen two; the local provider takes any model name you type. The
-API-key screen is required for hosted providers and can be left empty for
-local gateways (an optional `LOCAL_API_KEY` is honoured when set). You can also
-copy the env template and set keys manually:
+grok, deepseek, venice, local, gguf, mlx, chatgpt) → model → API key, and
+writes `~/.config/codeseeq/config.json`. Non-local providers pick a model from
+the catalog on screen two; the local/gguf/mlx providers take a typed name/path
+and the chatgpt provider needs no API key at all (sign in with
+`codeseeq login` afterwards). The API-key screen is required for hosted
+providers and can be left empty for local gateways (an optional
+`LOCAL_API_KEY` is honoured when set). You can also copy the env template and
+set keys manually:
 
 ```bash
 cp .env.example .env
@@ -94,6 +101,49 @@ codeseeq run -f task.md
 codeseeq --model deepseek-v4-pro "review this repo"
 codeseeq -p myprofile "say hi"
 ```
+
+### Use your ChatGPT Plus / Pro / Team account (no API key)
+
+If you subscribe to OpenAI **ChatGPT Plus (or Pro / Team)**, CodeSeeq can log
+in to that account and run Codex against OpenAI's ChatGPT Codex models through
+the native Codex ChatGPT sign-in flow — no `OPENAI_API_KEY`, no DeepSeek, no
+provider key of any kind, and no local bridge process.
+
+```bash
+# 1. configure the provider + model (chatgpt@<model> family: gpt-5-codex,
+#    gpt-5.1-codex, gpt-5.2-codex, gpt-5.3-codex)
+codeseeq config            # provider: "ChatGPT (Plus/Pro/Team account sign-in)"
+
+# 2. sign in with your ChatGPT account (browser device flow); choose
+#    "Sign in with ChatGPT", NOT "API key"
+codeseeq login
+
+# 3. use it exactly like any other provider (same flags, run -f, TUI, ...)
+codeseeq run -f task.md
+codeseeq "review this repo"
+CODESEEQ_MODEL=chatgpt@gpt-5-codex codeseeq -y "refactor this"
+```
+
+Notes:
+
+- **No bridge.** The `chatgpt` provider routes Codex natively to OpenAI's
+  ChatGPT backend (`https://chatgpt.com/backend-api/codex`) using the ChatGPT
+  OAuth session stored in `<workdir>/.codeseeq/auth.json`; CodeSeeq does not
+  start the local bridge and does not translate to a chat-completions API.
+- **Host runtime is forced** (like GGUF/MLX) because the login session must
+  persist next to the workspace `CODEX_HOME`; a container `CODEX_HOME` is
+  ephemeral under `--rm`.
+- **API-key login is not what you want here.** `codeseeq login` opens upstream
+  Codex's auth chooser — pick **Sign in with ChatGPT** to use your subscription.
+  (Choosing "API key" stores an OpenAI key instead, which defeats the point of
+  this provider.)
+- **Log out:** `codeseeq logout`. Sessions are per-workspace (`CODEX_HOME`).
+- **Privacy default preserved.** For every non-chatgpt provider, upstream
+  `login`/`logout` remain blocked by CodeSeeq's privacy hardening (override
+  with `CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true`). They are auto-allowed
+  only while the `chatgpt` provider is active.
+- Requires the local Codex CLI (`npm install -g @openai/codex@0.130.0`, the
+  pinned version) and a ChatGPT plan that includes Codex access.
 
 ### Run a local GGUF model
 
@@ -525,8 +575,8 @@ All supported variables are documented in [`.env.example`](./.env.example). Key 
 | `BRAVE_API_KEY`               | —                    | Web search API key (for `ping-web`)              |
 | `UNSTRUCTURED_API_KEY`        | —                    | Doc input API key (for `ping-docs`)              |
 | `RESPONSES_API_KEY`           | —                    | Responses API key (advanced)                     |
-| `CODESEEQ_MODEL`              | `deepseek-v4-flash`  | Default model (`provider@model`, e.g. `anthropic@claude-sonnet-4`, `local@my-model`) |
-| `CODESEEQ_PROVIDER`           | —                    | Optional explicit provider override (deepseek, anthropic, google, grok, venice, local) |
+| `CODESEEQ_MODEL`              | `deepseek-v4-flash`  | Default model (`provider@model`, e.g. `anthropic@claude-sonnet-4`, `local@my-model`, `chatgpt@gpt-5-codex`) |
+| `CODESEEQ_PROVIDER`           | —                    | Optional explicit provider override (deepseek, anthropic, google, grok, venice, local, gguf, mlx, chatgpt) |
 | `CODESEEQ_THINKING`           | `false`              | Enable thinking mode                             |
 | `CODESEEQ_APPROVAL_POLICY`    | `on-request`         | Codex approval policy                            |
 | `CODESEEQ_SANDBOX_MODE`       | `workspace-write`    | Codex sandbox mode                               |
@@ -770,7 +820,7 @@ CodeSeeq applies privacy hardening by default:
 
 | Setting | Value |
 |---------|-------|
-| **Model provider** | Your choice (deepseek / anthropic / google / grok / venice / local / gguf / mlx), always via the local bridge |
+| **Model provider** | Your choice (deepseek / anthropic / google / grok / venice / local / gguf / mlx via the local bridge; chatgpt native via Codex's ChatGPT account sign-in, no bridge) |
 | **Web search** | Live (not cached) |
 | **Analytics** | Disabled |
 | **Feedback** | Disabled |
@@ -779,12 +829,16 @@ CodeSeeq applies privacy hardening by default:
 | **OpenTelemetry trace exporter** | None |
 | **Raw user prompt logging** | Disabled |
 | **History persistence** | None |
-| **Upstream OpenAI/Codex commands** | Blocked (`login`, `logout`, `cloud`, `app`, `app-server`, `plugin`, `update`, `features`) |
+| **Upstream OpenAI/Codex commands** | Blocked by default (`login`, `logout`, `cloud`, `app`, `app-server`, `plugin`, `update`, `features`); `login`/`logout` auto-allowed only for the `chatgpt` provider |
 | **OPENAI_API_KEY from DEEPSEEK_API_KEY** | Not auto-populated |
 | **Codex version** | Pinned (no auto-update) |
 | **Latest release auto-fetch** | Enabled by default; set `CODESEEQ_ALLOW_LATEST_RELEASE=false` to require a pinned `CODESEEQ_RELEASE_TAG` |
 
 ### Override upstream Codex commands
+
+Upstream Codex commands that contact OpenAI/ChatGPT services stay blocked
+unless you are using the `chatgpt` provider (which auto-allows `login` /
+`logout` for account sign-in) or you explicitly opt in:
 
 ```bash
 CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true ./codeseeq login
@@ -797,8 +851,8 @@ To pin an exact release, set `CODESEEQ_RELEASE_TAG`. To forbid auto-fetching ent
 set `CODESEEQ_ALLOW_LATEST_RELEASE=false` (a pinned `CODESEEQ_RELEASE_TAG` is then required):
 
 ```bash
-CODESEEQ_RELEASE_TAG=v0.4.7 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
-CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.4.7 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_RELEASE_TAG=v0.4.8 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.4.8 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
 ```
 
 ### Uncensored Mode

@@ -296,14 +296,22 @@ CodeSeeq commands:
   smoke                 Run smoke tests
   system                Manage user-config persistent system prompt
   package               Create a clean release zip
+  login / logout        Codex account auth (chatgpt provider sign-in)
 
 Configure the LLM:
   codeseeq config       TUI: pick provider (anthropic, google, grok,
-                        deepseek, venice, local, gguf, mlx), then model,
-                        then API key.
+                        deepseek, venice, local, gguf, mlx, chatgpt), then
+                        model, then API key (chatgpt needs none).
   The wizard writes CODESEEQ_MODEL / CODESEEQ_PROVIDER and the provider API
   key to ~/.config/codeseeq/config.json (CODESEEQ_CONFIG_HOME/config.json).
   Environment variables always override config-file values.
+
+ChatGPT account (Plus/Pro/Team, no API key):
+  codeseeq config       Choose provider "ChatGPT (Plus/Pro/Team account
+                        sign-in)" and a model (e.g. chatgpt@gpt-5-codex).
+  codeseeq login        Sign in with ChatGPT in the browser (native Codex
+                        auth, no bridge, no API key); codeseeq logout signs out.
+  Privacy: login/logout stay blocked for all other providers.
 
 Local GGUF / MLX models (host runtime, no API key):
   GGUF: codeseeq --model /path/to/model.gguf "prompt"
@@ -758,6 +766,132 @@ requested_mlx_model() {
   return 1
 }
 
+# --- ChatGPT account sign-in (native upstream Codex auth, no API key) -------
+# The "chatgpt" provider uses upstream Codex's own ChatGPT account login
+# (Plus / Pro / Team). CodeSeeq skips the local bridge entirely and generates
+# a config whose model_provider is upstream's built-in "openai" provider
+# (requires_openai_auth=true), so the ChatGPT OAuth tokens stored in
+# CODEX_HOME/auth.json are used and requests go to the ChatGPT backend
+# (https://chatgpt.com/backend-api/codex). No OPENAI_API_KEY or any other API
+# key is required. Login flow: `codeseeq login` -> "Sign in with ChatGPT".
+
+is_chatgpt_model() {
+  local model="${1:-${CODESEEQ_MODEL:-${PROVIDER_MODEL:-}}}"
+  [[ "${CODESEEQ_PROVIDER:-}" == "chatgpt" ]] && return 0
+  local lower
+  lower="$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')"
+  [[ "$lower" == chatgpt@* ]] && return 0
+  return 1
+}
+
+# Check whether the model actually requested for this invocation is chatgpt.
+# `is_chatgpt_model` alone only sees the env/config value; the CLI may override
+# it with -m/--model in any argv position (including after a `run` command),
+# so scan the remaining args for a chatgpt model flag as well.
+requested_chatgpt_model() {
+  is_chatgpt_model && return 0
+  local arg value
+  while (( $# > 0 )); do
+    arg="$1"
+    case "$arg" in
+      -m|--model)
+        [[ $# -ge 2 ]] || return 1
+        value="$2"
+        is_chatgpt_model "$value" && return 0
+        shift 2
+        ;;
+      --model=*)
+        value="${arg#--model=}"
+        is_chatgpt_model "$value" && return 0
+        shift
+        ;;
+      --)
+        # Everything after `--` is literal prompt text, never a model flag.
+        return 1
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  return 1
+}
+
+# Print the upstream OpenAI model id for the chatgpt provider (chatgpt@ prefix
+# stripped). Dies on a model that clearly is not an OpenAI ChatGPT model.
+chatgpt_upstream_model() {
+  local slug="${PROVIDER_MODEL:-${CODESEEQ_MODEL:-}}"
+  local upstream=""
+  case "$slug" in
+    chatgpt@*) upstream="${slug#chatgpt@}" ;;
+    *)
+      if [[ "${CODESEEQ_PROVIDER:-}" == "chatgpt" ]]; then
+        if [[ "$slug" == *@* ]]; then
+          upstream="${slug#*@}"
+        else
+          upstream="$slug"
+        fi
+      fi
+      ;;
+  esac
+  [[ -n "$upstream" ]] || die "chatgpt provider requires a model, e.g. codeseeq -m chatgpt@gpt-5-codex"
+  case "$upstream" in
+    deepseek-v4-*|qwibus-*|claude-*|gemini-*|grok-*|venice-*|local)
+      die "unsupported ChatGPT model: ${upstream}. Use an OpenAI ChatGPT model id such as gpt-5-codex (run: codeseeq config)"
+      ;;
+  esac
+  printf '%s\n' "$upstream"
+}
+
+chatgpt_auth_file() {
+  printf '%s\n' "${1:-}/auth.json"
+}
+
+# True when the Codex auth.json under <dir> holds a (non-expired) ChatGPT
+# OAuth session - the exact state upstream Codex needs for requires_openai_auth.
+chatgpt_has_session() {
+  local dir="${1:-}"
+  local auth
+  auth="$(chatgpt_auth_file "$dir")"
+  [[ -f "$auth" ]] || return 1
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$auth" <<'PYCHATGPT'
+import json, sys, time
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(1)
+if not isinstance(data, dict):
+    sys.exit(1)
+tokens = data.get("tokens")
+if not isinstance(tokens, dict) or not tokens.get("access_token"):
+    sys.exit(1)
+expires = tokens.get("expires_at")
+if isinstance(expires, (int, float)) and expires > 0 and expires < time.time():
+    sys.exit(1)
+sys.exit(0)
+PYCHATGPT
+    return $?
+  fi
+  grep -q '"tokens"' "$auth" 2>/dev/null
+}
+
+chatgpt_login_required_check() {
+  local dir="${1:-${HOST_CODEX_HOME:-${CODEX_HOME:-}}}"
+  [[ -n "$dir" ]] || die "internal error: CODEX_HOME not known for ChatGPT auth check"
+  if chatgpt_has_session "$dir"; then
+    return 0
+  fi
+  local auth
+  auth="$(chatgpt_auth_file "$dir")"
+  if [[ -f "$auth" ]] && grep -q 'OPENAI_API_KEY' "$auth" 2>/dev/null; then
+    die "chatgpt provider requires a ChatGPT account session (Plus/Pro/Team), not an API key. Run: codeseeq logout && codeseeq login  and choose 'Sign in with ChatGPT'"
+  fi
+  die "ChatGPT account sign-in required for the chatgpt provider (no API key needed). Run: codeseeq login  and choose 'Sign in with ChatGPT' (session stored under ${dir})"
+}
+
+
 normalize_model() {
   local model="$1"
   local thinking_override="${2:-}"
@@ -768,6 +902,13 @@ normalize_model() {
   fi
   if [[ "$model" == qwibus/qwibus-* ]]; then
     model="${model/qwibus\//qwibus@}"
+  fi
+
+  # ChatGPT account sign-in provider (native upstream Codex/OpenAI auth):
+  # with CODESEEQ_PROVIDER=chatgpt a bare upstream model becomes
+  # chatgpt@<model> so `codeseeq -m gpt-5-codex` works without a key.
+  if [[ "${CODESEEQ_PROVIDER:-}" == "chatgpt" && "$model" != *@* ]]; then
+    model="chatgpt@${model}"
   fi
 
   case "$model" in
@@ -875,7 +1016,7 @@ normalize_model() {
           owner="${model%%@*}"
           upstream="${model#*@}"
           case "$owner" in
-            anthropic|google|grok|venice|deepseek|local)
+            anthropic|google|grok|venice|deepseek|local|chatgpt)
               [[ -n "$upstream" ]] || die "unsupported model: ${model} (empty model name after @)"
               PROVIDER_MODEL="$model"
               alias_thinking="false"
@@ -884,11 +1025,11 @@ normalize_model() {
               esac
               ;;
             *)
-              die "unsupported provider: ${owner} in model ${model}. supported providers: deepseek, qwibus, anthropic, google, grok, venice, local, gguf, mlx"
+              die "unsupported provider: ${owner} in model ${model}. supported providers: deepseek, qwibus, anthropic, google, grok, venice, local, gguf, mlx, chatgpt"
               ;;
           esac
         else
-          die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx, gguf@<path-to-.gguf>, mlx@<path-to-model-directory>, or <provider>@<model> with provider in anthropic, google, grok, venice, local, gguf, mlx"
+          die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx, gguf@<path-to-.gguf>, mlx@<path-to-model-directory>, chatgpt@gpt-5-codex, or <provider>@<model> with provider in anthropic, google, grok, venice, local, gguf, mlx, chatgpt"
         fi
       fi
       ;;
@@ -1007,12 +1148,24 @@ is_blocked_upstream_command() {
 
 block_upstream_codex_commands() {
   local cmd_arg="$1"
+  shift || true
   if is_blocked_upstream_command "$cmd_arg"; then
+    # The chatgpt provider is CodeSeeq's explicit opt-in for OpenAI/ChatGPT
+    # account sign-in: `login` / `logout` are required for the feature and are
+    # auto-allowed in that mode only (all other providers stay blocked).
+    local chatgpt_auth_allowed=false
+    if [[ "$cmd_arg" == "login" || "$cmd_arg" == "logout" ]] && { is_chatgpt_model || requested_chatgpt_model "$@"; }; then
+      chatgpt_auth_allowed=true
+    fi
     if is_truthy "${CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES:-false}"; then
       warn "CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true: allowing potentially risky upstream Codex command: ${cmd_arg}"
       return 0
     fi
-    die "disabled in CodeSeeq privacy mode: this upstream Codex command may contact OpenAI/ChatGPT services or modify/update Codex state (set CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true to override)"
+    if [[ "$chatgpt_auth_allowed" == "true" ]]; then
+      log "chatgpt provider: allowing upstream Codex '${cmd_arg}' for ChatGPT account sign-in"
+      return 0
+    fi
+    die "disabled in CodeSeeq privacy mode: this upstream Codex command may contact OpenAI/ChatGPT services or modify/update Codex state (set CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true to override, or use the chatgpt provider for account sign-in)"
   fi
   return 0
 }
@@ -1081,10 +1234,10 @@ provider_key_env_for_model() {
     grok) printf 'GROK_API_KEY'; return 0 ;;
     venice) printf 'VENICE_API_KEY'; return 0 ;;
     deepseek) printf 'DEEPSEEK_API_KEY'; return 0 ;;
-    local|qwibus|gguf|mlx) printf ''; return 0 ;;
+    local|qwibus|gguf|mlx|chatgpt) printf ''; return 0 ;;
   esac
   case "$model" in
-    qwibus@*|local@*|gguf@*|mlx@*) printf '' ;;
+    qwibus@*|local@*|gguf@*|mlx@*|chatgpt@*) printf '' ;;
     anthropic@*) printf 'ANTHROPIC_API_KEY' ;;
     google@*) printf 'GOOGLE_API_KEY' ;;
     grok@*) printf 'GROK_API_KEY' ;;
@@ -1373,11 +1526,74 @@ _main()
 PYCAT
 }
 
+# Native ChatGPT account sign-in config: point Codex at upstream's built-in
+# "openai" model provider (requires_openai_auth = true, no env_key). The
+# ChatGPT OAuth session in CODEX_HOME/auth.json authenticates and Codex picks
+# the ChatGPT backend (https://chatgpt.com/backend-api/codex) automatically.
+# No local bridge, no [model_providers.*] block (upstream built-ins cannot be
+# overridden) and no API key is required.
+write_host_config_chatgpt() {
+  local upstream
+  upstream="$(chatgpt_upstream_model)"
+  mkdir -p "$HOST_CODEX_HOME"
+  export CODEX_HOME="$HOST_CODEX_HOME"
+  cat > "$HOST_CODEX_HOME/config.toml" <<EOF
+# CodeSeeq chatgpt provider: native OpenAI/ChatGPT account sign-in
+# (Plus/Pro/Team). model_provider = "openai" is upstream Codex's built-in
+# ChatGPT-auth provider (requires_openai_auth = true, no env_key, no API key).
+model = "${upstream}"
+model_provider = "openai"
+
+approval_policy = "${CODESEEQ_APPROVAL_POLICY}"
+sandbox_mode = "${CODESEEQ_SANDBOX_MODE}"
+
+web_search = "live"
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[otel]
+exporter = "none"
+metrics_exporter = "none"
+trace_exporter = "none"
+log_user_prompt = false
+
+[history]
+persistence = "none"
+EOF
+
+  local effective_prompt=""
+  if system_prompt_present; then
+    effective_prompt="$SYSTEM_PROMPT_PATH"
+  elif [[ -f "${CODESEEQ_INSTALL_ROOT}/config/default-system-prompt.md" && -s "${CODESEEQ_INSTALL_ROOT}/config/default-system-prompt.md" ]]; then
+    effective_prompt="${CODESEEQ_INSTALL_ROOT}/config/default-system-prompt.md"
+  fi
+  if [[ -n "$effective_prompt" ]]; then
+    {
+      printf '\n# CodeSeeq-managed persistent system prompt.\n'
+      printf 'developer_instructions = '
+      toml_quote_file "$effective_prompt"
+      printf '\n'
+    } >> "$HOST_CODEX_HOME/config.toml"
+  fi
+  chmod 600 "$HOST_CODEX_HOME/config.toml" 2>/dev/null || true
+}
+
 write_host_config() {
   mkdir -p "$HOST_CODEX_HOME"
   export CODEX_HOME="$HOST_CODEX_HOME"
   write_merged_codex_catalog "${HOST_CODEX_HOME}/codex-model-catalog.json"
   local provider_env provider_label
+
+  # ChatGPT account sign-in is native (no bridge); write a dedicated
+  # config and skip the CodeSeeq bridge provider entirely.
+  if is_chatgpt_model; then
+    write_host_config_chatgpt
+    return 0
+  fi
   provider_env="$(provider_key_env_for_model)"
   if [[ -z "$provider_env" ]]; then
     # Keyless providers (gguf / mlx / local / qwibus): Codex still requires
@@ -2359,7 +2575,7 @@ run_host_codex() {
     mode="passthrough"
     # CodeSeeq privacy hardening: block upstream Codex passthrough commands
     if (( ${#passthrough[@]} > 0 )); then
-      block_upstream_codex_commands "${passthrough[0]}"
+      block_upstream_codex_commands "${passthrough[0]}" "${passthrough[@]:1}"
     fi
     passthrough=("$@")
   else
@@ -2414,13 +2630,33 @@ run_host_codex() {
   fi
 
   normalize_model "$CODESEEQ_MODEL" "$CODESEEQ_THINKING"
-  bridge_start
-  write_host_config
+
+  local native_chatgpt=false codex_model_arg=""
+  if is_chatgpt_model; then
+    native_chatgpt=true
+    codex_model_arg="$(chatgpt_upstream_model)"
+  else
+    codex_model_arg="$PROVIDER_MODEL"
+  fi
+
+  if [[ "$native_chatgpt" == "true" ]]; then
+    # ChatGPT account sign-in: no bridge, no API key. Requires a prior
+    # `codeseeq login` -> "Sign in with ChatGPT" so Codex can talk to the
+    # ChatGPT backend with the OAuth session in CODEX_HOME/auth.json.
+    if [[ "$mode" != "passthrough" ]]; then
+      chatgpt_login_required_check "$HOST_CODEX_HOME"
+    fi
+    write_host_config
+    log "chatgpt provider: running native Codex against OpenAI ChatGPT (no bridge)"
+  else
+    bridge_start
+    write_host_config
+  fi
 
   export CODEX_HOME="$HOST_CODEX_HOME"
   export CODESEEQ_HOST_MODE=true
 
-  local cmd=(codex --model "$PROVIDER_MODEL")
+  local cmd=(codex --model "$codex_model_arg")
   if [[ "$danger" == "true" ]]; then
     cmd+=(--dangerously-bypass-approvals-and-sandbox)
   else
@@ -2437,7 +2673,11 @@ run_host_codex() {
       cmd+=("${exec_args[@]}")
     fi
     cmd+=(-)
-    log "host mode: running local Codex with bridge at ${CODESEEQ_OPENRESPONSES_URL}"
+    if [[ "$native_chatgpt" == "true" ]]; then
+      log "host mode: running local Codex with native ChatGPT account auth (model=${codex_model_arg})"
+    else
+      log "host mode: running local Codex with bridge at ${CODESEEQ_OPENRESPONSES_URL}"
+    fi
     local status
     set +e
     "${cmd[@]}" < "$prompt_file"
@@ -2446,7 +2686,11 @@ run_host_codex() {
     exit $status
   fi
 
-  log "host mode: running local Codex with bridge at ${CODESEEQ_OPENRESPONSES_URL}"
+  if [[ "$native_chatgpt" == "true" ]]; then
+    log "host mode: running local Codex with native ChatGPT account auth (model=${codex_model_arg})"
+  else
+    log "host mode: running local Codex with bridge at ${CODESEEQ_OPENRESPONSES_URL}"
+  fi
   local status
   set +e
   if ((${#passthrough[@]} > 0)); then
@@ -2501,7 +2745,7 @@ config_json_path() {
 }
 
 config_provider_list() {
-  printf '%s\n' anthropic google grok deepseek venice local gguf mlx
+  printf '%s\n' anthropic google grok deepseek venice local gguf mlx chatgpt
 }
 
 config_provider_label() {
@@ -2514,6 +2758,7 @@ config_provider_label() {
     local) printf 'Local (OpenAI-compatible gateway)' ;;
     gguf) printf 'GGUF (local llama.cpp)' ;;
     mlx) printf 'MLX (local Apple MLX)' ;;
+    chatgpt) printf 'ChatGPT (Plus/Pro/Team account sign-in)' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -2715,6 +2960,7 @@ PYCFG
     grok) printf '%s\n' "grok@grok-4|grok-4" "grok@grok-4-thinking|grok-4 (thinking)" "grok@grok-3|grok-3" "grok@grok-3-thinking|grok-3 (thinking)" "grok@grok-3-mini|grok-3-mini" "grok@grok-3-mini-thinking|grok-3-mini (thinking)" "grok@grok-3-fast|grok-3-fast" "grok@grok-3-fast-thinking|grok-3-fast (thinking)" ;;
     deepseek) printf '%s\n' "deepseek@deepseek-v4-flash|deepseek-v4-flash" "deepseek@deepseek-v4-flash-thinking|deepseek-v4-flash (thinking)" "deepseek@deepseek-v4-pro|deepseek-v4-pro" "deepseek@deepseek-v4-pro-thinking|deepseek-v4-pro (thinking)" ;;
     venice) printf '%s\n' "venice@venice-qwen-3-32b|venice-qwen-3-32b" "venice@venice-qwen-3-32b-thinking|venice-qwen-3-32b (thinking)" "venice@venice-qwen-3-14b|venice-qwen-3-14b" "venice@venice-deepseek-r1-0528|venice-deepseek-r1-0528" "venice@venice-llama-3.3-70b|venice-llama-3.3-70b" "venice@venice-qwen-2.5-coder-32b|venice-qwen-2.5-coder-32b" ;;
+    chatgpt) printf '%s\n' "chatgpt@gpt-5-codex|gpt-5-codex" "chatgpt@gpt-5.1-codex|gpt-5.1-codex" "chatgpt@gpt-5.2-codex|gpt-5.2-codex" "chatgpt@gpt-5.3-codex|gpt-5.3-codex" ;;
     *) return 0 ;;
   esac
 }
@@ -2872,7 +3118,9 @@ else:
     key_state = "set" if (key_env and data.get(key_env)) else ("not required" if not key_env else "missing")
 print(f"Provider: {provider or '(unset)'}")
 print(f"Model: {model or '(unset)'}")
-if key_env:
+if provider == "chatgpt":
+    print("API key: not required (ChatGPT account sign-in; run: codeseeq login)")
+elif key_env:
     print(f"API key ({key_env}): {key_state}")
 base_envs = {"anthropic": "ANTHROPIC_BASE_URL", "google": "GOOGLE_BASE_URL",
              "grok": "GROK_BASE_URL", "deepseek": "DEEPSEEK_BASE_URL",
@@ -2991,6 +3239,16 @@ cmd_config() {
     key=""
     base_url_env="CODESEEQ_MLX_BASE_URL"
     base_url="$(cfg_prompt "Reuse an already-running MLX server base URL (Enter to let CodeSeeq start the server)" "")"
+  elif [[ "$provider" == "chatgpt" ]]; then
+    # ChatGPT account sign-in: keyless by design - upstream Codex authenticates
+    # with the ChatGPT OAuth session (Plus/Pro/Team), no API key of any kind.
+    printf '\n'
+    key_env=""
+    key=""
+    base_url_env=""
+    base_url=""
+    printf 'ChatGPT account sign-in: no API key needed. After saving, run: codeseeq login\n'
+    printf '(choose "Sign in with ChatGPT"). CodeSeeq will run Codex natively (no bridge).\n'
   else
     [[ -n "$key_env" ]] || die "internal error: no API-key env for provider ${provider}"
     local existing=""
@@ -3033,12 +3291,18 @@ PYCFG
     printf '  API key:  %s set in %s\n' "$key_env" "$(config_json_path)"
   elif [[ "$provider" == "local" || "$provider" == "gguf" || "$provider" == "mlx" ]]; then
     printf '  API key:  none (local model)\n'
+  elif [[ "$provider" == "chatgpt" ]]; then
+    printf '  API key:  none (ChatGPT account sign-in)\n'
   fi
   if [[ -n "$base_url_env" && -n "$base_url" ]]; then
     printf '  Base URL: %s=%s\n' "$base_url_env" "$base_url"
   fi
   if [[ "$provider" == "deepseek" && -n "$reasoning" ]]; then
     printf '  Reasoning effort (default): %s\n' "$reasoning"
+  fi
+  if [[ "$provider" == "chatgpt" ]]; then
+    printf '\nNext step - sign in with your ChatGPT account (Plus/Pro/Team), no API key needed:\n'
+    printf '  codeseeq login\n'
   fi
   printf '\nCodeSeeq is ready to use. Try: codeseeq -y "hello"\n'
 }
@@ -3584,7 +3848,43 @@ PY
   esac
 }
 
+# codeseeq login / codeseeq logout -> upstream Codex account auth under the
+# isolated host CODEX_HOME. For the chatgpt provider this is the ChatGPT
+# Plus/Pro/Team sign-in flow (no API key). Blocked by default for every other
+# provider (privacy hardening) unless CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true.
+cmd_chatgpt_auth() {
+  local action="$1"
+  shift || true
+
+  local allowed=false
+  if is_truthy "${CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES:-false}"; then
+    allowed=true
+  fi
+  if [[ "$allowed" != "true" ]] && { is_chatgpt_model || requested_chatgpt_model "$@"; } && [[ "$action" == "login" || "$action" == "logout" ]]; then
+    allowed=true
+  fi
+  if [[ "$allowed" != "true" ]]; then
+    die "disabled in CodeSeeq privacy mode: this upstream Codex command may contact OpenAI/ChatGPT services or modify/update Codex state (set CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true to override, or use the chatgpt provider for account sign-in)"
+  fi
+
+  command -v codex >/dev/null 2>&1 || die "host runtime requires local Codex CLI. Install it with: npm install -g @openai/codex@0.130.0 (pinned version)"
+  mkdir -p "$HOST_CODEX_HOME"
+  export CODEX_HOME="$HOST_CODEX_HOME"
+  export CODESEEQ_HOST_MODE=true
+  if [[ "$action" == "login" ]] && is_chatgpt_model; then
+    log "ChatGPT account sign-in: choose 'Sign in with ChatGPT' (Plus/Pro/Team) in the browser - not 'API key'"
+  fi
+  log "running upstream Codex '${action}' (CODEX_HOME=${HOST_CODEX_HOME})"
+  exec codex "$action" "$@"
+}
+
 case "${1:-}" in
+  login|logout)
+    _auth_action="$1"
+    shift
+    cmd_chatgpt_auth "$_auth_action" "$@"
+    exit $?
+    ;;
   install)
     shift
     cmd_install "$@"
@@ -3749,7 +4049,21 @@ if is_truthy "${CODESEEQ_UNCENSORED_MODE:-false}"; then
 fi
 cmd_arg="$(first_command_arg "$@" || true)"
 # CodeSeeq privacy hardening: block upstream Codex commands by default
-block_upstream_codex_commands "$cmd_arg"
+block_upstream_codex_commands "$cmd_arg" "$@"
+
+# ChatGPT account sign-in (chatgpt@<model> / CODESEEQ_PROVIDER=chatgpt) runs
+# upstream Codex natively against OpenAI's ChatGPT backend - no local bridge,
+# no API key. Always use host runtime: container CODEX_HOME is ephemeral
+# (--rm), the bridge is not involved, and the login session must persist
+# next to the workspace CODEX_HOME.
+if requested_chatgpt_model "$@"; then
+  if [[ "${CODESEEQ_RUNTIME_MODE:-auto}" == "container" ]]; then
+    warn "chatgpt provider runs Codex natively on the host; forcing host runtime (ignoring CODESEEQ_RUNTIME_MODE=container)"
+  else
+    log "chatgpt provider detected; using host runtime (native Codex, no bridge, no API key)"
+  fi
+  CODESEEQ_RUNTIME_MODE=host
+fi
 
 # Diagnostic / management commands always run via CodeSeeq, not passed to Codex
 if is_codeseeq_diagnostic_command "$cmd_arg"; then
@@ -3780,7 +4094,14 @@ if is_codeseeq_diagnostic_command "$cmd_arg"; then
         echo "Container runtime: $(command -v podman 2>/dev/null || command -v docker 2>/dev/null || echo 'not found')"
         echo "Host runtime runnable: $(command -v codex >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && python3 -c 'import fastapi' 2>/dev/null && echo yes || echo no)"
         _dk_env="$(provider_key_env_for_model)"
-        if [[ -z "$_dk_env" ]]; then
+        if is_chatgpt_model; then
+          echo "Provider: chatgpt (ChatGPT account sign-in, no API key)"
+          if chatgpt_has_session "$HOST_CODEX_HOME"; then
+            echo "ChatGPT auth: signed in (${HOST_CODEX_HOME}/auth.json)"
+          else
+            echo "ChatGPT auth: not signed in (run: codeseeq login, choose 'Sign in with ChatGPT')"
+          fi
+        elif [[ -z "$_dk_env" ]]; then
           echo "Provider: local (keyless gateway)"
         else
           echo "Provider key (${_dk_env}): $( [[ -n "${!_dk_env:-}" ]] && echo set || echo missing)"

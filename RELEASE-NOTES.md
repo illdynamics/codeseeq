@@ -1,3 +1,44 @@
+## v0.4.8 - 2026-09-05
+
+### Added
+- **ChatGPT account sign-in provider (`chatgpt@<model>` / `CODESEEQ_PROVIDER=chatgpt`).**
+  CodeSeeq can now drive OpenAI Codex with a **ChatGPT Plus / Pro / Team
+  account** - the upstream `codex login` -> "Sign in with ChatGPT" OAuth flow -
+  instead of an `OPENAI_API_KEY` or any other provider API key. Selecting the
+  new `chatgpt` provider makes CodeSeeq bypass the local bridge entirely and
+  generate a native Codex config (`model_provider = "openai"`, upstream
+  Codex's built-in ChatGPT-auth provider), so requests go straight to
+  OpenAI's ChatGPT backend (`https://chatgpt.com/backend-api/codex`) with the
+  ChatGPT session stored in `CODEX_HOME/auth.json`.
+  - Setup: `codeseeq config` (choose "ChatGPT (Plus/Pro/Team account
+    sign-in)", pick e.g. `chatgpt@gpt-5-codex`), then `codeseeq login` and
+    choose **Sign in with ChatGPT** in the browser. No API key is stored or
+    required. Log out with `codeseeq logout`.
+  - Usage: `codeseeq -m chatgpt@gpt-5-codex "prompt"`,
+    `codeseeq run -f task.md`, interactive TUI, etc. Host runtime is forced
+    automatically (the login session must persist next to the workspace
+    CODEX_HOME; container CODEX_HOME is ephemeral with `--rm`), matching the
+    GGUF/MLX host-forcing behavior.
+  - Both catalogs (`config/model-catalog.json`,
+    `config/codex-model-catalog.json`) and the `codeseeq config` wizard gained
+    the `chatgpt` provider with the ChatGPT Codex model family
+    (`gpt-5-codex`, `gpt-5.1-codex`, `gpt-5.2-codex`, `gpt-5.3-codex`).
+  - **Privacy default preserved:** upstream `login` / `logout` stay blocked
+    for every non-chatgpt provider. They are auto-allowed only while the
+    `chatgpt` provider is active (or with
+    `CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true` as before). `cloud`, `app`,
+    `app-server`, `plugin`, `update`, `features` remain blocked regardless.
+  - `./codeseeq login` / `logout` now run upstream Codex against the isolated
+    host `CODEX_HOME` (`<workdir>/.codeseeq`) so the ChatGPT session persists
+    for the bridge-free chatgpt path; container mode is not used for auth.
+
+### Changed
+- `codeseeq config`, `codeseeq doctor`, host diagnostics and generated
+  configs understand the keyless `chatgpt` provider (no API-key screen; auth
+  state reported as ChatGPT account sign-in).
+- CodeSeeq keeps its no-OpenAI default: unless the operator explicitly picks
+  the `chatgpt` provider, nothing contacts OpenAI/ChatGPT services.
+
 ## v0.4.7 - 2026-09-04
 
 ### Added

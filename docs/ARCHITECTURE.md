@@ -1,6 +1,6 @@
 # Architecture
 
-Current version: `v0.4.7`
+Current version: `v0.4.8`
 
 ## Runtime Modes
 
@@ -22,7 +22,9 @@ host ./codeseeq
   -> Codex inside the container, cwd=/workspace
   -> local bridge inside the same container
   -> http://127.0.0.1:8080/v1/responses
-  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF / MLX)
+  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF / MLX;
+     the chatgpt provider instead bypasses the bridge - see "Native ChatGPT
+     Account Sign-in" below)
 ```
 
 Default Codex settings: `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"`.
@@ -35,6 +37,7 @@ host ./codeseeq -y/--yolo/--sandbox danger-full-access ...
   -> local host Codex, cwd=current host checkout
   -> isolated CODEX_HOME=$PWD/.codeseeq
   -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF / MLX) through the bridge
+     (chatgpt provider bypasses the bridge: native Codex ChatGPT sign-in)
 ```
 
 Host runtime runs Codex directly on the host checkout without container sandboxing.
@@ -42,6 +45,34 @@ Codex approval and sandbox settings are configured normally through the generate
 config unless the operator explicitly requests danger/yolo bypass. The
 `--dangerously-bypass-approvals-and-sandbox` flag is only passed to Codex when
 the operator uses `-y`, `--yolo`, or `--sandbox danger-full-access`.
+
+## Native ChatGPT Account Sign-in (`chatgpt`)
+
+The `chatgpt` provider is the one path that does **not** use the CodeSeeq
+bridge. It is CodeSeeq's opt-in for OpenAI/ChatGPT accounts:
+
+```text
+host ./codeseeq -m chatgpt@gpt-5-codex "prompt"
+  -> write_config: model_provider = "openai" (upstream Codex built-in
+     ChatGPT-auth provider, requires_openai_auth = true)
+  -> Codex (host) with CODEX_HOME=<workspace>/.codeseeq
+  -> https://chatgpt.com/backend-api/codex/responses
+     Authorization: Bearer <ChatGPT OAuth token from auth.json>
+```
+
+- Selected via `chatgpt@<model>` slugs (e.g. `chatgpt@gpt-5-codex`) or
+  `CODESEEQ_PROVIDER=chatgpt`. No API key is required (keyless like
+  local/GGUF/MLX), and the login session comes from upstream
+  `codex login` -> "Sign in with ChatGPT" (`codeseeq login`), stored in
+  `CODEX_HOME/auth.json`.
+- Host runtime is forced automatically (same rule as GGUF/MLX): container
+  CODEX_HOME is ephemeral under `--rm`, and the bridge is not involved.
+- The generated config omits `model_catalog_json` and
+  `[model_providers.codeseeq]`; Codex uses its built-in OpenAI model catalog
+  and its built-in `openai` provider (upstream built-ins cannot be overridden
+  from config.toml).
+- Privacy hardening: upstream `login`/`logout` are blocked for all providers
+  except `chatgpt`, where they are the feature's sign-in/out flow.
 
 ## Bridge Modes
 
@@ -60,7 +91,8 @@ CodeSeeq controls how the translation bridge is started via `CODESEEQ_BRIDGE_MOD
 wrapper (./codeseeq)
   -> python3 bin/codeseeq-bridge.py   (host-native child process)
   -> Codex                             (host or container)
-  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF / MLX)
+  -> your provider (DeepSeek / Anthropic / Google / Grok / Venice / local / GGUF / MLX; the
+     chatgpt provider is native and bridge-free)
 ```
 
 Process mode is the recommended path for host runtime. It removes the bridge

@@ -1156,6 +1156,186 @@
       "supports_search_tool": true,
       "support_verbosity": false,
       "experimental_supported_tools": []
+    },
+    {
+      "slug": "chatgpt@gpt-5-codex",
+      "display_name": "ChatGPT GPT-5 Codex",
+      "description": "ChatGPT account sign-in (Plus/Pro/Team) - flagship coding model.",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "context_window": 400000,
+      "max_context_window": 400000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 400000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 8,
+      "supported_reasoning_levels": [
+        {
+          "level": "low",
+          "effort": "low",
+          "description": "Low reasoning effort"
+        },
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "xhigh",
+          "effort": "xhigh",
+          "description": "Extra-high reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "chatgpt@gpt-5.1-codex",
+      "display_name": "ChatGPT GPT-5.1 Codex",
+      "description": "ChatGPT account sign-in (Plus/Pro/Team) - newer coding model.",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "context_window": 400000,
+      "max_context_window": 400000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 400000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 8,
+      "supported_reasoning_levels": [
+        {
+          "level": "low",
+          "effort": "low",
+          "description": "Low reasoning effort"
+        },
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "xhigh",
+          "effort": "xhigh",
+          "description": "Extra-high reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "chatgpt@gpt-5.2-codex",
+      "display_name": "ChatGPT GPT-5.2 Codex",
+      "description": "ChatGPT account sign-in (Plus/Pro/Team) - newer coding model.",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "context_window": 400000,
+      "max_context_window": 400000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 400000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 8,
+      "supported_reasoning_levels": [
+        {
+          "level": "low",
+          "effort": "low",
+          "description": "Low reasoning effort"
+        },
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "xhigh",
+          "effort": "xhigh",
+          "description": "Extra-high reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
+    },
+    {
+      "slug": "chatgpt@gpt-5.3-codex",
+      "display_name": "ChatGPT GPT-5.3 Codex",
+      "description": "ChatGPT account sign-in (Plus/Pro/Team) - newest coding model.",
+      "base_instructions": "",
+      "enable_thinking": false,
+      "context_window": 400000,
+      "max_context_window": 400000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "supports_reasoning_summaries": true,
+      "supported_in_api": true,
+      "visibility": "list",
+      "shell_type": "default",
+      "web_search_tool_type": "text",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 400000
+      },
+      "supports_parallel_tool_calls": true,
+      "priority": 8,
+      "supported_reasoning_levels": [
+        {
+          "level": "low",
+          "effort": "low",
+          "description": "Low reasoning effort"
+        },
+        {
+          "level": "high",
+          "effort": "high",
+          "description": "High reasoning effort"
+        },
+        {
+          "level": "xhigh",
+          "effort": "xhigh",
+          "description": "Extra-high reasoning effort"
+        }
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "supports_search_tool": true,
+      "support_verbosity": false,
+      "experimental_supported_tools": []
     }
   ]
 }

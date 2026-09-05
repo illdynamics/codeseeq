@@ -1,6 +1,6 @@
 # Security
 
-Current version: `v0.4.7`
+Current version: `v0.4.8`
 
 ## Runtime Secrets
 
@@ -150,10 +150,20 @@ This does not grant the container extra paths. It only explains where the
 
 ## Authentication Model
 
-- No `codex login` flow is required for CodeSeeq model requests.
-- Generated provider config uses `env_key = "DEEPSEEK_API_KEY"`.
-- Generated provider config uses `requires_openai_auth = false`.
-- `OPENAI_API_KEY` is no longer auto-populated from `DEEPSEEK_API_KEY` for privacy hardening.
+- **Default (bridge providers):** No `codex login` flow is required for
+  CodeSeeq model requests. Generated provider config uses
+  `env_key = "DEEPSEEK_API_KEY"` (or the matching provider key) and
+  `requires_openai_auth = false`. `OPENAI_API_KEY` is never auto-populated
+  from `DEEPSEEK_API_KEY` for privacy hardening.
+- **`chatgpt` provider (opt-in):** If the operator explicitly selects the
+  `chatgpt` provider (`chatgpt@<model>` / `CODESEEQ_PROVIDER=chatgpt`),
+  CodeSeeq instead generates a native config with
+  `model_provider = "openai"` (upstream Codex's built-in ChatGPT-auth
+  provider, `requires_openai_auth = true`). The user signs in once with
+  `codeseeq login` -> "Sign in with ChatGPT" (Plus / Pro / Team); requests go
+  directly to OpenAI's ChatGPT backend with the OAuth session stored in
+  `CODEX_HOME/auth.json`. **No API key is used or stored.** The local bridge
+  is bypassed for this provider only.
 
 ## Privacy Hardening
 
@@ -180,7 +190,7 @@ persistence = "none"
 
 Additional hardening beyond telemetry:
 
-- **Upstream Codex commands blocked:** `login`, `logout`, `cloud`, `app`, `app-server`, `plugin`, `update`, `features`, and `remote-control` are blocked by default. Set `CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true` to override.
+- **Upstream Codex commands blocked:** `login`, `logout`, `cloud`, `app`, `app-server`, `plugin`, `update`, `features`, and `remote-control` are blocked by default. `login` / `logout` are auto-allowed only while the `chatgpt` provider is active (they are the feature's sign-in flow; no other OpenAI/ChatGPT services are contacted). For all other providers, set `CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true` to override.
 - **Codex version pinned:** The Dockerfile and Makefile use a pinned `CODEX_NPM_VERSION` (default: `0.130.0`) instead of `latest`. The installer auto-fetches the latest release unless `CODESEEQ_ALLOW_LATEST_RELEASE=false` is set, in which case a pinned `CODESEEQ_RELEASE_TAG` is required.
 - **No OPENAI_API_KEY aliasing:** `DEEPSEEK_API_KEY` is used directly. It is not exported as `OPENAI_API_KEY`.
 - **Network diagnostics guard:** Use `CODESEEQ_ALLOW_NETWORK_DIAGNOSTICS=true` to enable diagnostics that contact third-party services outside the normal model/web-search path.

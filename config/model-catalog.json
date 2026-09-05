@@ -839,6 +839,110 @@
         "no-API-key",
         "apple-silicon"
       ]
+    },
+    {
+      "id": "gpt-5-codex",
+      "provider_model": "chatgpt@gpt-5-codex",
+      "provider": "chatgpt",
+      "upstream_model": "gpt-5-codex",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "chat_url": "https://chatgpt.com/backend-api/codex/responses",
+      "temperature": null,
+      "top_p": null,
+      "top_k": null,
+      "api_key": null,
+      "context_window": 400000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "ChatGPT/Codex flagship coding model (account sign-in).",
+      "recommended_for": [
+        "coding",
+        "account sign-in (no API key)"
+      ]
+    },
+    {
+      "id": "gpt-5.1-codex",
+      "provider_model": "chatgpt@gpt-5.1-codex",
+      "provider": "chatgpt",
+      "upstream_model": "gpt-5.1-codex",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "chat_url": "https://chatgpt.com/backend-api/codex/responses",
+      "temperature": null,
+      "top_p": null,
+      "top_k": null,
+      "api_key": null,
+      "context_window": 400000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Newer ChatGPT/Codex coding model (account sign-in).",
+      "recommended_for": [
+        "coding",
+        "account sign-in (no API key)"
+      ]
+    },
+    {
+      "id": "gpt-5.2-codex",
+      "provider_model": "chatgpt@gpt-5.2-codex",
+      "provider": "chatgpt",
+      "upstream_model": "gpt-5.2-codex",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "chat_url": "https://chatgpt.com/backend-api/codex/responses",
+      "temperature": null,
+      "top_p": null,
+      "top_k": null,
+      "api_key": null,
+      "context_window": 400000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Newer ChatGPT/Codex coding model (account sign-in).",
+      "recommended_for": [
+        "coding",
+        "account sign-in (no API key)"
+      ]
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "provider_model": "chatgpt@gpt-5.3-codex",
+      "provider": "chatgpt",
+      "upstream_model": "gpt-5.3-codex",
+      "thinking": false,
+      "enable_thinking": false,
+      "group": "non-thinking",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "chat_url": "https://chatgpt.com/backend-api/codex/responses",
+      "temperature": null,
+      "top_p": null,
+      "top_k": null,
+      "api_key": null,
+      "context_window": 400000,
+      "max_output_tokens": 64000,
+      "timeout_seconds": 600,
+      "system_prompt": "",
+      "supports_streaming": true,
+      "supports_tools": "native",
+      "notes": "Newest ChatGPT/Codex coding model (account sign-in).",
+      "recommended_for": [
+        "coding",
+        "account sign-in (no API key)"
+      ]
     }
   ],
   "providers": {
@@ -910,6 +1014,16 @@
       "label": "MLX",
       "api_key_env": null,
       "models": []
+    },
+    "chatgpt": {
+      "label": "ChatGPT (Plus/Pro/Team sign-in)",
+      "api_key_env": null,
+      "models": [
+        "gpt-5-codex",
+        "gpt-5.1-codex",
+        "gpt-5.2-codex",
+        "gpt-5.3-codex"
+      ]
     }
   }
 }

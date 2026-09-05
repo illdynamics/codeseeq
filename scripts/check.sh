@@ -288,6 +288,28 @@ else
   fi
 fi
 
+note "checking chatgpt provider native config (entrypoint, no bridge)"
+if ! CODESEEQ_CODEX_HOME="${tmp_check_dir}/.codeseeq-chatgpt" \
+  CODESEEQ_WORKDIR="${tmp_check_dir}/workspace-chatgpt" \
+  CODESEEQ_RUNTIME_DIR="${tmp_check_dir}/run-chatgpt" \
+  CODESEEQ_LOG_DIR="${tmp_check_dir}/log-chatgpt" \
+  CODESEEQ_MODEL="chatgpt@gpt-5-codex" \
+  CODESEEQ_PROVIDER="chatgpt" \
+  ./bin/codeseeq-entrypoint config > "${tmp_check_dir}/config-chatgpt.out"; then
+  fail "codeseeq-entrypoint config with chatgpt provider failed"
+else
+  chatgpt_config="${tmp_check_dir}/.codeseeq-chatgpt/config.toml"
+  if ! _rg -n '^model = "gpt-5-codex"$' "$chatgpt_config" >/dev/null 2>&1; then
+    fail "chatgpt config missing bare upstream model (gpt-5-codex)"
+  fi
+  if ! _rg -n '^model_provider = "openai"$' "$chatgpt_config" >/dev/null 2>&1; then
+    fail "chatgpt config missing native model_provider = \"openai\""
+  fi
+  if _rg -n 'model_provider = "codeseeq"|\[model_providers\.codeseeq\]|requires_openai_auth = false|env_key = ' "$chatgpt_config" >/dev/null 2>&1; then
+    fail "chatgpt config unexpectedly references the CodeSeeq bridge provider"
+  fi
+fi
+
 note "checking entrypoint merges codex catalog for arbitrary local@model"
 if ! CODESEEQ_CODEX_HOME="${tmp_check_dir}/.codeseeq-catalog" \
   CODESEEQ_WORKDIR="${tmp_check_dir}/workspace-catalog" \
@@ -1294,6 +1316,35 @@ for blocked_cmd in cloud app app-server plugin update features; do
     fail "blocked command '${blocked_cmd}' did not print privacy mode error"
   fi
 done
+
+note "checking chatgpt provider auto-allows login/logout (host auth flow)"
+chatgpt_workspace="${tmp_check_dir}/chatgpt-workspace"
+mkdir -p "$chatgpt_workspace"
+if ! PATH="${fakebin}:$PATH" \
+  CODESEEQ_MODEL="chatgpt@gpt-5-codex" \
+  CODESEEQ_PROVIDER="chatgpt" \
+  CODESEEQ_WORKDIR_HOST="$chatgpt_workspace" \
+  CODESEEQ_TEST_CODEX_ARGS="${tmp_check_dir}/chatgpt-login-codex.args" \
+  ./codeseeq login > "${tmp_check_dir}/chatgpt-login.out" 2>"${tmp_check_dir}/chatgpt-login.err"; then
+  fail "chatgpt provider login was NOT auto-allowed"
+else
+  if ! grep -Fxq -- "login" "${tmp_check_dir}/chatgpt-login-codex.args"; then
+    fail "chatgpt provider login did not reach upstream codex login"
+  fi
+  if [[ ! -d "${chatgpt_workspace}/.codeseeq" ]]; then
+    fail "chatgpt provider login did not create isolated host CODEX_HOME"
+  fi
+fi
+if ! PATH="${fakebin}:$PATH" \
+  CODESEEQ_MODEL="chatgpt@gpt-5-codex" \
+  CODESEEQ_PROVIDER="chatgpt" \
+  CODESEEQ_WORKDIR_HOST="$chatgpt_workspace" \
+  CODESEEQ_TEST_CODEX_ARGS="${tmp_check_dir}/chatgpt-logout-codex.args" \
+  ./codeseeq logout > "${tmp_check_dir}/chatgpt-logout.out" 2>"${tmp_check_dir}/chatgpt-logout.err"; then
+  fail "chatgpt provider logout was NOT auto-allowed"
+elif ! grep -Fxq -- "logout" "${tmp_check_dir}/chatgpt-logout-codex.args"; then
+  fail "chatgpt provider logout did not reach upstream codex logout"
+fi
 
 note "checking privacy hardening: CODE_NPM_VERSION pinned in Dockerfile"
 if ! grep -Fq 'ARG CODEX_NPM_VERSION=0.130.0' Dockerfile 2>/dev/null; then

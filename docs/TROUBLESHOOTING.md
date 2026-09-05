@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `v0.4.7`
+Current version: `v0.4.8`
 
 ## `./codeseeq` is not executable
 
@@ -281,7 +281,7 @@ Inspect config:
 ./codeseeq config
 ```
 
-Expected provider fields:
+Expected provider fields (bridge providers - the default):
 
 - `model_provider = "codeseeq"`
 - `wire_api = "responses"`
@@ -289,6 +289,20 @@ Expected provider fields:
 - `requires_openai_auth = false`
 
 Also verify `CODEX_HOME` is `.codeseeq`, not `~/.codex`.
+
+If you intentionally want to use your **ChatGPT Plus / Pro / Team account**
+(no API key), select the `chatgpt` provider instead:
+
+```bash
+codeseeq config        # provider: ChatGPT (Plus/Pro/Team account sign-in)
+codeseeq login         # choose "Sign in with ChatGPT" in the browser
+codeseeq run "hello"
+```
+
+The `chatgpt` provider writes a native config (`model_provider = "openai"`,
+upstream Codex's built-in ChatGPT-auth provider) and runs Codex on the host
+without the CodeSeeq bridge. Verify the generated config contains
+`model_provider = "openai"` and that no API key is required.
 
 ## Upstream Codex Commands Blocked
 
