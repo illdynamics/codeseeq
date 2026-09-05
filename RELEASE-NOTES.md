@@ -20,6 +20,22 @@
   cause of "agent said it created the file but no file exists" failures with
   weaker local models.
 
+- **Goal-tool hygiene guidance for LLM providers.** Codex builds with the
+  thread-goal feature (per-thread `create_goal`/`get_goal`/`update_goal`)
+  reject a second `create_goal` in the same thread while the first goal is
+  still active:
+  `ERROR codex_core::tools::router: cannot create a new goal because this
+  thread has an unfinished goal; complete the existing goal first`. Local
+  GGUF/MLX models frequently invent their own goals at session start and then
+  call `create_goal` again mid-run after restating/refining the task, which
+  trips that one-shot guard, derails the run, and leaves stale `active` goal
+  rows in `<project>/.codeseeq/goals_1.sqlite`. The bundled system prompt now
+  instructs agents to (1) only create a goal when the user explicitly asks,
+  at most once per session; (2) never retry `create_goal` when an active goal
+  already exists - just continue the task; and (3) call `update_goal` with
+  status `complete` once the goal's work is finished so goals are not left
+  dangling.
+
 ## v0.4.8 - 2026-09-05
 
 ### Added
