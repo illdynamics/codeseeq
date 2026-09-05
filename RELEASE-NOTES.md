@@ -1,3 +1,25 @@
+## Unreleased
+
+### Fixed
+- **Hide benign upstream Codex rollout-persistence teardown errors in one-shot
+  runs.** Modern Codex CLI builds (>= 0.146, the session/thread-store era) can
+  print
+  `ERROR codex_core::session: failed to record rollout items: thread <uuid> not found`
+  when a turn finishes while session persistence is shutting down (the live
+  thread recorder is already removed, so the final rollout append races
+  teardown). The turn itself succeeded; only tail persistence is skipped.
+  `codeseeq run`/piped `codex` passthrough now filter that known-benign line
+  from user-facing stderr (upstream openai/codex #22055, #16300, #35385).
+  Set `CODESEEQ_KEEP_CODEX_ROLLOUT_ERRORS=true` to see the raw upstream line.
+- **File-write guidance for LLM providers.** The bundled system prompt now
+  instructs agents to use a QUOTED heredoc delimiter (`cat <<'EOF'`) when a
+  file's content contains backticks/`$`/backslashes (Markdown, code, JSON,
+  LaTeX), and to verify every created file with `ls -l` + `cat`/`head` before
+  claiming success. Unquoted `<<EOF` makes the shell run backticks and
+  `$(...)` inside the content as commands, corrupting the write - the root
+  cause of "agent said it created the file but no file exists" failures with
+  weaker local models.
+
 ## v0.4.8 - 2026-09-05
 
 ### Added

@@ -2514,6 +2514,46 @@ run_safe_container() {
   exec "$CONTAINER" "${run_args[@]}" "$IMAGE" "$@"
 }
 
+# ---------------------------------------------------------------------------
+# Suppress benign upstream Codex teardown noise from one-shot exec runs.
+#
+# Codex CLI >=0.146 (the session/thread-store era) can emit this line when a
+# turn finishes while session persistence is shutting down:
+#
+#   ERROR codex_core::session: failed to record rollout items: thread <uuid> not found
+#
+# At that point the LiveThread recorder has already been removed by
+# shutdown/discard, so the final rollout append races teardown and is skipped.
+# The turn itself already completed successfully - only tail persistence is
+# lost (harmless for one-shot `exec` runs; upstream openai/codex #22055,
+# #16300, #35385). CodeSeeq therefore hides the line from user-facing stderr
+# instead of letting it look like the run crashed. Set
+# CODESEEQ_KEEP_CODEX_ROLLOUT_ERRORS=true to see the raw upstream line.
+filter_codex_stderr() {
+  # shellcheck disable=SC2016  # backticks are literal in the regex
+  sed -E '/ERROR codex_core::session: failed to record rollout items: thread [0-9a-fA-F-]{36} not found[[:space:]]*$/d'
+}
+
+codex_stderr_filter_active() {
+  [[ "${CODESEEQ_KEEP_CODEX_ROLLOUT_ERRORS:-false}" != "true" ]]
+}
+
+# Run a one-shot `codex exec` whose stderr is live-filtered for the benign
+# upstream rollout-persistence teardown line described above. Stdout and the
+# exit code are passed through untouched.
+run_codex_exec_filtered() {
+  local status
+  set +e
+  if codex_stderr_filter_active; then
+    "$@" 2> >(filter_codex_stderr >&2)
+  else
+    "$@"
+  fi
+  status=$?
+  set -e
+  return $status
+}
+
 run_host_codex() {
   # Reflect a CLI -m/--model choice before the key check so keyless local
   # providers (gguf@..., mlx@...) requested on the command line do not demand
@@ -2680,7 +2720,7 @@ run_host_codex() {
     fi
     local status
     set +e
-    "${cmd[@]}" < "$prompt_file"
+    run_codex_exec_filtered "${cmd[@]}" < "$prompt_file"
     status=$?
     set -e
     exit $status
@@ -2693,10 +2733,21 @@ run_host_codex() {
   fi
   local status
   set +e
-  if ((${#passthrough[@]} > 0)); then
-    "${cmd[@]}" "${passthrough[@]}"
+  # One-shot/piped passthrough runs (stdin is not a TTY) get the same benign
+  # rollout-persistence teardown filter as `run`. The interactive TUI (stdin
+  # is a TTY) is left untouched.
+  if codex_stderr_filter_active && [[ ! -t 0 ]]; then
+    if ((${#passthrough[@]} > 0)); then
+      "${cmd[@]}" "${passthrough[@]}" 2> >(filter_codex_stderr >&2)
+    else
+      "${cmd[@]}" 2> >(filter_codex_stderr >&2)
+    fi
   else
-    "${cmd[@]}"
+    if ((${#passthrough[@]} > 0)); then
+      "${cmd[@]}" "${passthrough[@]}"
+    else
+      "${cmd[@]}"
+    fi
   fi
   status=$?
   set -e
