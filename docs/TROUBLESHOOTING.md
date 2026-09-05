@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `v0.4.8`
+Current version: `v0.4.9`
 
 ## `./codeseeq` is not executable
 
@@ -303,6 +303,28 @@ The `chatgpt` provider writes a native config (`model_provider = "openai"`,
 upstream Codex's built-in ChatGPT-auth provider) and runs Codex on the host
 without the CodeSeeq bridge. Verify the generated config contains
 `model_provider = "openai"` and that no API key is required.
+
+## Codex Prints "failed to record rollout items: thread ... not found"
+
+If a one-shot `codeseeq run` / piped run finishes successfully but shows:
+
+```
+ERROR codex_core::session: failed to record rollout items: thread <uuid> not found
+```
+
+This is benign. Modern Codex CLI builds (>= 0.146, the session/thread-store
+era) race their final rollout append against live-recorder shutdown at the end
+of a turn, so the last persistence write is skipped. The turn itself already
+completed. CodeSeeq filters that known line out of one-shot/piped stderr
+(upstream openai/codex #22055, #16300, #35385).
+
+To see the raw upstream line anyway:
+
+```bash
+CODESEEQ_KEEP_CODEX_ROLLOUT_ERRORS=true ./codeseeq run "prompt"
+```
+
+The filter never applies to the interactive TUI (stdin is a terminal).
 
 ## Upstream Codex Commands Blocked
 

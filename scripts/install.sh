@@ -19,12 +19,12 @@ esac
 
 if [ -z "${CODESEEQ_RELEASE_TAG+x}" ]; then
   if [ "$ALLOW_LATEST" != "true" ]; then
-    die "CODESEEQ_ALLOW_LATEST_RELEASE is not true and CODESEEQ_RELEASE_TAG is unset; set CODESEEQ_RELEASE_TAG to a pinned release (e.g. v0.4.7) or set CODESEEQ_ALLOW_LATEST_RELEASE=true"
+    die "CODESEEQ_ALLOW_LATEST_RELEASE is not true and CODESEEQ_RELEASE_TAG is unset; set CODESEEQ_RELEASE_TAG to a pinned release (e.g. v0.4.9) or set CODESEEQ_ALLOW_LATEST_RELEASE=true"
   fi
   # Fetch the latest version from the VERSION file on the default branch
   # (single source of truth).
   VERSION_URL="https://raw.githubusercontent.com/${REPO}/main/VERSION"
-  RELEASE_TAG="$(curl -fsSL "$VERSION_URL" 2>/dev/null || echo "v0.4.7")"
+  RELEASE_TAG="$(curl -fsSL "$VERSION_URL" 2>/dev/null || echo "v0.4.9")"
   # sanitize: strip whitespace
   RELEASE_TAG="$(printf "%s" "$RELEASE_TAG" | tr -d "[:space:]")"
 else
@@ -67,13 +67,21 @@ unzip -qo codeseeq.zip || die "extract failed"
 # Find the codeseeq launcher (may be in a subdirectory)
 if [[ -f codeseeq ]]; then
   : # root level
-elif [[ -d codeseeq-* ]]; then
-  cd codeseeq-*
 else
-  # Find first directory containing codeseeq
-  CODESEEQ_DIR=$(find . -maxdepth 2 -name codeseeq -type f | head -1 | xargs dirname)
-  if [[ -n "$CODESEEQ_DIR" && -d "$CODESEEQ_DIR" ]]; then
-    cd "$CODESEEQ_DIR"
+  # A single matching subdirectory (e.g. codeseeq-main/ from a source
+  # archive) is entered; multiple matches resolve to the first one.
+  for cand in codeseeq-*; do
+    if [[ -d "$cand" ]]; then
+      cd "$cand"
+      break
+    fi
+  done
+  if [[ ! -f codeseeq ]]; then
+    # Find first directory containing codeseeq
+    CODESEEQ_DIR=$(find . -maxdepth 2 -name codeseeq -type f | head -1 | xargs dirname)
+    if [[ -n "$CODESEEQ_DIR" && -d "$CODESEEQ_DIR" ]]; then
+      cd "$CODESEEQ_DIR"
+    fi
   fi
 fi
 

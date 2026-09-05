@@ -2530,8 +2530,21 @@ run_safe_container() {
 # instead of letting it look like the run crashed. Set
 # CODESEEQ_KEEP_CODEX_ROLLOUT_ERRORS=true to see the raw upstream line.
 filter_codex_stderr() {
-  # shellcheck disable=SC2016  # backticks are literal in the regex
-  sed -E '/ERROR codex_core::session: failed to record rollout items: thread [0-9a-fA-F-]{36} not found[[:space:]]*$/d'
+  # Line-by-line filter (deliberately not sed): sed block-buffers its output
+  # when stderr is a pipe, so lines that arrive just before the codex process
+  # exits can be lost to an unflushed stdio buffer. Reading with `read` and
+  # writing each accepted line with `printf` flushes immediately, so genuine
+  # codex stderr is never dropped - only the known-benign rollout teardown
+  # line is.
+  local line
+  while IFS= read -r line; do
+    # Deliberately not anchored at the start: upstream lines carry a
+    # timestamp prefix (e.g. "2026-09-05T11:25:55.441474Z ERROR codex_...").
+    if [[ "$line" =~ ERROR[[:space:]]+codex_core::session:[[:space:]]+failed[[:space:]]+to[[:space:]]+record[[:space:]]+rollout[[:space:]]+items:[[:space:]]+thread[[:space:]][0-9a-fA-F-]{36}[[:space:]]+not[[:space:]]+found[[:space:]]*$ ]]; then
+      continue
+    fi
+    printf '%s\n' "$line"
+  done
 }
 
 codex_stderr_filter_active() {
@@ -2541,6 +2554,13 @@ codex_stderr_filter_active() {
 # Run a one-shot `codex exec` whose stderr is live-filtered for the benign
 # upstream rollout-persistence teardown line described above. Stdout and the
 # exit code are passed through untouched.
+#
+# NOTE: this function deliberately leaves errexit (set -e) disabled when it
+# returns. set -e is a shell-wide option, not function-scoped, so re-enabling
+# it here before `return $status` would make a non-zero codex status abort
+# the whole shell the moment the function returns - before the caller's
+# `status=$?` line can capture it. Callers must restore errexit themselves
+# after capturing the status (the exec/passthrough call sites both do).
 run_codex_exec_filtered() {
   local status
   set +e
@@ -2550,7 +2570,6 @@ run_codex_exec_filtered() {
     "$@"
   fi
   status=$?
-  set -e
   return $status
 }
 

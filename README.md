@@ -14,7 +14,7 @@ no API key of any kind) and run against OpenAI's ChatGPT Codex models with the
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.4.8` (from [`VERSION`](./VERSION)).
+Current version: `v0.4.9` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -590,6 +590,7 @@ All supported variables are documented in [`.env.example`](./.env.example). Key 
 | `IMAGE`                       | `codeseeq:dev`       | Container image tag                              |
 | `CODESEEQ_PODMAN_USERNS`      | `keep-id`            | Podman `--userns` flag (empty disables mapping)  |
 | `CODESEEQ_DOCKER_USER`        | host uid:gid         | Docker `--user` for workspace write access       |
+| `CODESEEQ_KEEP_CODEX_ROLLOUT_ERRORS` | `false` | Keep benign Codex `failed to record rollout items` teardown lines visible in host one-shot/piped runs |
 
 ### JSON configuration (optional alternative to environment variables)
 

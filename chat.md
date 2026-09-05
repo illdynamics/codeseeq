@@ -1,7 +1,7 @@
 # Plan: QonQrete Chat Interface — one chat message = one CodeSeeq prompt
 
 Status: **plan** (not yet implemented)
-Target version: next feature after `v0.4.8`
+Target version: next feature after `v0.4.9`
 Owner: CodeSeeq maintainers
 Related docs: `docs/ARCHITECTURE.md` (Prompt File Flow), `README.md` (`run -f`), `.env.example`
 

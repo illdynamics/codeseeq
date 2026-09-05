@@ -1,4 +1,4 @@
-## Unreleased
+## v0.4.9 - 2026-09-05
 
 ### Fixed
 - **Hide benign upstream Codex rollout-persistence teardown errors in one-shot

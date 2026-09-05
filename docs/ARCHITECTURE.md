@@ -1,6 +1,6 @@
 # Architecture
 
-Current version: `v0.4.8`
+Current version: `v0.4.9`
 
 ## Runtime Modes
 
