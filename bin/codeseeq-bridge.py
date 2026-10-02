@@ -472,6 +472,64 @@ PROVIDER_DEFAULT_BASE_URL = {
     PROVIDER_MLX: "http://127.0.0.1:1",
 }
 
+# Base-URL overrides that do not name a provider. These are ambient on most
+# dev machines (e.g. `export OPENAI_BASE_URL=https://api.deepseek.com` to pin
+# the deepseek provider), and because they are read for *every* provider they
+# used to silently re-route unrelated providers to that host while still
+# sending the other provider's key: `venice@qwen-3-8-flash` was posted to
+# api.deepseek.com with the VENICE_API_KEY and came back as a bogus
+# "Authentication Fails, Your api key: ****XXXX is invalid" 401.
+GENERIC_BASE_URL_ENVS = ("OPENAI_BASE_URL", "CODESEEQ_BASE_URL")
+
+# Hosts that unambiguously belong to one specific hosted provider. A generic
+# base-URL override pointing at one of these is only honoured for that
+# provider; custom proxies, re-gateways and self-hosted endpoints (any other
+# host) keep working exactly as before.
+PROVIDER_HOST_OWNERS = {
+    "api.deepseek.com": PROVIDER_DEEPSEEK,
+    "api.anthropic.com": PROVIDER_ANTHROPIC,
+    "generativelanguage.googleapis.com": PROVIDER_GOOGLE,
+    "api.x.ai": PROVIDER_GROK,
+    "api.venice.ai": PROVIDER_VENICE,
+    "api.openai.com": "openai",
+}
+
+
+def _base_url_host(url: str) -> str:
+    """Hostname of a base URL, lowercased ('' when unparseable)."""
+    try:
+        return (urllib.parse.urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _provider_base_url_override(provider: str) -> Optional[str]:
+    """Base-URL override for `provider`, or None to use the built-in default.
+
+    Provider-specific variables (VENICE_BASE_URL, ANTHROPIC_BASE_URL, ...) are
+    checked first, in their documented order, and always win. The generic
+    OPENAI_BASE_URL / CODESEEQ_BASE_URL fallbacks are only honoured when they
+    do not point at a different hosted provider's own endpoint, so an ambient
+    `OPENAI_BASE_URL=https://api.deepseek.com` can no longer hijack venice /
+    google / grok / local traffic into DeepSeek with the wrong API key. This
+    mirrors the guard the MLX path already applies to the same variables.
+    """
+    for env_name in PROVIDER_BASE_URL_ENV.get(provider, ()):
+        if env_name in GENERIC_BASE_URL_ENVS:
+            continue
+        value = _env_first(env_name)
+        if value:
+            return value
+    for env_name in GENERIC_BASE_URL_ENVS:
+        value = _env_first(env_name)
+        if not value:
+            continue
+        owner = PROVIDER_HOST_OWNERS.get(_base_url_host(value))
+        if owner is not None and owner != provider:
+            continue
+        return value
+    return None
+
 
 def _url_is_loopback(url: str) -> bool:
     """True when a base URL targets the local machine (hostname resolves to a
@@ -603,10 +661,12 @@ def _build_model_specs() -> Dict[str, ModelSpec]:
         provider: str = PROVIDER_DEEPSEEK,
     ) -> ModelSpec:
         key = _model_env_key(slug)
-        # Provider base URL: per-model override, provider generic override
-        # (e.g. ANTHROPIC_BASE_URL), then the built-in default.
+        # Provider base URL: per-model override, provider-
+        # specific/generic override (e.g. ANTHROPIC_BASE_URL), then the
+        # built-in default. Generic overrides are provider-safe: see
+        # _provider_base_url_override().
         per_model_base = _env_first(f"CODESEEQ_{key}_BASE_URL")
-        generic_base = _env_first(*PROVIDER_BASE_URL_ENV.get(provider, ()))
+        generic_base = _provider_base_url_override(provider)
         base_url = per_model_base or generic_base or default_base or PROVIDER_DEFAULT_BASE_URL[provider]
         # Chat URL: per-model override wins; deepseek keeps the legacy
         # DEEPSEEK_CHAT_URL fallback (used by tests and single-endpoint
@@ -1048,16 +1108,21 @@ def _apply_catalog_overrides(specs: Dict[str, ModelSpec]) -> Dict[str, ModelSpec
             continue
         key = _model_env_key(provider_model)
 
-        if entry.get("base_url") is not None and not _env_present(
-            f"CODESEEQ_{key}_BASE_URL",
-            "OPENAI_BASE_URL",
-            "DEEPSEEK_BASE_URL",
-            "CODESEEQ_BASE_URL",
-        ):
+        # Endpoint overrides are resolved provider-aware: an ambient
+        # OPENAI_BASE_URL pinned to another provider's host (e.g.
+        # https://api.deepseek.com) must not suppress this entry's own
+        # endpoint, otherwise a catalog venice/google/grok entry would be
+        # re-pointed at DeepSeek. DEEPSEEK_CHAT_URL only ever applied to the
+        # deepseek provider, so it must not block other providers either.
+        base_override = _env_first(f"CODESEEQ_{key}_BASE_URL") or _provider_base_url_override(
+            spec.provider
+        )
+        chat_override = _env_first(f"CODESEEQ_{key}_CHAT_URL")
+        if spec.provider == PROVIDER_DEEPSEEK:
+            chat_override = chat_override or _env_first("DEEPSEEK_CHAT_URL")
+        if entry.get("base_url") is not None and not base_override:
             spec.base_url = str(entry["base_url"])
-        if entry.get("chat_url") is not None and not _env_present(
-            f"CODESEEQ_{key}_CHAT_URL", "DEEPSEEK_CHAT_URL"
-        ):
+        if entry.get("chat_url") is not None and not chat_override:
             spec.chat_url = str(entry["chat_url"])
         if entry.get("temperature") is not None and not _env_present(
             f"CODESEEQ_{key}_TEMPERATURE"
@@ -2894,7 +2959,7 @@ def normalize_model(model: str) -> "ModelSpec":
                 # real request instead of a guessed 404 path.
                 key = _model_env_key(raw)
                 per_model_base = _env_first(f"CODESEEQ_{key}_BASE_URL")
-                generic_base = _env_first(*PROVIDER_BASE_URL_ENV.get(owner, ()))
+                generic_base = _provider_base_url_override(owner)
                 base = per_model_base or generic_base or PROVIDER_DEFAULT_BASE_URL[owner]
                 per_model_chat = _env_first(f"CODESEEQ_{key}_CHAT_URL")
                 if per_model_chat:
@@ -2991,7 +3056,7 @@ def normalize_model(model: str) -> "ModelSpec":
     effective_provider = resolve_provider_for_slug(spec.slug)
     if effective_provider != spec.provider:
         override_base = (
-            _env_first(*PROVIDER_BASE_URL_ENV.get(effective_provider, ()))
+            _provider_base_url_override(effective_provider)
             or PROVIDER_DEFAULT_BASE_URL[effective_provider]
         )
         override_chat_url = _derive_chat_url(effective_provider, override_base)

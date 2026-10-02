@@ -254,6 +254,11 @@ if ! scripts/test-bridge-chat-url.py; then
   fail "bridge chat-endpoint derivation regression test failed"
 fi
 
+note "checking ambient base-URL isolation across providers"
+if ! scripts/test-bridge-base-url-isolation.py; then
+  fail "bridge ambient base-URL isolation regression test failed"
+fi
+
 note "checking bridge GGUF local-model provider"
 if ! scripts/test-bridge-gguf.py; then
   fail "bridge GGUF local-model provider regression test failed"
