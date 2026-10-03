@@ -294,6 +294,48 @@ def _env_first(*names: str) -> Optional[str]:
     return None
 
 
+def _clean_base_url(value: Optional[str]) -> Optional[str]:
+    """Return a usable base URL from an env/config value.
+
+    The local-model docs and chats often show URLs as Markdown links. If a
+    user copies the rendered value into an environment variable, e.g.
+    ``CODESEEQ_BASE_URL="[http://127.0.0.1:8888/v1](http://127.0.0.1:8888/v1)"``,
+    older CodeSeeq did not recognise it as loopback and silently fell back to
+    spawning a second mlx_lm server. On Apple Silicon that can hard-OOM the
+    machine when another MLX host has already loaded the model.
+    """
+    if value is None:
+        return None
+    raw = str(value).strip().strip('\"\'')
+    if not raw:
+        return None
+
+    # Markdown link: [label](https://host/v1) -- prefer the actual target.
+    m = re.match(r"^\[[^\]]*\]\((https?://[^)\s]+)\)$", raw)
+    if m:
+        raw = m.group(1)
+
+    # Angle-bracket autolink: <https://host/v1>.
+    if raw.startswith("<") and raw.endswith(">"):
+        raw = raw[1:-1].strip()
+
+    # Last-resort salvage for partially copied Markdown.
+    if not raw.lower().startswith(("http://", "https://")):
+        m = re.search(r"https?://[^)\]\s>]+", raw)
+        if m:
+            raw = m.group(0)
+
+    return raw or None
+
+
+def _env_url_first(*names: str) -> Optional[str]:
+    for n in names:
+        v = _clean_base_url(os.environ.get(n))
+        if v:
+            return v
+    return None
+
+
 def _env_float(*names: str) -> Optional[float]:
     v = _env_first(*names)
     if v is None:
@@ -517,11 +559,11 @@ def _provider_base_url_override(provider: str) -> Optional[str]:
     for env_name in PROVIDER_BASE_URL_ENV.get(provider, ()):
         if env_name in GENERIC_BASE_URL_ENVS:
             continue
-        value = _env_first(env_name)
+        value = _env_url_first(env_name)
         if value:
             return value
     for env_name in GENERIC_BASE_URL_ENVS:
-        value = _env_first(env_name)
+        value = _env_url_first(env_name)
         if not value:
             continue
         owner = PROVIDER_HOST_OWNERS.get(_base_url_host(value))
@@ -2681,11 +2723,35 @@ def parse_positive_int(value: Any) -> Optional[int]:
 
 
 def resolve_max_tokens(body: Dict[str, Any], spec: "ModelSpec") -> int:
-    provider_cap = (
-        parse_positive_int(os.environ.get("CODESEEQ_MAX_OUTPUT_TOKENS"))
-        or spec.max_output_tokens
-        or DEFAULT_DEEPSEEK_MAX_OUTPUT_TOKENS
-    )
+    """Resolve a safe upstream max_tokens value.
+
+    The wrapper historically exports CODESEEQ_MAX_OUTPUT_TOKENS=384000 as a
+    DeepSeek/cloud default. That value must not override GGUF/MLX local-model
+    caps: mlx_lm/llama.cpp may reserve KV/output buffers from this field and a
+    384k-token request can OOM a Mac even for a tiny prompt like "say hi".
+
+    Provider-specific local caps therefore win for local providers. Hosted and
+    generic providers keep the legacy global cap behaviour.
+    """
+    if spec.provider == PROVIDER_MLX:
+        provider_cap = (
+            parse_positive_int(os.environ.get("CODESEEQ_MLX_MAX_OUTPUT_TOKENS"))
+            or spec.max_output_tokens
+            or 2048
+        )
+    elif spec.provider == PROVIDER_GGUF:
+        provider_cap = (
+            parse_positive_int(os.environ.get("CODESEEQ_GGUF_MAX_OUTPUT_TOKENS"))
+            or spec.max_output_tokens
+            or 2048
+        )
+    else:
+        provider_cap = (
+            parse_positive_int(os.environ.get("CODESEEQ_MAX_OUTPUT_TOKENS"))
+            or spec.max_output_tokens
+            or DEFAULT_DEEPSEEK_MAX_OUTPUT_TOKENS
+        )
+
     requested = parse_positive_int(body.get("max_output_tokens"))
     if requested is None:
         requested = parse_positive_int(body.get("max_tokens"))
@@ -2758,7 +2824,7 @@ def normalize_model(model: str) -> "ModelSpec":
 
         # Advanced: an explicit GGUF_BASE_URL routes to an already-running
         # OpenAI-compatible server instead of spawning llama-server.
-        external_base = _env_first("GGUF_BASE_URL")
+        external_base = _env_url_first("GGUF_BASE_URL")
         if external_base:
             base_url = external_base.rstrip("/")
             chat_url = _derive_chat_url(PROVIDER_GGUF, base_url)
@@ -2886,9 +2952,9 @@ def normalize_model(model: str) -> "ModelSpec":
         # mode when they point at loopback - an ambient generic base URL (e.g.
         # CODESEEQ_BASE_URL=https://api.deepseek.com exported for the deepseek
         # provider) must never hijack a local mlx model into a hosted API.
-        external_base = _env_first("MLX_BASE_URL", "CODESEEQ_MLX_BASE_URL")
+        external_base = _env_url_first("MLX_BASE_URL", "CODESEEQ_MLX_BASE_URL")
         if external_base is None:
-            generic_base = _env_first("OPENAI_BASE_URL", "CODESEEQ_BASE_URL")
+            generic_base = _env_url_first("OPENAI_BASE_URL", "CODESEEQ_BASE_URL")
             if generic_base and _url_is_loopback(generic_base):
                 external_base = generic_base
         if external_base:

@@ -14,7 +14,7 @@ no API key of any kind) and run against OpenAI's ChatGPT Codex models with the
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.4.9` (from [`VERSION`](./VERSION)).
+Current version: `v0.4.10` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 

@@ -16,7 +16,10 @@ Verifies, without requiring a real mlx_lm / Apple Silicon server:
   - External-server selection: MLX_BASE_URL / CODESEEQ_MLX_BASE_URL always
     mean "reuse a running server"; generic OPENAI_BASE_URL / CODESEEQ_BASE_URL
     only count when they target loopback (so an ambient hosted-API base URL
-    never hijacks a local mlx model).
+    never hijacks a local mlx model). Markdown/autolink URL values are cleaned
+    before loopback detection.
+  - CODESEEQ_MAX_OUTPUT_TOKENS' huge cloud default never overrides the safer
+    CODESEEQ_MLX_MAX_OUTPUT_TOKENS/spec cap sent to mlx_lm.
   - MLXServerManager lazily starts one mlx_lm server per directory, reuses it
     on subsequent requests, and tears it down on shutdown (mocked subprocess).
 """
@@ -140,6 +143,12 @@ check("loopback CODESEEQ_BASE_URL => external", sl.mlx_path is None, str(sl.mlx_
 check("loopback external chat endpoint", sl.chat_url == "http://127.0.0.1:8888/v1/chat/completions", sl.chat_url)
 os.environ.pop("CODESEEQ_BASE_URL", None)
 
+os.environ["CODESEEQ_BASE_URL"] = "[http://127.0.0.1:8888/v1](http://127.0.0.1:8888/v1)"
+sl_md = bridge.normalize_model("mlx@" + mlx_dir)
+check("markdown CODESEEQ_BASE_URL => external", sl_md.mlx_path is None, str(sl_md.mlx_path))
+check("markdown external chat endpoint", sl_md.chat_url == "http://127.0.0.1:8888/v1/chat/completions", sl_md.chat_url)
+os.environ.pop("CODESEEQ_BASE_URL", None)
+
 os.environ["CODESEEQ_MLX_BASE_URL"] = "http://localhost:9000"
 sm = bridge.normalize_model("mlx@" + mlx_dir)
 check("CODESEEQ_MLX_BASE_URL => external", sm.mlx_path is None, str(sm.mlx_path))
@@ -155,6 +164,21 @@ os.environ["CODESEEQ_MLX_CONTEXT_WINDOW"] = "65536"
 sc = bridge.normalize_model("mlx@" + mlx_dir)
 check("CODESEEQ_MLX_CONTEXT_WINDOW overrides model config.json", sc.context_window == 65536, str(sc.context_window))
 os.environ.pop("CODESEEQ_MLX_CONTEXT_WINDOW", None)
+
+os.environ["CODESEEQ_MAX_OUTPUT_TOKENS"] = "384000"
+s_safe = bridge.normalize_model("mlx@" + mlx_dir)
+check("global max output does not override MLX cap",
+      bridge.resolve_max_tokens({}, s_safe) == 2048,
+      str(bridge.resolve_max_tokens({}, s_safe)))
+check("requested max_tokens is capped by MLX cap",
+      bridge.resolve_max_tokens({"max_tokens": 999999}, s_safe) == 2048,
+      str(bridge.resolve_max_tokens({"max_tokens": 999999}, s_safe)))
+os.environ["CODESEEQ_MLX_MAX_OUTPUT_TOKENS"] = "4096"
+check("CODESEEQ_MLX_MAX_OUTPUT_TOKENS overrides MLX cap",
+      bridge.resolve_max_tokens({}, s_safe) == 4096,
+      str(bridge.resolve_max_tokens({}, s_safe)))
+os.environ.pop("CODESEEQ_MLX_MAX_OUTPUT_TOKENS", None)
+os.environ.pop("CODESEEQ_MAX_OUTPUT_TOKENS", None)
 
 # 8) Lifecycle (mocked): start once, reuse, teardown.
 class FakeProcess:

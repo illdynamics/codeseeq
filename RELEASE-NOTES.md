@@ -1,3 +1,9 @@
+## v0.4.10 - 2026-10-02
+
+### Fixed
+- **MLX external-server OOM guard.** `CODESEEQ_MAX_OUTPUT_TOKENS` defaults to a large cloud-provider value, but that global value is no longer allowed to override the safer `CODESEEQ_MLX_MAX_OUTPUT_TOKENS` / `CODESEEQ_GGUF_MAX_OUTPUT_TOKENS` local-model caps. This prevents `mlx_lm`, MLX-compatible gateways, and llama.cpp from receiving giant `max_tokens` requests such as 384000 for tiny prompts, which could trigger huge KV/output allocations and hard OOM a Mac.
+- **MLX base-URL sanitation.** Base URL env vars now tolerate copied Markdown/autolink values such as `[http://127.0.0.1:8888/v1](http://127.0.0.1:8888/v1)` and `<http://127.0.0.1:8888/v1>`, so loopback external-server detection does not silently fall back to spawning a second MLX server.
+
 ## v0.4.9 - 2026-09-05
 
 ### Fixed
