@@ -1,3 +1,31 @@
+## v0.5.1 - 2026-10-05
+
+### Added
+- **Local-model tool-loop safety net.** GGUF/MLX/OpenAI-compatible local models
+  that ended a tool-needed turn with prose-only intent ("let me run the actual
+  suite…") no longer make Codex treat the text as final, print `tokens used 0`
+  when the local server omitted usage accounting, and exit. The bridge now
+  (1) steers local models to emit a real tool call, (2) accepts a DSML XML tool
+  block as a structured-`tool_calls` fallback, (3) converts obvious text-only
+  continuation intent into safe, non-mutating read/test tool calls, and
+  (4) estimates nonzero usage when the local server omits usage metadata.
+  Toggle the safety net with `CODESEEQ_BRIDGE_AUTO_CONTINUE_FROM_PLAINTEXT`
+  (default `true`). See `CODESEEQ_LOCAL_TOOL_LOOP_FIX.md`.
+- **`CODESEEQ_OPENRESPONSES_START_TIMEOUT_SECONDS`.** Configurable health-check
+  wait for the bridge/container to come up; the default is now **240s**
+  (previously a hard-coded 45s). This avoids false "bridge failed to start"
+  exits on slow first-time local-model downloads/loads. Documented in
+  `README.md` and `.env.example`.
+
+### Fixed
+- **Local-provider base-URL isolation.** Ambient generic base URLs
+  (`OPENAI_BASE_URL`, `CODESEEQ_BASE_URL`) can no longer silently re-route an
+  unrelated provider to a different hosted provider's endpoint (for example an
+  exported `OPENAI_BASE_URL=https://api.deepseek.com` hijacking a
+  `venice@qwen-3-8-flash` request and sending the wrong API key). Provider-
+  specific variables still win, and custom/self-hosted endpoints are
+  unaffected.
+
 ## v0.4.10 - 2026-10-02
 
 ### Fixed

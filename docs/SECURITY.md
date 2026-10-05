@@ -1,6 +1,6 @@
 # Security
 
-Current version: `v0.4.10`
+Current version: `v0.5.1`
 
 ## Runtime Secrets
 
