@@ -123,6 +123,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import signal
 import socket
 import subprocess
@@ -132,7 +133,7 @@ import tempfile
 import time
 import urllib.parse
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
+from typing import Iterable, Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -2696,6 +2697,214 @@ def malformed_tool_call_message(errors: List[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Local-model safety net: convert text-only continuation intent into a tool call
+# ---------------------------------------------------------------------------
+
+_PLAINTEXT_ACTION_INTENT_RE = re.compile(
+    r"(?is)\b(?:let\s+me|i(?:'ll|\s+will|\s+am\s+going\s+to|\s+need\s+to|\s+should)|"
+    r"now\s+(?:i|we)\s+(?:need\s+to|will|should)|next[,\s]+i(?:'ll|\s+will)?)\b"
+    r".{0,240}\b(?:run|rerun|execute|inspect|read|open|check|look\s+at|dig\s+into|"
+    r"fix|patch|edit|update|modify|investigate|analy[sz]e|review|test)\b"
+)
+
+_FINAL_ANSWER_HINT_RE = re.compile(
+    r"(?is)\b(?:final answer|summary|conclusion|cannot|can't|unable to|i need you to|please provide|"
+    r"no further action|done|completed successfully)\b"
+)
+
+_SAFE_BACKTICK_PATH_RE = re.compile(r"`([^`]{1,160})`")
+_SAFE_PATH_CHARS_RE = re.compile(r"^[A-Za-z0-9_./@+,:=-]+$")
+
+
+def _response_has_function_call(items: List[Dict[str, Any]]) -> bool:
+    return any(isinstance(it, dict) and it.get("type") == "function_call" for it in items)
+
+
+def _select_registered_tool(registered: Set[str], preferred: Iterable[str]) -> Optional[str]:
+    lower_to_actual = {name.lower(): name for name in registered if isinstance(name, str)}
+    for pref in preferred:
+        resolved = resolve_tool_name(pref, registered)
+        if resolved in registered:
+            return resolved
+        if resolved.lower() in lower_to_actual:
+            return lower_to_actual[resolved.lower()]
+        if pref.lower() in lower_to_actual:
+            return lower_to_actual[pref.lower()]
+    return None
+
+
+def _safe_backtick_path(text: str) -> Optional[str]:
+    for match in _SAFE_BACKTICK_PATH_RE.finditer(text or ""):
+        value = match.group(1).strip()
+        # Keep this intentionally conservative: only relative repo paths and
+        # no shell metacharacters. The path is still shell-quoted below.
+        if (
+            value
+            and not value.startswith("-")
+            and ".." not in value.split("/")
+            and _SAFE_PATH_CHARS_RE.match(value)
+            and not re.search(r"[;&|`$<>\n\r]", value)
+        ):
+            return value
+    return None
+
+
+def _shell_quote(value: str) -> str:
+    return shlex.quote(value)
+
+
+def _infer_safe_shell_command_from_intent(text: str) -> str:
+    """Infer a conservative read/test command for a text-only continuation.
+
+    This is a guardrail for local models that say "let me run/read/fix..." but
+    fail to emit any structured tool call. It intentionally limits itself to
+    non-mutating commands: test runners, listings, and lightweight inspection.
+    Edits still require the model to make a real edit/apply_patch tool call on a
+    later turn.
+    """
+    lowered = (text or "").lower()
+    path = _safe_backtick_path(text or "")
+
+    def in_path(cmd: str) -> str:
+        if path:
+            return f"cd {_shell_quote(path)} && {cmd}"
+        return cmd
+
+    if "forge test --rerun" in lowered or ("rerun" in lowered and "forge" in lowered):
+        return in_path("forge test --rerun -vvv")
+    if "forge test" in lowered or "foundry" in lowered or "foundry suite" in lowered:
+        return in_path("forge test -vvv")
+    if "pytest" in lowered:
+        return in_path("pytest -q")
+    if "npm test" in lowered:
+        return in_path("npm test")
+    if "pnpm test" in lowered:
+        return in_path("pnpm test")
+    if "cargo test" in lowered:
+        return in_path("cargo test")
+    if "make test" in lowered:
+        return in_path("make test")
+
+    # Default continuation probe: enough context for the next model turn without
+    # changing files or hiding failing test exit codes from Codex.
+    return (
+        "pwd && "
+        "find . -maxdepth 4 -type f "
+        "-not -path './.git/*' -not -path './node_modules/*' "
+        "-not -path './target/*' -not -path './out/*' "
+        "| sed 's#^./##' | sort | head -300"
+    )
+
+
+def _build_plaintext_continuation_tool_call(
+    text: str,
+    *,
+    registered_tools: Set[str],
+    registered_arg_names: Optional[Dict[str, Set[str]]] = None,
+) -> Optional[Dict[str, Any]]:
+    if not env_bool("CODESEEQ_BRIDGE_AUTO_CONTINUE_FROM_PLAINTEXT", True):
+        return None
+    if not registered_tools or not isinstance(text, str) or not text.strip():
+        return None
+    stripped = text.strip()
+    if len(stripped) > 2000:
+        return None
+    if _FINAL_ANSWER_HINT_RE.search(stripped):
+        return None
+    if not _PLAINTEXT_ACTION_INTENT_RE.search(stripped):
+        return None
+
+    shell_tool = _select_registered_tool(
+        registered_tools,
+        ("shell", "local_shell", "exec_command", "run_command", "bash", "sh"),
+    )
+    if shell_tool:
+        command = _infer_safe_shell_command_from_intent(stripped)
+        candidate = {
+            "id": f"call_{uuid.uuid4().hex[:12]}",
+            "type": "function",
+            "function": {
+                "name": shell_tool,
+                "arguments": json.dumps({"cmd": command}, ensure_ascii=False),
+            },
+        }
+        prepared, err = prepare_structured_tool_call(
+            candidate,
+            registered_tools=registered_tools,
+            registered_arg_names=registered_arg_names,
+        )
+        if err:
+            log(f"plaintext continuation shell fallback blocked: {err}")
+            return None
+        log(
+            "converted text-only continuation intent into shell tool call "
+            f"tool={shell_tool!r} command={command!r}"
+        )
+        return prepared
+
+    list_tool = _select_registered_tool(registered_tools, ("list_directory", "ls", "list_dir"))
+    if list_tool:
+        candidate = {
+            "id": f"call_{uuid.uuid4().hex[:12]}",
+            "type": "function",
+            "function": {
+                "name": list_tool,
+                "arguments": json.dumps({"path": "."}, ensure_ascii=False),
+            },
+        }
+        prepared, err = prepare_structured_tool_call(
+            candidate,
+            registered_tools=registered_tools,
+            registered_arg_names=registered_arg_names,
+        )
+        if err:
+            log(f"plaintext continuation list fallback blocked: {err}")
+            return None
+        log(f"converted text-only continuation intent into list tool call tool={list_tool!r}")
+        return prepared
+
+    return None
+
+
+def _rough_token_count(value: Any) -> int:
+    try:
+        if isinstance(value, str):
+            text = value
+        else:
+            text = json.dumps(value, ensure_ascii=False)
+    except Exception:
+        text = str(value)
+    # Conservative approximation used only when local servers omit usage.
+    return max(1, (len(text) + 3) // 4) if text else 0
+
+
+def _ensure_nonzero_usage(
+    usage: Dict[str, int],
+    *,
+    messages: List[Dict[str, Any]],
+    output_items: Optional[List[Dict[str, Any]]] = None,
+    output_text: str = "",
+) -> Dict[str, int]:
+    try:
+        total = int(usage.get("total_tokens") or 0)
+    except Exception:
+        total = 0
+    if total > 0:
+        return usage
+
+    out_value: Any = output_text
+    if output_items is not None:
+        out_value = output_items
+    input_tokens = _rough_token_count(messages)
+    output_tokens = _rough_token_count(out_value)
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
 
@@ -3734,18 +3943,19 @@ class StreamingDsmlBuffer:
 # ---------------------------------------------------------------------------
 
 TOOL_STEERING_INSTRUCTION_TEMPLATE = (
-    "When you need to use a tool, you MUST emit it via the structured "
-    "`tool_calls` field of your response (OpenAI/DeepSeek function-calling "
-    "format). Do NOT write tool calls as XML / HTML / markup tags inside "
-    "your message text. Tags such as <function_calls>, <invoke>, <tool_call>, "
-    "<exec_command><command>...</command></exec_command>, <bash>...</bash>, "
-    "or <parameter> in plain text are not the protocol and may be discarded. "
-    "Wrong example: <exec_command><command>echo hi</command></exec_command>. "
-    "Correct behavior: call the matching function in `tool_calls` with JSON "
-    "arguments. Keep every tool-call arguments value complete and valid JSON; "
-    "for large file creation or edits, split the work into smaller tool calls "
-    "instead of placing a very large file body or patch in one call. "
-    "Available tools: {{tool_names}}.\n"
+    "When you need to continue working, you MUST call a tool in the SAME "
+    "assistant response. Never end a turn with only prose such as 'I will run "
+    "the tests', 'let me inspect the files', or 'I'll fix it now' when a tool "
+    "is required; Codex treats a text-only response as final and stops. "
+    "Prefer the structured `tool_calls` field (OpenAI/DeepSeek function-calling "
+    "format) with complete valid JSON arguments. If the local model/server "
+    "cannot emit native structured tool calls reliably, emit a single DSML XML "
+    "tool block instead, e.g. <tool_calls><exec_command><cmd>echo hi</cmd>"
+    "</exec_command></tool_calls>. The bridge will translate DSML into a real "
+    "Codex tool call. Do not output both a native tool call and a DSML block "
+    "for the same action. For large file creation or edits, split the work into "
+    "smaller tool calls instead of placing a very large file body or patch in "
+    "one call. Available tools: {{tool_names}}.\n"
     "\n"
     "IMPORTANT tool-specific rules:\n"
     '- request_user_input is ONLY available after create_goal has been called '
@@ -5029,11 +5239,26 @@ async def responses(request: Request) -> Any:
                 for tc in dsml_calls:
                     output_items.append(tool_call_to_response_item(tc))
 
+        if text.strip() and not _response_has_function_call(output_items):
+            fallback_tc = _build_plaintext_continuation_tool_call(
+                text,
+                registered_tools=registered_set,
+                registered_arg_names=registered_arg_names,
+            )
+            if fallback_tc:
+                output_items.append(tool_call_to_response_item(fallback_tc))
+
         if text.strip():
             output_items.append(to_response_message_item(text))
         if not output_items:
             output_items.append(to_response_message_item(""))
 
+        usage = _ensure_nonzero_usage(
+            usage,
+            messages=messages,
+            output_items=output_items,
+            output_text=text,
+        )
         return {
             "id": response_id,
             "object": "response",
@@ -5076,6 +5301,7 @@ async def responses(request: Request) -> Any:
         reasoning_output_index: Dict[str, Optional[int]] = {"value": None}
         next_output_index = {"value": 0}
         dsml_buf = StreamingDsmlBuffer(registered_set)
+        tool_call_emitted = {"value": False}
 
         def allocate_output_index() -> int:
             idx = next_output_index["value"]
@@ -5142,6 +5368,7 @@ async def responses(request: Request) -> Any:
                     registered_arg_names,
                 )
                 for tc in calls:
+                    tool_call_emitted["value"] = True
                     fn = tc.get("function") or {}
                     item_id = f"fc_{uuid.uuid4().hex[:12]}"
                     call_id = tc.get("id") or f"call_{uuid.uuid4().hex[:12]}"
@@ -5378,10 +5605,30 @@ async def responses(request: Request) -> Any:
                 yield ev
         else:
             for prepared in prepared_structured_calls:
+                tool_call_emitted["value"] = True
                 fn = prepared.get("function") or {}
                 for ev in _function_call_lifecycle_events(
                     item_id=f"fc_{uuid.uuid4().hex[:12]}",
                     call_id=prepared.get("id") or f"call_{uuid.uuid4().hex[:12]}",
+                    name=fn.get("name") or "tool",
+                    arguments_json=fn.get("arguments") or "{}",
+                    output_index=allocate_output_index(),
+                    chunk_size=CHUNK_SIZE,
+                ):
+                    yield ev
+
+        if not tool_call_emitted["value"] and not malformed_tool_errors:
+            fallback_tc = _build_plaintext_continuation_tool_call(
+                "".join(text_parts),
+                registered_tools=registered_set,
+                registered_arg_names=registered_arg_names,
+            )
+            if fallback_tc:
+                tool_call_emitted["value"] = True
+                fn = fallback_tc.get("function") or {}
+                for ev in _function_call_lifecycle_events(
+                    item_id=f"fc_{uuid.uuid4().hex[:12]}",
+                    call_id=fallback_tc.get("id") or f"call_{uuid.uuid4().hex[:12]}",
                     name=fn.get("name") or "tool",
                     arguments_json=fn.get("arguments") or "{}",
                     output_index=allocate_output_index(),
@@ -5437,6 +5684,11 @@ async def responses(request: Request) -> Any:
                 },
             )
 
+        usage = _ensure_nonzero_usage(
+            usage,
+            messages=messages,
+            output_text=full_text + full_reasoning,
+        )
         yield sse_event(
             "response.completed",
             {
