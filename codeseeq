@@ -428,11 +428,58 @@ detect_container() {
   die "no container runtime found. Install Podman (preferred) or Docker, or set CONTAINER=podman|docker."
 }
 
-ensure_container_runtime() {
-  if [[ -n "${CONTAINER:-}" ]]; then
+container_runtime_responds() {
+  # True when the runtime API actually answers (podman info / docker info).
+  case "${CONTAINER:-}" in
+    podman|docker) ;;
+    *) return 1 ;;
+  esac
+  "$CONTAINER" info >/dev/null 2>&1
+}
+
+podman_machine_present() {
+  # True when a Podman machine is defined (macOS/Windows Podman runs in a VM).
+  [[ "$(uname -s)" == "Darwin" ]] || return 1
+  command -v podman >/dev/null 2>&1 || return 1
+  [[ -n "$(podman machine list --format '{{.Name}}' 2>/dev/null)" ]]
+}
+
+ensure_container_connected() {
+  # Verify the container runtime API is actually reachable.
+  #
+  # On macOS Podman runs inside a VM and exposes its API over an SSH tunnel.
+  # After long uptimes or host sleep that tunnel can wedge ("ssh: handshake
+  # failed: EOF") while `podman machine list` still reports the machine as
+  # running, so `podman build`/`run` fail with a cryptic connection error.
+  # Restart the VM to recover (graceful stop, falling back to a hard stop).
+  # Set CODESEEQ_NO_RUNTIME_RECOVERY=1 to skip the automatic restart.
+  if [[ -z "${CONTAINER:-}" ]]; then
+    CONTAINER="$(detect_container)"
+  fi
+  if container_runtime_responds; then
     return 0
   fi
-  CONTAINER="$(detect_container)"
+  if [[ "$CONTAINER" == "podman" ]] && podman_machine_present; then
+    if is_truthy "${CODESEEQ_NO_RUNTIME_RECOVERY:-0}"; then
+      die "cannot connect to the Podman machine API. Recover with: podman machine stop && podman machine start"
+    fi
+    warn "Podman API is unreachable; restarting the Podman machine (set CODESEEQ_NO_RUNTIME_RECOVERY=1 to disable)"
+    podman machine stop >/dev/null 2>&1 || true
+    podman machine start >/dev/null 2>&1 || true
+    if container_runtime_responds; then
+      log "Podman machine restarted and reachable"
+      return 0
+    fi
+    die "cannot connect to Podman after restarting the machine. Recover with: podman machine stop && podman machine start"
+  fi
+  die "cannot connect to ${CONTAINER}. Verify the runtime is running (e.g. 'podman machine start' or 'docker info')."
+}
+
+ensure_container_runtime() {
+  if [[ -z "${CONTAINER:-}" ]]; then
+    CONTAINER="$(detect_container)"
+  fi
+  ensure_container_connected
 }
 
 volume_suffix_for_runtime() {
@@ -3511,6 +3558,7 @@ LEOF
 cmd_smoke() {
   local CONTAINER IMAGE MODEL PROMPT ENV_CLEAN
   CONTAINER="$(detect_container)"
+  ensure_container_connected
   IMAGE="${IMAGE:-codeseeq:dev}"
   MODEL="${MODEL:-deepseek-v4-flash}"
   PROMPT="${PROMPT:-Return exactly: codeseeq-ok}"
@@ -3964,6 +4012,7 @@ case "${1:-}" in
   build)
     shift
     CONTAINER="$(detect_container)"
+    ensure_container_connected
     "$CONTAINER" build -t "$IMAGE" "$@" "$BUILD_CONTEXT"
     exit $?
     ;;
