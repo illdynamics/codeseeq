@@ -646,10 +646,11 @@ gguf_models_config_candidates() {
 }
 
 # Resolve the effective GGUF context window for a model path:
-# per-model config > CODESEEQ_GGUF_CONTEXT_WINDOW > 8192. Prints the number.
-resolve_gguf_context_window() {
-  local path="$1"
-  local fallback="${CODESEEQ_GGUF_CONTEXT_WINDOW:-8192}"
+# per-model config > CODESEEQ_GGUF_CONTEXT_WINDOW > 131072. Prints the number.
+# Resolve GGUF settings consistently between Codex's model catalog and the
+# Python bridge/server. Per-model JSON > environment > built-in default.
+resolve_gguf_model_setting() {
+  local path="$1" field="$2" fallback="$3"
   if ! command -v python3 >/dev/null 2>&1; then
     printf '%s\n' "$fallback"
     return 0
@@ -661,35 +662,49 @@ resolve_gguf_context_window() {
   done < <(gguf_models_config_candidates)
   CODESEEQ_GGUF_RESOLVE_CANDIDATES="$candidates" \
   CODESEEQ_GGUF_RESOLVE_FALLBACK="$fallback" \
-  python3 - "$path" <<'PYGGUF'
+  python3 - "$path" "$field" <<'PYGGUF'
 import json, os, sys
 path = os.path.abspath(os.path.expanduser(sys.argv[1]))
+field = sys.argv[2]
 cands = [c for c in os.environ.get("CODESEEQ_GGUF_RESOLVE_CANDIDATES", "").split(",") if c]
-fallback = os.environ.get("CODESEEQ_GGUF_RESOLVE_FALLBACK", "8192")
+fallback = os.environ["CODESEEQ_GGUF_RESOLVE_FALLBACK"]
+base = os.path.basename(path)
+stem = base[:-5] if base.lower().endswith(".gguf") else base
+home = os.path.expanduser("~")
+keys = (path, os.path.join("~", os.path.relpath(path, home)), base, stem, "gguf@" + path)
 value = None
 for cand in cands:
     try:
         with open(cand, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-    except Exception:
+    except (OSError, ValueError):
         continue
     models = data.get("models") if isinstance(data, dict) else None
     if not isinstance(models, dict):
         continue
-    base = os.path.basename(path)
-    stem = base[:-5] if base.lower().endswith(".gguf") else base
-    tilde = os.path.join("~", os.path.relpath(path, os.path.expanduser("~")))
-    for key in (path, tilde, base, stem, "gguf@" + path):
+    for key in keys:
         entry = models.get(key)
-        if isinstance(entry, dict) and entry.get("context_window") is not None:
-            value = entry["context_window"]
+        if isinstance(entry, dict) and entry.get(field) is not None:
+            value = entry[field]
             break
     if value is not None:
         break
-if value is None:
-    value = fallback
+try:
+    value = int(value if value is not None else fallback)
+    if value <= 0:
+        raise ValueError("nonpositive")
+except (ValueError, TypeError):
+    value = int(fallback)
 print(value)
 PYGGUF
+}
+
+resolve_gguf_context_window() {
+  resolve_gguf_model_setting "$1" context_window "${CODESEEQ_GGUF_CONTEXT_WINDOW:-131072}"
+}
+
+resolve_gguf_max_output_tokens() {
+  resolve_gguf_model_setting "$1" max_output_tokens "${CODESEEQ_GGUF_MAX_OUTPUT_TOKENS:-65536}"
 }
 
 write_merged_codex_catalog() {
@@ -719,7 +734,7 @@ write_merged_codex_catalog() {
   if [[ -n "$gguf_model_path" ]]; then
     catalog_is_gguf=1
     catalog_ctx="$(resolve_gguf_context_window "$gguf_model_path")"
-    catalog_max_tokens="${CODESEEQ_GGUF_MAX_OUTPUT_TOKENS:-2048}"
+    catalog_max_tokens="$(resolve_gguf_max_output_tokens "$gguf_model_path")"
   fi
   CODESEEQ_CATALOG_STATIC="$static" \
   CODESEEQ_CATALOG_OUTPUT="$output" \

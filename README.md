@@ -14,9 +14,11 @@ no API key of any kind) and run against OpenAI's ChatGPT Codex models with the
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.5.1` (from [`VERSION`](./VERSION)).
+Current version: `v0.5.2` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
+
+GGUF defaults and step-by-step live upgrade: [`docs/GGUF-V0.5.2-UPGRADE.md`](./docs/GGUF-V0.5.2-UPGRADE.md).
 
 ## Quickstart
 
@@ -853,8 +855,8 @@ To pin an exact release, set `CODESEEQ_RELEASE_TAG`. To forbid auto-fetching ent
 set `CODESEEQ_ALLOW_LATEST_RELEASE=false` (a pinned `CODESEEQ_RELEASE_TAG` is then required):
 
 ```bash
-CODESEEQ_RELEASE_TAG=v0.5.1 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
-CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.5.1 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_RELEASE_TAG=v0.5.2 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.5.2 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
 ```
 
 ### Uncensored Mode

@@ -11,7 +11,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ca-certificates \
     curl \
-    git \
     jq \
     procps \
     python3 \
@@ -22,11 +21,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Official CLI installs.
 RUN npm install -g @openai/codex@${CODEX_NPM_VERSION}
 
-# Codeseeq
-RUN git clone https://github.com/illdynamics/codeseeq.git /tmp/codeseeq
-RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/codeseeq/requirements-bridge.txt
-RUN /tmp/codeseeq/codeseeq install
-RUN rm -rf /tmp/codeseeq
+# Build from the *checked-out release source* so CI and tagged Docker images
+# test exactly these patched bytes (not whatever remote main contains).
+COPY . /tmp/codeseeq
+RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/codeseeq/requirements-bridge.txt && \
+    /tmp/codeseeq/codeseeq install && \
+    rm -rf /tmp/codeseeq
 
 # Runtime files.
 COPY bin/codeseeq-entrypoint /usr/local/bin/codeseeq-entrypoint

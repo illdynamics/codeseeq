@@ -56,7 +56,7 @@ unset LOCAL_BASE_URL LLAMA_CPP_API_KEY QWEN_API_KEY 2>/dev/null || true
 unset GGUF_BASE_URL MLX_API_KEY MLX_BASE_URL CODESEEQ_MLX_BASE_URL 2>/dev/null || true
 unset BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY 2>/dev/null || true
 unset HACKENPROOF_API_KEY LITELLM_API_KEY 2>/dev/null || true
-unset CODESEEQ_TEMPERATURE CODESEEQ_GGUF_TEMPERATURE CODESEEQ_MLX_TEMPERATURE 2>/dev/null || true
+unset CODESEEQ_TEMPERATURE CODESEEQ_GGUF_TEMPERATURE CODESEEQ_GGUF_TOP_P CODESEEQ_GGUF_TOP_K CODESEEQ_GGUF_MIN_P CODESEEQ_MLX_TEMPERATURE 2>/dev/null || true
 unset CODESEEQ_GGUF_CONTEXT_WINDOW CODESEEQ_GGUF_MAX_OUTPUT_TOKENS CODESEEQ_GGUF_TIMEOUT_SECONDS CODESEEQ_GGUF_ENABLE_THINKING CODESEEQ_GGUF_PORT CODESEEQ_GGUF_SERVER_ARGS CODESEEQ_GGUF_MODELS_JSON 2>/dev/null || true
 unset CODESEEQ_MLX_CONTEXT_WINDOW CODESEEQ_MLX_MAX_OUTPUT_TOKENS CODESEEQ_MLX_TIMEOUT_SECONDS CODESEEQ_MLX_ENABLE_THINKING CODESEEQ_MLX_PORT CODESEEQ_MLX_SERVER_ARGS CODESEEQ_MLX_MODELS_JSON CODESEEQ_MLX_PYTHON CODESEEQ_MLX_STARTUP_TIMEOUT_SECONDS 2>/dev/null || true
 
@@ -338,7 +338,7 @@ fi
 note "checking entrypoint applies per-model GGUF context window"
 mkdir -p "${tmp_check_dir}/gguf-catalog"
 cat > "${tmp_check_dir}/gguf-models.json" <<'EOF'
-{"models": {"/nonexistent/gguf-test.gguf": {"context_window": 20480}}}
+{"models": {"/nonexistent/gguf-test.gguf": {"context_window": 20480, "max_output_tokens": 1536}}}
 EOF
 if ! CODESEEQ_CODEX_HOME="${tmp_check_dir}/gguf-catalog/.codeseeq" \
   CODESEEQ_WORKDIR="${tmp_check_dir}/workspace-gguf" \
@@ -357,6 +357,8 @@ slugs = {m.get('slug'): m for m in d.get('models', [])}
 e = slugs.get('gguf@/nonexistent/gguf-test.gguf')
 assert e and e.get('context_window') == 20480, (e or {}).get('context_window')
 assert e.get('max_context_window') == 20480 and e.get('truncation_policy', {}).get('limit') == 20480
+assert e.get('max_output_tokens') == 1536, e.get('max_output_tokens')
+assert slugs.get('gguf@local-model', {}).get('max_output_tokens') == 1536
 assert slugs.get('gguf@local-model', {}).get('context_window') == 20480
 toml = open('${tmp_check_dir}/gguf-catalog/.codeseeq/config.toml').read()
 assert 'model_context_window = 20480' in toml, toml
@@ -1082,6 +1084,14 @@ if grep -q "open-responses" Dockerfile; then
   fail "Dockerfile still references open-responses"
 else
   note "Dockerfile open-responses removed (good)"
+fi
+
+note "checking Docker image uses checked-out source, not remote main"
+if grep -q '^RUN git clone .*codeseeq' Dockerfile; then
+  fail "Dockerfile fetches remote main instead of building local release source"
+fi
+if ! grep -q '^COPY \. /tmp/codeseeq' Dockerfile; then
+  fail "Dockerfile missing COPY of checked-out release source"
 fi
 
 note "checking Dockerfile installs requirements-bridge.txt"

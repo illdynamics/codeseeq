@@ -1413,7 +1413,7 @@ class GGUFServerManager:
                 return str(per_model)
             return os.environ.get(env_name, default).strip()
 
-        ctx = _flag("context_window", "CODESEEQ_GGUF_CONTEXT_WINDOW", "8192")
+        ctx = _flag("context_window", "CODESEEQ_GGUF_CONTEXT_WINDOW", "131072")
         if ctx:
             argv += ["-c", ctx]
         ngl = _flag("n_gpu_layers", "CODESEEQ_GGUF_N_GPU_LAYERS", "")
@@ -1422,9 +1422,21 @@ class GGUFServerManager:
         threads = _flag("threads", "CODESEEQ_GGUF_THREADS", "")
         if threads:
             argv += ["-t", threads]
-        parallel = _flag("parallel", "CODESEEQ_GGUF_PARALLEL", "")
+        parallel = _flag("parallel", "CODESEEQ_GGUF_PARALLEL", "1")
         if parallel:
             argv += ["-np", parallel]
+        # Set llama-server's own sampler defaults as well as the per-request
+        # defaults below: non-CodeSeeq clients hitting the same server then
+        # see the same behavior. These flags are supported by llama.cpp.
+        for name, env, flag, default in (
+            ("temperature", "CODESEEQ_GGUF_TEMPERATURE", "--temp", "0.6"),
+            ("top_p", "CODESEEQ_GGUF_TOP_P", "--top-p", "0.95"),
+            ("top_k", "CODESEEQ_GGUF_TOP_K", "--top-k", "20"),
+            ("min_p", "CODESEEQ_GGUF_MIN_P", "--min-p", "0"),
+        ):
+            value = _flag(name, env, default)
+            if value:
+                argv.extend([flag, value])
         api_key = os.environ.get("GGUF_API_KEY", "").strip()
         if api_key:
             argv += ["--api-key", api_key]
@@ -2949,11 +2961,9 @@ def resolve_max_tokens(body: Dict[str, Any], spec: "ModelSpec") -> int:
             or 2048
         )
     elif spec.provider == PROVIDER_GGUF:
-        provider_cap = (
-            parse_positive_int(os.environ.get("CODESEEQ_GGUF_MAX_OUTPUT_TOKENS"))
-            or spec.max_output_tokens
-            or 2048
-        )
+        # normalize_model has ALREADY applied per-model > env > default;
+        # re-reading global env here would override a model-specific cap.
+        provider_cap = spec.max_output_tokens or 65536
     else:
         provider_cap = (
             parse_positive_int(os.environ.get("CODESEEQ_MAX_OUTPUT_TOKENS"))
@@ -3005,11 +3015,11 @@ def normalize_model(model: str) -> "ModelSpec":
 
         context_window = _gguf_int_setting(abs_path, "context_window")
         if context_window is None:
-            context_window = _env_int("CODESEEQ_GGUF_CONTEXT_WINDOW") or 8192
+            context_window = _env_int("CODESEEQ_GGUF_CONTEXT_WINDOW") or 131072
 
         max_output_tokens = _gguf_int_setting(abs_path, "max_output_tokens")
         if max_output_tokens is None:
-            max_output_tokens = _env_int("CODESEEQ_GGUF_MAX_OUTPUT_TOKENS") or 2048
+            max_output_tokens = _env_int("CODESEEQ_GGUF_MAX_OUTPUT_TOKENS") or 65536
 
         timeout_seconds = _gguf_setting(abs_path, "timeout_seconds")
         if timeout_seconds is None:
@@ -3024,12 +3034,25 @@ def normalize_model(model: str) -> "ModelSpec":
         if temperature is None:
             temperature = _env_float("CODESEEQ_GGUF_TEMPERATURE")
             if temperature is None:
-                temperature = 0.7
+                temperature = 0.6
         else:
             try:
                 temperature = float(temperature)
             except (TypeError, ValueError):
-                temperature = 0.7
+                temperature = 0.6
+
+        top_p = _gguf_setting(abs_path, "top_p")
+        if top_p is None:
+            top_p = _env_float("CODESEEQ_GGUF_TOP_P")
+        try:
+            top_p = float(top_p) if top_p is not None else 0.95
+        except (ValueError, TypeError):
+            top_p = 0.95
+        top_k = _gguf_int_setting(abs_path, "top_k")
+        if top_k is None:
+            top_k = _env_int("CODESEEQ_GGUF_TOP_K")
+        if top_k is None:
+            top_k = 20
 
         # Advanced: an explicit GGUF_BASE_URL routes to an already-running
         # OpenAI-compatible server instead of spawning llama-server.
@@ -3050,8 +3073,8 @@ def normalize_model(model: str) -> "ModelSpec":
             base_url=base_url,
             chat_url=chat_url,
             temperature=temperature,
-            top_p=None,
-            top_k=None,
+            top_p=top_p,
+            top_k=top_k,
             context_window=context_window,
             max_output_tokens=max_output_tokens,
             timeout_seconds=timeout_seconds,
@@ -4075,6 +4098,19 @@ def deepseek_payload(
         top_k = spec.top_k
     if top_k is not None:
         payload["top_k"] = int(top_k)
+
+    if spec.provider == PROVIDER_GGUF:
+        model_path = spec.slug[5:] if spec.slug.startswith("gguf@") else ""
+        min_p = body.get("min_p")
+        if not isinstance(min_p, (int, float)) or isinstance(min_p, bool):
+            min_p = _gguf_setting(model_path, "min_p")
+            if min_p is None:
+                min_p = _env_float("CODESEEQ_GGUF_MIN_P")
+        try:
+            min_p = float(min_p) if min_p is not None else 0.0
+        except (TypeError, ValueError):
+            min_p = 0.0
+        payload["min_p"] = min_p
 
     tools = body.get("tools")
     if isinstance(tools, list) and tools:

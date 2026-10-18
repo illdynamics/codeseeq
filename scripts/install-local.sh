@@ -47,6 +47,9 @@ if command -v rsync >/dev/null 2>&1; then
     --exclude '.git/' \
     --exclude '.codeseeq/' \
     --exclude 'system-prompt.md' \
+    --exclude '/config.json' \
+    --exclude '/gguf-models.local.json' \
+    --exclude '*.local.json' \
     --exclude '.env' \
     --exclude '.env.*' \
     --exclude '.tmp-*/' \
@@ -66,6 +69,9 @@ else
     --exclude '.git' \
     --exclude '.codeseeq' \
     --exclude 'system-prompt.md' \
+    --exclude 'config.json' \
+    --exclude 'gguf-models.local.json' \
+    --exclude '*.local.json' \
     --exclude '.env' \
     --exclude '.env.*' \
     --exclude '.tmp-*' \

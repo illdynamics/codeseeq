@@ -1,14 +1,18 @@
 {
   "models": {
     "~/Qoding/ai/BugTraceAI-Apex-G4-26B.MXFP4_MOE.gguf": {
-      "context_window": 262144,
-      "max_output_tokens": 16384,
+      "context_window": 131072,
+      "max_output_tokens": 65536,
       "n_gpu_layers": 99,
       "parallel": 1,
       "threads": null,
       "port": 8888,
       "timeout_seconds": 600,
-      "enable_thinking": false
+      "enable_thinking": false,
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0
     }
   }
 }

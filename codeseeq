@@ -174,8 +174,12 @@ LEGACY_SYSTEM_PROMPT_PATH="${WORKDIR_HOST}/.codeseeq/system-prompt.md"
 
 # --- GGUF local-model (llama.cpp) configuration ---
 : "${CODESEEQ_GGUF_LLAMA_SERVER_PATH:=}"
-: "${CODESEEQ_GGUF_CONTEXT_WINDOW:=8192}"
-: "${CODESEEQ_GGUF_MAX_OUTPUT_TOKENS:=2048}"
+: "${CODESEEQ_GGUF_CONTEXT_WINDOW:=131072}"
+: "${CODESEEQ_GGUF_MAX_OUTPUT_TOKENS:=65536}"
+: "${CODESEEQ_GGUF_TEMPERATURE:=0.6}"
+: "${CODESEEQ_GGUF_TOP_P:=0.95}"
+: "${CODESEEQ_GGUF_TOP_K:=20}"
+: "${CODESEEQ_GGUF_MIN_P:=0}"
 : "${CODESEEQ_GGUF_N_GPU_LAYERS:=0}"
 : "${CODESEEQ_GGUF_THREADS:=}"
 : "${CODESEEQ_GGUF_PARALLEL:=1}"
@@ -1323,10 +1327,11 @@ gguf_models_config_candidates() {
 }
 
 # Resolve the effective GGUF context window for a model path:
-# per-model config > CODESEEQ_GGUF_CONTEXT_WINDOW > 8192. Prints the number.
-resolve_gguf_context_window() {
-  local path="$1"
-  local fallback="${CODESEEQ_GGUF_CONTEXT_WINDOW:-8192}"
+# per-model config > CODESEEQ_GGUF_CONTEXT_WINDOW > 131072. Prints the number.
+# Resolve GGUF settings consistently between Codex's model catalog and the
+# Python bridge/server. Per-model JSON > environment > built-in default.
+resolve_gguf_model_setting() {
+  local path="$1" field="$2" fallback="$3"
   if ! command -v python3 >/dev/null 2>&1; then
     printf '%s\n' "$fallback"
     return 0
@@ -1338,35 +1343,49 @@ resolve_gguf_context_window() {
   done < <(gguf_models_config_candidates)
   CODESEEQ_GGUF_RESOLVE_CANDIDATES="$candidates" \
   CODESEEQ_GGUF_RESOLVE_FALLBACK="$fallback" \
-  python3 - "$path" <<'PYGGUF'
+  python3 - "$path" "$field" <<'PYGGUF'
 import json, os, sys
 path = os.path.abspath(os.path.expanduser(sys.argv[1]))
+field = sys.argv[2]
 cands = [c for c in os.environ.get("CODESEEQ_GGUF_RESOLVE_CANDIDATES", "").split(",") if c]
-fallback = os.environ.get("CODESEEQ_GGUF_RESOLVE_FALLBACK", "8192")
+fallback = os.environ["CODESEEQ_GGUF_RESOLVE_FALLBACK"]
+base = os.path.basename(path)
+stem = base[:-5] if base.lower().endswith(".gguf") else base
+home = os.path.expanduser("~")
+keys = (path, os.path.join("~", os.path.relpath(path, home)), base, stem, "gguf@" + path)
 value = None
 for cand in cands:
     try:
         with open(cand, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-    except Exception:
+    except (OSError, ValueError):
         continue
     models = data.get("models") if isinstance(data, dict) else None
     if not isinstance(models, dict):
         continue
-    base = os.path.basename(path)
-    stem = base[:-5] if base.lower().endswith(".gguf") else base
-    tilde = os.path.join("~", os.path.relpath(path, os.path.expanduser("~")))
-    for key in (path, tilde, base, stem, "gguf@" + path):
+    for key in keys:
         entry = models.get(key)
-        if isinstance(entry, dict) and entry.get("context_window") is not None:
-            value = entry["context_window"]
+        if isinstance(entry, dict) and entry.get(field) is not None:
+            value = entry[field]
             break
     if value is not None:
         break
-if value is None:
-    value = fallback
+try:
+    value = int(value if value is not None else fallback)
+    if value <= 0:
+        raise ValueError("nonpositive")
+except (ValueError, TypeError):
+    value = int(fallback)
 print(value)
 PYGGUF
+}
+
+resolve_gguf_context_window() {
+  resolve_gguf_model_setting "$1" context_window "${CODESEEQ_GGUF_CONTEXT_WINDOW:-131072}"
+}
+
+resolve_gguf_max_output_tokens() {
+  resolve_gguf_model_setting "$1" max_output_tokens "${CODESEEQ_GGUF_MAX_OUTPUT_TOKENS:-65536}"
 }
 
 mlx_models_config_candidates() {
@@ -1481,7 +1500,7 @@ write_merged_codex_catalog() {
   if [[ -n "$gguf_model_path" ]]; then
     catalog_is_gguf=1
     catalog_ctx="$(resolve_gguf_context_window "$gguf_model_path")"
-    catalog_max_tokens="${CODESEEQ_GGUF_MAX_OUTPUT_TOKENS:-2048}"
+    catalog_max_tokens="$(resolve_gguf_max_output_tokens "$gguf_model_path")"
   elif [[ -n "$mlx_model_path" ]]; then
     catalog_is_mlx=1
     catalog_ctx="$(resolve_mlx_context_window "$mlx_model_path")"
@@ -1791,7 +1810,7 @@ select_host_bridge_port() {
 # standalone bridge container and the Codex container. Per-model keys use the
 # documented CODESEEQ_<MODEL>_<SUFFIX> scheme (provider prefix stripped).
 codeseeq_bridge_env_names() {
-  printf '%s\n'     DEEPSEEK_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GROK_API_KEY     BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY VENICE_API_KEY     LOCAL_API_KEY DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     ANTHROPIC_BASE_URL GOOGLE_BASE_URL GROK_BASE_URL VENICE_BASE_URL LOCAL_BASE_URL     CODESEEQ_PROVIDER CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_OPENRESPONSES_START_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS CODESEEQ_REASONING_EFFORT QWIBUS_NO_API_KEY     GGUF_API_KEY GGUF_BASE_URL CODESEEQ_GGUF_LLAMA_SERVER_PATH     CODESEEQ_GGUF_CONTEXT_WINDOW CODESEEQ_GGUF_MAX_OUTPUT_TOKENS     CODESEEQ_GGUF_N_GPU_LAYERS CODESEEQ_GGUF_THREADS CODESEEQ_GGUF_PARALLEL     CODESEEQ_GGUF_PORT CODESEEQ_GGUF_TIMEOUT_SECONDS CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS     CODESEEQ_GGUF_ENABLE_THINKING     MLX_API_KEY MLX_BASE_URL CODESEEQ_MLX_BASE_URL CODESEEQ_MLX_PYTHON     CODESEEQ_MLX_SERVER_ARGS CODESEEQ_MLX_CONTEXT_WINDOW CODESEEQ_MLX_MAX_OUTPUT_TOKENS     CODESEEQ_MLX_PORT CODESEEQ_MLX_TIMEOUT_SECONDS CODESEEQ_MLX_STARTUP_TIMEOUT_SECONDS     CODESEEQ_MLX_ENABLE_THINKING CODESEEQ_MLX_MODELS_JSON CODESEEQ_GGUF_MODELS_JSON
+  printf '%s\n'     DEEPSEEK_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GROK_API_KEY     BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY VENICE_API_KEY     LOCAL_API_KEY DEEPSEEK_CHAT_URL OPENAI_BASE_URL DEEPSEEK_BASE_URL CODESEEQ_BASE_URL     ANTHROPIC_BASE_URL GOOGLE_BASE_URL GROK_BASE_URL VENICE_BASE_URL LOCAL_BASE_URL     CODESEEQ_PROVIDER CODESEEQ_BRAVE_WEB_URL UNSTRUCTURED_API_URL     CODESEEQ_MODEL_CATALOG_JSON CODESEEQ_BRIDGE_TIMEOUT_SECONDS     CODESEEQ_OPENRESPONSES_START_TIMEOUT_SECONDS     CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE CODESEEQ_BRIDGE_TOOL_STEERING     CODESEEQ_STREAM_IDLE_TIMEOUT_MS CODESEEQ_REASONING_EFFORT QWIBUS_NO_API_KEY     GGUF_API_KEY GGUF_BASE_URL CODESEEQ_GGUF_LLAMA_SERVER_PATH     CODESEEQ_GGUF_CONTEXT_WINDOW CODESEEQ_GGUF_MAX_OUTPUT_TOKENS     CODESEEQ_GGUF_TEMPERATURE CODESEEQ_GGUF_TOP_P CODESEEQ_GGUF_TOP_K CODESEEQ_GGUF_MIN_P     CODESEEQ_GGUF_N_GPU_LAYERS CODESEEQ_GGUF_THREADS CODESEEQ_GGUF_PARALLEL     CODESEEQ_GGUF_PORT CODESEEQ_GGUF_TIMEOUT_SECONDS CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS     CODESEEQ_GGUF_ENABLE_THINKING     MLX_API_KEY MLX_BASE_URL CODESEEQ_MLX_BASE_URL CODESEEQ_MLX_PYTHON     CODESEEQ_MLX_SERVER_ARGS CODESEEQ_MLX_CONTEXT_WINDOW CODESEEQ_MLX_MAX_OUTPUT_TOKENS     CODESEEQ_MLX_PORT CODESEEQ_MLX_TIMEOUT_SECONDS CODESEEQ_MLX_STARTUP_TIMEOUT_SECONDS     CODESEEQ_MLX_ENABLE_THINKING CODESEEQ_MLX_MODELS_JSON CODESEEQ_GGUF_MODELS_JSON
 
   local key suffix
   # Per-model keys use the CODESEEQ_<MODEL>_<SUFFIX> scheme: the bridge's
@@ -3452,6 +3471,9 @@ cmd_install() {
       --exclude '.git/' \
       --exclude '.codeseeq/' \
       --exclude 'system-prompt.md' \
+      --exclude '/config.json' \
+      --exclude '/gguf-models.local.json' \
+      --exclude '*.local.json' \
       --exclude '.env' \
       --exclude '.env.*' \
       --exclude '.tmp-*/' \
@@ -3474,6 +3496,9 @@ cmd_install() {
       --exclude '.git' \
       --exclude '.codeseeq' \
       --exclude 'system-prompt.md' \
+      --exclude '/config.json' \
+      --exclude '/gguf-models.local.json' \
+      --exclude '*.local.json' \
       --exclude '.env' \
       --exclude '.env.*' \
       --exclude '.tmp-*' \

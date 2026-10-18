@@ -281,6 +281,86 @@ for p in (pm_a, pm_b, pm_c):
 os.remove(pm_cfg)
 os.rmdir(per_model_dir)
 
+# 11) v0.5.2 defaults, generated payload, and model-cap precedence.
+# Test the actual normalized spec (not just the startup argv).
+for key in (
+    "CODESEEQ_GGUF_CONTEXT_WINDOW", "CODESEEQ_GGUF_MAX_OUTPUT_TOKENS",
+    "CODESEEQ_GGUF_TEMPERATURE", "CODESEEQ_GGUF_TOP_P",
+    "CODESEEQ_GGUF_TOP_K", "CODESEEQ_GGUF_MIN_P",
+    "CODESEEQ_GGUF_PARALLEL",
+):
+    os.environ.pop(key, None)
+default_spec = bridge.normalize_model(gguf_path)
+check("default GGUF context is 131072", default_spec.context_window == 131072,
+      default_spec.context_window)
+check("default GGUF maximum output is 65536", default_spec.max_output_tokens == 65536,
+      default_spec.max_output_tokens)
+check("default GGUF temperature is 0.6", default_spec.temperature == 0.6,
+      default_spec.temperature)
+check("default GGUF top_p is 0.95", default_spec.top_p == 0.95, default_spec.top_p)
+check("default GGUF top_k is 20", default_spec.top_k == 20, default_spec.top_k)
+default_argv = bridge.GGUFServerManager._argv("/fake/llama-server", gguf_path, 9999, "model")
+for flag, expected in (("-c", "131072"), ("-np", "1"),
+                       ("--temp", "0.6"), ("--top-p", "0.95"),
+                       ("--top-k", "20"), ("--min-p", "0")):
+    check("default llama-server " + flag,
+          flag in default_argv and default_argv[default_argv.index(flag) + 1] == expected,
+          default_argv)
+default_payload = bridge.deepseek_payload(
+    {"stream": False}, default_spec, [{"role": "user", "content": "hello"}]
+)
+for key, value in (("max_tokens", 65536), ("temperature", 0.6),
+                   ("top_p", 0.95), ("top_k", 20), ("min_p", 0.0)):
+    check("default GGUF payload " + key, default_payload.get(key) == value,
+          str(default_payload.get(key)))
+request_payload = bridge.deepseek_payload(
+    {"max_output_tokens": 90000, "temperature": 0.1, "top_p": 0.8,
+     "top_k": 7, "min_p": 0.01}, default_spec,
+    [{"role": "user", "content": "hello"}]
+)
+check("caller cannot exceed GGUF output cap", request_payload["max_tokens"] == 65536,
+      request_payload["max_tokens"])
+check("caller can request a different temperature", request_payload["temperature"] == 0.1)
+check("caller can request a different top_p", request_payload["top_p"] == 0.8)
+check("caller can request a different top_k", request_payload["top_k"] == 7)
+check("caller can request a different min_p", request_payload["min_p"] == 0.01)
+
+# Regression: global output env MUST NOT beat a model-specific lower cap.
+os.environ["CODESEEQ_GGUF_MAX_OUTPUT_TOKENS"] = "65536"
+os.environ["CODESEEQ_GGUF_TEMPERATURE"] = "0.2"
+os.environ["CODESEEQ_GGUF_TOP_P"] = "0.9"
+os.environ["CODESEEQ_GGUF_TOP_K"] = "12"
+os.environ["CODESEEQ_GGUF_MIN_P"] = "0.02"
+pm_cfg = os.path.join(tmp, "per-model-override.json")
+with open(pm_cfg, "w", encoding="utf-8") as fh:
+    _json.dump({"models": {gguf_path: {
+        "context_window": 16384, "max_output_tokens": 4096,
+        "temperature": 0.3, "top_p": 0.85, "top_k": 9, "min_p": 0.05
+    }}}, fh)
+bridge._gguf_models_cache = None
+os.environ["CODESEEQ_GGUF_MODELS_JSON"] = pm_cfg
+pm_spec = bridge.normalize_model(gguf_path)
+pm_payload = bridge.deepseek_payload({}, pm_spec, [{"role": "user", "content": "test"}])
+check("per-model cap wins over global env", bridge.resolve_max_tokens({}, pm_spec) == 4096,
+      bridge.resolve_max_tokens({}, pm_spec))
+check("per-model context wins over global env", pm_spec.context_window == 16384)
+check("per-model temperature wins over global env", pm_spec.temperature == 0.3)
+check("per-model top_p wins over global env", pm_spec.top_p == 0.85)
+check("per-model top_k wins over global env", pm_spec.top_k == 9)
+check("per-model min_p wins over global env", pm_payload["min_p"] == 0.05)
+check("per-model max_output_tokens reaches upstream", pm_payload["max_tokens"] == 4096)
+pm_argv = bridge.GGUFServerManager._argv("/fake/llama-server", gguf_path, 9000, "model")
+for flag, expected in (("--temp", "0.3"), ("--top-p", "0.85"),
+                       ("--top-k", "9"), ("--min-p", "0.05")):
+    check("per-model llama-server " + flag,
+          pm_argv[pm_argv.index(flag) + 1] == expected, pm_argv)
+os.environ.pop("CODESEEQ_GGUF_MODELS_JSON", None)
+for key in ("CODESEEQ_GGUF_MAX_OUTPUT_TOKENS", "CODESEEQ_GGUF_TEMPERATURE",
+            "CODESEEQ_GGUF_TOP_P", "CODESEEQ_GGUF_TOP_K", "CODESEEQ_GGUF_MIN_P"):
+    os.environ.pop(key, None)
+bridge._gguf_models_cache = None
+os.remove(pm_cfg)
+
 os.remove(gguf_path)
 os.rmdir(tmp)
 

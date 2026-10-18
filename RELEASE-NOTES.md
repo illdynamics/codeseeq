@@ -1,3 +1,24 @@
+## v0.5.2 - 2026-10-18
+
+### GGUF runtime and sampling
+- llama-server defaults: context 131072, output cap 65536, temperature 0.6,
+  top_p 0.95, top_k 20, min_p 0, parallel slots 1. Existing per-model JSON and
+  environment overrides still take precedence.
+- Pass GGUF sampling defaults through both llama-server launch flags and the
+  Responses -> Chat Completions bridge (including min_p), while honoring
+  explicit client sampling requests.
+- Align the Codex-generated model catalog with per-model GGUF context and
+  output caps; fix model-specific output caps being overridden by global env.
+- Preserve user config.json / *.local.json files during both local reinstall entry points (`./codeseeq install` and `scripts/install-local.sh`).
+- Reproducible Docker builds: image installs the checked-out release source,
+  not a fresh remote main clone.
+- Regression coverage for sampling, cap precedence, process startup argv,
+  model-catalog generation, and release version/tag consistency.
+
+> Note: 131072 context and 65536 maximum output are *limits*, not guarantees
+> that a given GGUF model, inference engine or machine has the needed KV cache
+> memory, supports the context length, or can generate that many tokens.
+
 ## v0.5.1 - 2026-10-05
 
 ### Added
