@@ -1,3 +1,17 @@
+## v0.5.4 - 2026-10-19
+
+### GGUF auto endpoint mode
+- `gguf@auto` reuses an existing OpenAI-compatible GGUF server without requiring
+  the user to supply a local GGUF file or type an upstream model identifier.
+- Discover the running model from `/v1/models`, forward its actual `id` to
+  `/v1/chat/completions`, and re-discover on every request (hot-swap aware).
+- Respect a configured `GGUF_BASE_URL` when set; otherwise probe known local
+  endpoints, with an optional `CODESEEQ_GGUF_PORT` preference and previously
+  configured gateway URLs. A missing or ambiguous model produces a clear 502.
+- Keep existing GGUF context/output/sampling defaults, file-based launches,
+  config preservation and per-model options intact.
+- Add end-to-end HTTP regression tests, Codex model-catalog checks and CI.
+
 ## v0.5.2 - 2026-10-18
 
 ### GGUF runtime and sampling

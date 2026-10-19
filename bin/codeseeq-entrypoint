@@ -68,7 +68,7 @@ allowlist = {
     "CONTAINER", "IMAGE",
     "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL", "DEEPSEEK_CHAT_URL",
     "ANTHROPIC_BASE_URL", "GOOGLE_BASE_URL", "GROK_BASE_URL",
-    "VENICE_BASE_URL", "LOCAL_BASE_URL",
+    "VENICE_BASE_URL", "LOCAL_BASE_URL", "GGUF_BASE_URL", "GGUF_API_KEY",
     "UNSTRUCTURED_API_URL", "QWIBUS_NO_API_KEY",
 }
 for k, v in data.items():
@@ -86,7 +86,7 @@ for k, v in data.items():
 INNERCFG
 )" || parsed=""
   elif command -v jq >/dev/null 2>&1; then
-    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GROK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","LOCAL_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","ANTHROPIC_BASE_URL","GOOGLE_BASE_URL","GROK_BASE_URL","VENICE_BASE_URL","LOCAL_BASE_URL","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
+    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GROK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","LOCAL_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","ANTHROPIC_BASE_URL","GOOGLE_BASE_URL","GROK_BASE_URL","VENICE_BASE_URL","LOCAL_BASE_URL","GGUF_BASE_URL","GGUF_API_KEY","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
   else
     warn "CODESEEQ_CONFIG_JSON/JSON config configured but neither python3 nor jq is available; skipping JSON config"
     return 0
@@ -513,7 +513,11 @@ normalize_model() {
           gguf_path="$model"
         fi
       fi
-      if [[ -n "$gguf_path" ]]; then
+      if [[ "$model" == "gguf@auto" ]]; then
+        PROVIDER_MODEL="gguf@auto"
+        alias_thinking="false"
+        CODESEEQ_PROVIDER="gguf"
+      elif [[ -n "$gguf_path" ]]; then
         gguf_path="$(printf '%s' "$gguf_path" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
         [[ -n "$gguf_path" ]] || die "gguf model path is empty"
         if command -v python3 >/dev/null 2>&1; then
@@ -730,6 +734,9 @@ write_merged_codex_catalog() {
     gguf_model_path="${model#gguf@}"
   elif [[ "$model_lower" == *.gguf ]]; then
     gguf_model_path="$model"
+  fi
+  if [[ "$model" == "gguf@auto" ]]; then
+    gguf_model_path="auto"
   fi
   if [[ -n "$gguf_model_path" ]]; then
     catalog_is_gguf=1
@@ -1724,8 +1731,15 @@ case "${1:-}" in
     print_help
     ;;
   --version|-V|version)
-    shift || true
-    run_codex_passthrough --version
+    # Product version, not the separately pinned upstream Codex CLI version.
+    if [[ -f /etc/codeseeq/VERSION ]]; then
+      cat /etc/codeseeq/VERSION
+    elif [[ -f "$(dirname "${BASH_SOURCE[0]}")/../VERSION" ]]; then
+      cat "$(dirname "${BASH_SOURCE[0]}")/../VERSION"
+    else
+      printf 'CodeSeeq version unavailable\n' >&2
+      exit 1
+    fi
     ;;
   *)
     if split_direct_prompt_args "$@"; then

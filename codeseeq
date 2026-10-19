@@ -81,7 +81,7 @@ allowlist = {
     "CONTAINER", "IMAGE",
     "OPENAI_BASE_URL", "DEEPSEEK_BASE_URL", "DEEPSEEK_CHAT_URL",
     "ANTHROPIC_BASE_URL", "GOOGLE_BASE_URL", "GROK_BASE_URL",
-    "VENICE_BASE_URL", "LOCAL_BASE_URL",
+    "VENICE_BASE_URL", "LOCAL_BASE_URL", "GGUF_BASE_URL", "GGUF_API_KEY",
     "UNSTRUCTURED_API_URL", "QWIBUS_NO_API_KEY",
 }
 for k, v in data.items():
@@ -99,7 +99,7 @@ for k, v in data.items():
 INNERCFG
 )" || parsed=""
   elif command -v jq >/dev/null 2>&1; then
-    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GROK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","LOCAL_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","ANTHROPIC_BASE_URL","GOOGLE_BASE_URL","GROK_BASE_URL","VENICE_BASE_URL","LOCAL_BASE_URL","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
+    parsed="$(jq -r 'to_entries[] | select((.key|startswith("CODESEEQ_")) or (.key|IN("DEEPSEEK_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GROK_API_KEY","BRAVE_API_KEY","UNSTRUCTURED_API_KEY","RESPONSES_API_KEY","VENICE_API_KEY","LOCAL_API_KEY","CONTAINER","IMAGE","OPENAI_BASE_URL","DEEPSEEK_BASE_URL","DEEPSEEK_CHAT_URL","ANTHROPIC_BASE_URL","GOOGLE_BASE_URL","GROK_BASE_URL","VENICE_BASE_URL","LOCAL_BASE_URL","GGUF_BASE_URL","GGUF_API_KEY","UNSTRUCTURED_API_URL","QWIBUS_NO_API_KEY"))) | select(.value != null) | "\(.key)=\(.value)"' "$path" 2>/dev/null || true)"
   else
     warn "CODESEEQ_CONFIG_JSON/JSON config configured but neither python3 nor jq is available; skipping JSON config"
     return 0
@@ -319,7 +319,8 @@ ChatGPT account (Plus/Pro/Team, no API key):
   Privacy: login/logout stay blocked for all other providers.
 
 Local GGUF / MLX models (host runtime, no API key):
-  GGUF: codeseeq --model /path/to/model.gguf "prompt"
+  GGUF: codeseeq --model gguf@auto "prompt" (autodetect running server)
+        codeseeq --model /path/to/model.gguf "prompt"
         codeseeq -m gguf@/path/to/model.gguf -y run "prompt"
         The bridge launches llama.cpp llama-server for you.
   MLX:  codeseeq -m mlx@/path/to/model-directory -y run "prompt"
@@ -328,7 +329,7 @@ Local GGUF / MLX models (host runtime, no API key):
         python3 -m pip install mlx-lm). Set CODESEEQ_MLX_PYTHON to the
         interpreter that has mlx_lm if it is not the default python3.
   Reuse an already-running local server instead:
-        GGUF: GGUF_BASE_URL=http://127.0.0.1:8888 codeseeq -m gguf@<file> ...
+        GGUF: codeseeq -m gguf@auto -y "prompt" (reuse the running server)
         MLX:  CODESEEQ_BASE_URL=http://127.0.0.1:8888/v1 codeseeq -m mlx@<dir> ...
   Per-model tuning: config/gguf-models.json / config/mlx-models.json (see
   README; gguf knobs are CODESEEQ_GGUF_*, mlx knobs are CODESEEQ_MLX_*).
@@ -1025,7 +1026,11 @@ normalize_model() {
           gguf_path="$model"
         fi
       fi
-      if [[ -n "$gguf_path" ]]; then
+      if [[ "$model" == "gguf@auto" ]]; then
+        PROVIDER_MODEL="gguf@auto"
+        alias_thinking="false"
+        CODESEEQ_PROVIDER="gguf"
+      elif [[ -n "$gguf_path" ]]; then
         gguf_path="$(printf '%s' "$gguf_path" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
         [[ -n "$gguf_path" ]] || die "gguf model path is empty"
         if command -v python3 >/dev/null 2>&1; then
@@ -1081,7 +1086,7 @@ normalize_model() {
               ;;
           esac
         else
-          die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx, gguf@<path-to-.gguf>, mlx@<path-to-model-directory>, chatgpt@gpt-5-codex, or <provider>@<model> with provider in anthropic, google, grok, venice, local, gguf, mlx, chatgpt"
+          die "unsupported model: ${model}. supported choices: deepseek-v4-flash, deepseek-v4-flash-thinking, deepseek-v4-pro, deepseek-v4-pro-thinking, deepseek@deepseek-v4-flash, deepseek@deepseek-v4-pro, qwibus-qwikk, qwibus-qmplx, qwibus@qwibus-qwikk, qwibus@qwibus-qmplx, gguf@auto, gguf@<path-to-.gguf>, mlx@<path-to-model-directory>, chatgpt@gpt-5-codex, or <provider>@<model> with provider in anthropic, google, grok, venice, local, gguf, mlx, chatgpt"
         fi
       fi
       ;;
@@ -1496,6 +1501,9 @@ write_merged_codex_catalog() {
   fi
   if [[ "$model" == mlx@* ]]; then
     mlx_model_path="${model#mlx@}"
+  fi
+  if [[ "$model" == "gguf@auto" ]]; then
+    gguf_model_path="auto"
   fi
   if [[ -n "$gguf_model_path" ]]; then
     catalog_is_gguf=1
@@ -2919,6 +2927,7 @@ config_provider_base_url_env() {
     deepseek) printf 'DEEPSEEK_BASE_URL' ;;
     venice) printf 'VENICE_BASE_URL' ;;
     local) printf 'LOCAL_BASE_URL' ;;
+    gguf) printf 'GGUF_BASE_URL' ;;
     mlx) printf 'CODESEEQ_MLX_BASE_URL' ;;
     *) printf '' ;;
   esac
@@ -3261,7 +3270,7 @@ elif key_env:
     print(f"API key ({key_env}): {key_state}")
 base_envs = {"anthropic": "ANTHROPIC_BASE_URL", "google": "GOOGLE_BASE_URL",
              "grok": "GROK_BASE_URL", "deepseek": "DEEPSEEK_BASE_URL",
-             "venice": "VENICE_BASE_URL", "local": "LOCAL_BASE_URL"}
+             "venice": "VENICE_BASE_URL", "local": "LOCAL_BASE_URL", "gguf": "GGUF_BASE_URL"}
 base_env = base_envs.get(provider, "")
 if base_env and data.get(base_env):
     print(f"Base URL: {data[base_env]}")
@@ -3319,8 +3328,8 @@ cmd_config() {
     [[ "$model" == local@* ]] || model="local@${model}"
   elif [[ "$provider" == "gguf" ]]; then
     printf '\n'
-    model="$(cfg_prompt "Absolute path to .gguf model file (e.g. /path/to/model.gguf)" "")"
-    [[ -n "$model" ]] || { printf 'GGUF model path is required.\n' >&2; return 1; }
+    model="$(cfg_prompt "GGUF model: auto (existing server) or /path/to/model.gguf" "auto")"
+    [[ -n "$model" ]] || model="auto"
     [[ "$model" == gguf@* ]] || model="gguf@${model}"
   elif [[ "$provider" == "mlx" ]]; then
     printf '\n'
@@ -3362,11 +3371,16 @@ cmd_config() {
     key="$(cfg_prompt "API key (optional for local gateways, Enter to skip)" "")"
     base_url="$(cfg_prompt "Local gateway base URL" "$base_url")"
   elif [[ "$provider" == "gguf" ]]; then
-    # Keyless; the bridge derives its base URL from the spawned llama-server.
+    # gguf@auto discovers a running server and its model automatically.
+    # An optional explicit URL is available for remote/nonstandard servers.
     key_env=""
     key=""
     base_url_env=""
     base_url=""
+    if [[ "$model" == "gguf@auto" ]]; then
+      base_url_env="GGUF_BASE_URL"
+      base_url="$(cfg_prompt "Existing GGUF server URL (optional; Enter to autodetect locally)" "")"
+    fi
   elif [[ "$provider" == "mlx" ]]; then
     # Keyless. Blank base URL => the bridge spawns mlx_lm.server for the
     # selected directory (default). Enter one only to reuse an already running
@@ -4191,6 +4205,11 @@ if is_truthy "${CODESEEQ_UNCENSORED_MODE:-false}"; then
       die "uncensored.md not found at ${UNCENSORED_MD}"
     fi
   fi
+fi
+# Version is a CodeSeeq property and must work without Codex or Docker.
+if (( $# == 1 )) && [[ "$1" == "--version" || "$1" == "-V" || "$1" == "version" ]]; then
+  cat "${CODESEEQ_INSTALL_ROOT}/VERSION"
+  exit 0
 fi
 cmd_arg="$(first_command_arg "$@" || true)"
 # CodeSeeq privacy hardening: block upstream Codex commands by default

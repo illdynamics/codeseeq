@@ -174,6 +174,8 @@ _NON_CODESEEQ_CONFIG_KEYS = frozenset(
         "GROK_BASE_URL",
         "VENICE_BASE_URL",
         "LOCAL_BASE_URL",
+        "GGUF_BASE_URL",
+        "GGUF_API_KEY",
         "UNSTRUCTURED_API_URL",
         "QWIBUS_NO_API_KEY",
     }
@@ -2983,6 +2985,28 @@ def normalize_model(model: str) -> "ModelSpec":
     default_thinking = env_bool("CODESEEQ_THINKING", False)
     raw = (model or "deepseek@deepseek-v4-flash").strip()
 
+    # gguf@auto reuses an already-running OpenAI-compatible model server.
+    # The bridge resolves its base URL and currently served model id from
+    # /v1/models for every request, so hot-swapping a model needs no restart.
+    if raw.lower() == "gguf@auto":
+        return ModelSpec(
+            slug="gguf@auto",
+            deepseek_model="auto",  # replaced by discovered upstream id
+            thinking=env_bool("CODESEEQ_GGUF_ENABLE_THINKING", env_bool("CODESEEQ_THINKING", False)),
+            base_url="",  # discovery happens asynchronously on request
+            chat_url="",
+            temperature=_env_float("CODESEEQ_GGUF_TEMPERATURE") if _env_float("CODESEEQ_GGUF_TEMPERATURE") is not None else 0.6,
+            top_p=_env_float("CODESEEQ_GGUF_TOP_P") if _env_float("CODESEEQ_GGUF_TOP_P") is not None else 0.95,
+            top_k=_env_int("CODESEEQ_GGUF_TOP_K") if _env_int("CODESEEQ_GGUF_TOP_K") is not None else 20,
+            context_window=_env_int("CODESEEQ_GGUF_CONTEXT_WINDOW") or 131072,
+            max_output_tokens=_env_int("CODESEEQ_GGUF_MAX_OUTPUT_TOKENS") or 65536,
+            timeout_seconds=float(_env_int("CODESEEQ_GGUF_TIMEOUT_SECONDS") or 600),
+            system_prompt=None,
+            provider=PROVIDER_GGUF,
+            api_key_env=None,
+            gguf_path=None,
+        )
+
     # GGUF local-model selection: bare .gguf path or gguf@<path> slug.
     # Resolve to an absolute path and validate it exists up front; the
     # llama-server process manager (GGUFServerManager) owns launching.
@@ -4100,7 +4124,7 @@ def deepseek_payload(
         payload["top_k"] = int(top_k)
 
     if spec.provider == PROVIDER_GGUF:
-        model_path = spec.slug[5:] if spec.slug.startswith("gguf@") else ""
+        model_path = spec.slug[5:] if spec.slug.startswith("gguf@") and spec.slug != "gguf@auto" else ""
         min_p = body.get("min_p")
         if not isinstance(min_p, (int, float)) or isinstance(min_p, bool):
             min_p = _gguf_setting(model_path, "min_p")
@@ -4967,6 +4991,117 @@ async def health() -> Dict[str, str]:
     return info
 
 
+class GGUFDiscoveryError(Exception):
+    """The selected upstream cannot identify one loaded GGUF model."""
+
+
+def _gguf_auto_candidates() -> List[str]:
+    """Respect a configured endpoint first; otherwise probe common local ports.
+
+    GGUF_BASE_URL is authoritative: a typo or offline configured endpoint must
+    fail clearly, never silently send prompts to a different running service.
+    Ambient generic URLs are only used if they are local/loopback, avoiding
+    accidental routing to an unrelated cloud provider.
+    """
+    explicit = _env_url_first("GGUF_BASE_URL")
+    if explicit:
+        return [explicit.rstrip("/")]
+    candidates: List[str] = []
+    for var in ("LOCAL_BASE_URL", "CODESEEQ_BASE_URL", "OPENAI_BASE_URL"):
+        url = _env_url_first(var)
+        if not url:
+            continue
+        # A manually configured local gateway may live on a LAN/ZeroTier
+        # host. Never reuse the endpoint of a known hosted API provider.
+        owner = PROVIDER_HOST_OWNERS.get(_base_url_host(url))
+        if owner is None:
+            candidates.append(url.rstrip("/"))
+    # 8888 is CodeSeeq's common existing llama.cpp port, 8080 llama.cpp's
+    # stock default, then popular compatible local model servers.
+    configured_port = _env_int("CODESEEQ_GGUF_PORT")
+    if configured_port and 1 <= configured_port <= 65535:
+        candidates.append(f"http://127.0.0.1:{configured_port}")
+    candidates.extend(f"http://127.0.0.1:{p}" for p in (8888, 8080, 8000, 1234, 5000, 11434))
+    return list(dict.fromkeys(candidates))
+
+
+def _gguf_model_candidates(payload: Any) -> List[str]:
+    if not isinstance(payload, dict):
+        return []
+    items = payload.get("data", payload.get("models", []))
+    if isinstance(items, dict):
+        items = list(items.values())
+    if not isinstance(items, list):
+        return []
+    models = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        mid = item.get("id") or item.get("name")
+        if not isinstance(mid, str) or not mid.strip():
+            continue
+        # llama.cpp router's /models may list available but not loaded models.
+        status = item.get("status")
+        if isinstance(status, dict):
+            status = status.get("value")
+        loaded = (status is None or str(status).lower() in ("loaded", "ready", "running"))
+        models.append((mid.strip(), loaded))
+    # Prefer exactly one loaded model; multiple active models are ambiguous.
+    live = list(dict.fromkeys(mid for mid, loaded in models if loaded))
+    return live
+
+
+async def discover_gguf_auto() -> Tuple[str, str]:
+    """Return (upstream_base_url, currently loaded upstream model id).
+
+    No need for model files or a second llama-server. Fail closed rather than
+    guessing which model to use when the server advertises more than one.
+    """
+    candidates = _gguf_auto_candidates()
+    explicit = bool(_env_url_first("GGUF_BASE_URL"))
+    errors = []
+    async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=0.6), trust_env=False) as client:
+        for raw_base in candidates:
+            base = raw_base.rstrip("/")
+            if base.endswith("/v1"):
+                base = base[:-3]
+            try:
+                response = await client.get(f"{base}/v1/models", headers=_gguf_discovery_headers())
+                response.raise_for_status()
+                model_ids = _gguf_model_candidates(response.json())
+                if len(model_ids) == 1:
+                    return base, model_ids[0]
+                # Some llama.cpp router builds expose model load status at
+                # /models instead of /v1/models; check that as well.
+                response = await client.get(f"{base}/models", headers=_gguf_discovery_headers())
+                if response.status_code == 200:
+                    model_ids2 = _gguf_model_candidates(response.json())
+                    if len(model_ids2) == 1:
+                        return base, model_ids2[0]
+                if len(model_ids) > 1:
+                    raise GGUFDiscoveryError(
+                        f"{base} advertises multiple loaded models ({', '.join(model_ids)}). "
+                        "Use a single-model endpoint or select gguf@<path>."
+                    )
+                errors.append(f"{base}: /v1/models did not advertise a loaded model")
+            except GGUFDiscoveryError:
+                raise  # never guess when multiple models are active
+            except (httpx.HTTPError, ValueError) as exc:
+                errors.append(f"{base}: {type(exc).__name__}")
+                if explicit:
+                    break
+    hint = "Set GGUF_BASE_URL=http://HOST:PORT/v1 if your server is on a nonstandard address."
+    raise GGUFDiscoveryError(
+        "gguf@auto could not identify a running model via /v1/models. "
+        + hint + " Tried: " + "; ".join(errors)
+    )
+
+
+def _gguf_discovery_headers() -> Dict[str, str]:
+    key = os.environ.get("GGUF_API_KEY", "").strip()
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
 @app.get("/v1/models")
 async def models() -> Dict[str, Any]:
     data = []
@@ -4979,6 +5114,7 @@ async def models() -> Dict[str, Any]:
                 "owned_by": spec.provider,
             }
         )
+    data.append({"id": "gguf@auto", "object": "model", "owned_by": PROVIDER_GGUF})
     data.append({"id": "gguf@local-model", "object": "model", "owned_by": PROVIDER_GGUF})
     data.append({"id": "mlx@local-model", "object": "model", "owned_by": PROVIDER_MLX})
     return {"object": "list", "data": data}
@@ -5015,6 +5151,25 @@ async def responses(request: Request) -> Any:
         require_provider_key(provider)
 
     response_id = f"resp_{uuid.uuid4().hex[:20]}"
+
+    if spec.slug == "gguf@auto":
+        try:
+            upstream_base, upstream_model = await discover_gguf_auto()
+        except GGUFDiscoveryError as exc:
+            log(f"gguf auto-discovery error: {exc}")
+            if stream:
+                return StreamingResponse(
+                    _gguf_failed_stream(response_id, provider_model, str(exc)),
+                    media_type="text/event-stream",
+                )
+            return JSONResponse(status_code=502, content={"error": str(exc)})
+        # Keep the Codex-visible virtual alias, but send the real discovered
+        # model ID in the upstream chat-completions request.
+        spec.deepseek_model = upstream_model
+        spec.base_url = upstream_base
+        spec.chat_url = _derive_chat_url(PROVIDER_GGUF, upstream_base)
+        model_chat_url = spec.chat_url
+        log(f"gguf@auto selected {upstream_model} at {upstream_base}")
 
     if spec.provider == PROVIDER_GGUF and spec.gguf_path:
         try:
@@ -5122,6 +5277,8 @@ async def responses(request: Request) -> Any:
 
     is_anthropic = provider == PROVIDER_ANTHROPIC
     key = provider_api_key(provider)
+    if provider == PROVIDER_GGUF:
+        key = os.environ.get("GGUF_API_KEY", "").strip() or None
     headers: Dict[str, str] = {"Content-Type": "application/json"}
     if key:
         if is_anthropic:

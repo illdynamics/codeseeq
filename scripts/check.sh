@@ -53,7 +53,7 @@ unset GOOGLE_API_KEY GEMINI_API_KEY GOOGLE_BASE_URL 2>/dev/null || true
 unset GROK_API_KEY GROK_BASE_URL 2>/dev/null || true
 unset VENICE_API_KEY VENICE_BASE_URL 2>/dev/null || true
 unset LOCAL_BASE_URL LLAMA_CPP_API_KEY QWEN_API_KEY 2>/dev/null || true
-unset GGUF_BASE_URL MLX_API_KEY MLX_BASE_URL CODESEEQ_MLX_BASE_URL 2>/dev/null || true
+unset GGUF_BASE_URL GGUF_API_KEY MLX_API_KEY MLX_BASE_URL CODESEEQ_MLX_BASE_URL 2>/dev/null || true
 unset BRAVE_API_KEY UNSTRUCTURED_API_KEY RESPONSES_API_KEY 2>/dev/null || true
 unset HACKENPROOF_API_KEY LITELLM_API_KEY 2>/dev/null || true
 unset CODESEEQ_TEMPERATURE CODESEEQ_GGUF_TEMPERATURE CODESEEQ_GGUF_TOP_P CODESEEQ_GGUF_TOP_K CODESEEQ_GGUF_MIN_P CODESEEQ_MLX_TEMPERATURE 2>/dev/null || true
@@ -264,6 +264,11 @@ if ! scripts/test-bridge-gguf.py; then
   fail "bridge GGUF local-model provider regression test failed"
 fi
 
+note "checking GGUF auto endpoint discovery and model hot-swap"
+if ! scripts/test-bridge-gguf-auto.py; then
+  fail "bridge GGUF auto endpoint regression test failed"
+fi
+
 note "checking bridge MLX local-model provider"
 if ! scripts/test-bridge-mlx.py; then
   fail "bridge MLX local-model provider regression test failed"
@@ -333,6 +338,26 @@ assert 'local@llama-4-maverick' in slugs, slugs
 print('OK')
 "; then
   fail "entrypoint did not merge local@model into codex model catalog"
+fi
+
+note "checking gguf@auto generated Codex catalog"
+if ! CODESEEQ_CODEX_HOME="${tmp_check_dir}/gguf-auto/.codeseeq" \
+  CODESEEQ_WORKDIR="${tmp_check_dir}/workspace-gguf-auto" \
+  CODESEEQ_RUNTIME_DIR="${tmp_check_dir}/run-gguf-auto" \
+  CODESEEQ_LOG_DIR="${tmp_check_dir}/log-gguf-auto" \
+  CODESEEQ_HOST_MODEL_CATALOG_JSON="${repo_root}/config/codex-model-catalog.json" \
+  CODESEEQ_MODEL="gguf@auto" CODESEEQ_PROVIDER="gguf" \
+  ./bin/codeseeq-entrypoint config > "${tmp_check_dir}/gguf-auto.out" 2>/dev/null; then
+  fail "gguf@auto entrypoint config failed"
+elif ! python3 - "${tmp_check_dir}/gguf-auto/.codeseeq/codex-model-catalog.json" <<'PYAUTO'
+import json, sys
+models = json.load(open(sys.argv[1]))["models"]
+spec = next((m for m in models if m.get("slug") == "gguf@auto"), None)
+assert spec and spec["context_window"] == 131072 and spec["max_output_tokens"] == 65536, spec
+print("[check] gguf@auto catalog: OK")
+PYAUTO
+then
+  fail "gguf@auto catalog limits wrong"
 fi
 
 note "checking entrypoint applies per-model GGUF context window"

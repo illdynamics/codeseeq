@@ -1,6 +1,6 @@
 # Architecture
 
-Current version: `v0.5.2`
+Current version: `v0.5.4`
 
 ## Runtime Modes
 
@@ -300,6 +300,13 @@ redundant (the bridge consumes `model-catalog.json`, while Codex consumes
 `codex-model-catalog.json`).
 
 ### GGUF / local llama.cpp
+
+In v0.5.4, `gguf@auto` attaches to an existing OpenAI-compatible endpoint,
+queries `/v1/models` for the active model ID and forwards that ID to the
+upstream chat completion endpoint. It neither opens a GGUF file nor launches
+another llama-server; it discovers model changes for each request. With
+`GGUF_BASE_URL` configured it uses only that server; otherwise it probes
+known local ports. Ambiguous multiple active models produce a clear error.
 
 CodeSeeq can run Codex against a local GGUF model served by
 [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server`. Selecting a

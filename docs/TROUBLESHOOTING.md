@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `v0.5.2`
+Current version: `v0.5.4`
 
 ## `./codeseeq` is not executable
 
@@ -623,7 +623,18 @@ server, so use the same `--alias` you started `llama-server` with (or the GGUF
 filename stem if you did not pass `--alias`). This path never validates or
 spawns a `.gguf` file.
 
-If you prefer to keep using `gguf@` while reusing an existing server, set
+For automatic selection of the model already hosted by your server, use:
+
+```bash
+codeseeq --model gguf@auto -y "hello"
+```
+
+CodeSeeq queries `/v1/models` and forwards the loaded model's real ID. No
+GGUF path or upstream model name is needed. For a remote/nonstandard port,
+set `GGUF_BASE_URL` to the server base URL. If multiple models are loaded,
+use a single-model endpoint to avoid ambiguity.
+
+If you prefer to keep using `gguf@<path>` while reusing an existing server, set
 `GGUF_BASE_URL`; the bridge then skips spawning and routes to
 `{GGUF_BASE_URL}/v1/chat/completions`. Note that `gguf@<path>` still requires
 the `.gguf` file to exist locally for model resolution:

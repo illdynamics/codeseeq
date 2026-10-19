@@ -14,11 +14,12 @@ no API key of any kind) and run against OpenAI's ChatGPT Codex models with the
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.5.2` (from [`VERSION`](./VERSION)).
+Current version: `v0.5.4` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
-GGUF defaults and step-by-step live upgrade: [`docs/GGUF-V0.5.2-UPGRADE.md`](./docs/GGUF-V0.5.2-UPGRADE.md).
+GGUF auto-discovery and safe live upgrade: [`docs/GGUF-V0.5.4-AUTO-UPGRADE.md`](./docs/GGUF-V0.5.4-AUTO-UPGRADE.md).
+The earlier v0.5.2 GGUF defaults guide remains available as a historical reference.
 
 ## Quickstart
 
@@ -81,7 +82,7 @@ codeseeq config
 `codeseeq config` walks you through three screens: provider (anthropic, google,
 grok, deepseek, venice, local, gguf, mlx, chatgpt) → model → API key, and
 writes `~/.config/codeseeq/config.json`. Non-local providers pick a model from
-the catalog on screen two; the local/gguf/mlx providers take a typed name/path
+the catalog on screen two; the local/mlx providers take a typed name/path; gguf defaults to auto
 and the chatgpt provider needs no API key at all (sign in with
 `codeseeq login` afterwards). The API-key screen is required for hosted
 providers and can be left empty for local gateways (an optional
@@ -161,7 +162,10 @@ host runtime (and host process bridge mode) for a `.gguf` model so the file path
 is looked up on the host filesystem rather than inside the container.
 
 ```bash
-# by full path
+# v0.5.4: re-use your running llama-server, no path or model id to enter
+codeseeq --model gguf@auto -y "hello"
+
+# by full path (launch a new llama-server instead)
 codeseeq --model /absolute/path/to/llama-3.2-3b-instruct-q4_k_m.gguf "prompt"
 
 # by environment variable
@@ -178,17 +182,40 @@ Optional tuning (global defaults — see below for per-model overrides):
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `CODESEEQ_GGUF_CONTEXT_WINDOW` | llama-server `-c` context size | 8192 |
+| `CODESEEQ_GGUF_CONTEXT_WINDOW` | declared context size; `-c` only when CodeSeeq launches llama-server | 131072 |
 | `CODESEEQ_GGUF_MODELS_JSON` | path to the per-model GGUF config JSON | `config/gguf-models.json` |
-| `CODESEEQ_GGUF_MAX_OUTPUT_TOKENS` | max output tokens | 2048 |
+| `CODESEEQ_GGUF_MAX_OUTPUT_TOKENS` | per-request max output tokens | 65536 |
 | `CODESEEQ_GGUF_N_GPU_LAYERS` | `-ngl` offload layers | 0 |
 | `CODESEEQ_GGUF_THREADS` | `-t` CPU threads | auto |
 | `CODESEEQ_GGUF_PARALLEL` | `-np` parallel sequences | 1 |
 | `CODESEEQ_GGUF_TIMEOUT_SECONDS` | per-request timeout | 600 |
 | `CODESEEQ_GGUF_STARTUP_TIMEOUT_SECONDS` | health-poll timeout | 300 |
 | `CODESEEQ_GGUF_ENABLE_THINKING` | enable thinking (if supported) | false |
-| `GGUF_BASE_URL` | advanced: reuse an already-running GGUF server | unset |
-| `GGUF_API_KEY` | optional `--api-key` for the local server | unset |
+| `GGUF_BASE_URL` | optional for `gguf@auto`: specific running endpoint (accepts `/v1` suffix) | auto probe |
+| `GGUF_API_KEY` | optional API key for discovery and upstream chats | unset |
+
+#### Automatic GGUF model discovery (`gguf@auto`)
+
+When `gguf@auto` is selected, CodeSeeq never reads a model path or starts
+another `llama-server`. It requests the **running** server's `/v1/models`
+endpoint, selects its single loaded model ID, and sends that exact ID in
+`/v1/chat/completions`. It rechecks on every request, so a model swap on the
+server is picked up without reconfiguring CodeSeeq.
+
+1. If `GGUF_BASE_URL` is set (from environment or `config.json`), only that
+   endpoint is used; the URL may include `/v1`.
+2. Otherwise CodeSeeq tries any previously configured local-compatible base
+   URLs, then local ports **8888, 8080, 8000, 1234, 5000 and 11434**; an
+   explicitly configured `CODESEEQ_GGUF_PORT` is also checked first.
+3. An unreachable endpoint, no loaded model or multiple loaded models produces
+   a clear error rather than guessing. If your server runs on another host or
+   nonstandard port, enter its base URL once via `codeseeq config` or set
+   `GGUF_BASE_URL=http://HOST:PORT/v1`.
+
+The GGUF sampling and token limits above still apply to CodeSeeq requests, but
+**do not alter the existing server's actual startup context/KV-cache capacity**.
+Keep your llama-server process running with the context/parallel settings you
+want. `gguf@/path/to/file.gguf` continues to work as before to start a server.
 
 #### Per-model GGUF settings
 
@@ -707,7 +734,7 @@ CodeSeeq supports these providers (choose them with `codeseeq config`):
 | Grok (xAI) | `GROK_API_KEY` | `grok-4`, `grok-3`, `grok-3-mini`, `grok-3-fast` (+ thinking variants) |
 | Venice.ai | `VENICE_API_KEY` | `venice-qwen-3-32b`, `venice-qwen-3-14b`, `venice-deepseek-r1-0528`, `venice-llama-3.3-70b`, `venice-qwen-2.5-coder-32b` |
 | Local | none (optional `LOCAL_API_KEY`) | any OpenAI-compatible model name typed manually, e.g. `local@llama-4-maverick` |
-| GGUF | none | a local `.gguf` file path, e.g. `gguf@/path/to/model.gguf` (spawns `llama-server`) |
+| GGUF | none (optional `GGUF_API_KEY`) | `gguf@auto` (reuse loaded model on endpoint), or `gguf@/path/to/model.gguf` (launch server) |
 | MLX | none | a local MLX model directory, e.g. `mlx@/path/to/model-dir` (spawns `mlx_lm.server`) |
 | Qwibus | none | `qwibus-qwikk`, `qwibus-qmplx` (legacy local gateway) |
 
@@ -855,8 +882,8 @@ To pin an exact release, set `CODESEEQ_RELEASE_TAG`. To forbid auto-fetching ent
 set `CODESEEQ_ALLOW_LATEST_RELEASE=false` (a pinned `CODESEEQ_RELEASE_TAG` is then required):
 
 ```bash
-CODESEEQ_RELEASE_TAG=v0.5.2 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
-CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.5.2 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_RELEASE_TAG=v0.5.4 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.5.4 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
 ```
 
 ### Uncensored Mode

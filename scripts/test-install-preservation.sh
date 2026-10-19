@@ -29,11 +29,11 @@ import json
 import sys
 root = Path(sys.argv[1])
 p = root / "home/.config/codeseeq"
-assert (p / "VERSION").read_text().strip() == "v0.5.2"
+assert (p / "VERSION").read_text().strip() == "v0.5.4"
 assert json.loads((p / "config.json").read_text())["CODESEEQ_PROVIDER"] == "gguf"
 assert json.loads((p / "gguf-models.local.json").read_text())["models"]["example-model.gguf"]["temperature"] == 0.2
 assert (p / "system-prompt.md").read_text().startswith("important customized")
 assert (p / ".env").read_text().strip() == "CODESEEQ_TEST_SECRET=do-not-remove"
 assert (root / "bin/codeseeq").is_file()
-print("[install-preservation] PASS: upgraded to v0.5.2 and preserved user configuration")
+print("[install-preservation] PASS: upgraded to v0.5.4 and preserved user configuration")
 PY
