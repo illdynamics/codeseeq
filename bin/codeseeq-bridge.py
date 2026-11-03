@@ -4203,11 +4203,14 @@ def deepseek_payload(
     if thinking_enabled:
         payload["thinking"] = {"type": "enabled"}
 
-    # DeepSeek reasoning_effort is a top-level parameter independent of the
-    # thinking toggle and applies to every DeepSeek model (flash, pro, and
-    # their -thinking variants). It is NOT sent to other providers that share
-    # this payload builder (grok/google/venice/local/gguf/qwibus).
-    if spec.provider == PROVIDER_DEEPSEEK:
+    # Reasoning effort and thinking mode.
+    #
+    # DeepSeek accepts a top-level reasoning_effort. llama.cpp's
+    # OpenAI-compatible server accepts the same field and maps it into the
+    # chat template's reasoning_effort variable, so forward it for GGUF too.
+    # It is NOT sent to the other providers that share this payload builder
+    # (grok/google/venice/local/qwibus).
+    if spec.provider in (PROVIDER_DEEPSEEK, PROVIDER_GGUF):
         reasoning = body.get("reasoning")
         if not isinstance(reasoning, dict):
             reasoning = {}
@@ -4217,6 +4220,20 @@ def deepseek_payload(
         effort = normalize_deepseek_reasoning_effort(effort)
         if effort:
             payload["reasoning_effort"] = effort
+
+    if spec.provider == PROVIDER_GGUF:
+        # llama.cpp switches the template's thinking branch through
+        # chat_template_kwargs.enable_thinking. The top-level DeepSeek-style
+        # "thinking" object above is not read by llama.cpp; Qwen3, DeepSeek-R1
+        # and gpt-oss GGUF templates honor this kwarg instead. Send an explicit
+        # boolean in both directions so a template default cannot silently
+        # override the requested mode.
+        template_kwargs = body.get("chat_template_kwargs")
+        template_kwargs = (
+            dict(template_kwargs) if isinstance(template_kwargs, dict) else {}
+        )
+        template_kwargs["enable_thinking"] = bool(thinking_enabled)
+        payload["chat_template_kwargs"] = template_kwargs
 
     return payload
 

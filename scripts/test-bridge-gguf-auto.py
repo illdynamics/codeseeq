@@ -52,7 +52,7 @@ server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
 thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 base = f'http://127.0.0.1:{server.server_port}'
-old = {k: os.environ.get(k) for k in ('GGUF_BASE_URL','GGUF_API_KEY','CODESEEQ_MODEL','CODESEEQ_PROVIDER', 'LOCAL_BASE_URL', 'OPENAI_BASE_URL', 'CODESEEQ_BASE_URL')}
+old = {k: os.environ.get(k) for k in ('GGUF_BASE_URL','GGUF_API_KEY','CODESEEQ_MODEL','CODESEEQ_PROVIDER', 'LOCAL_BASE_URL', 'OPENAI_BASE_URL', 'CODESEEQ_BASE_URL', 'CODESEEQ_REASONING_EFFORT', 'CODESEEQ_GGUF_ENABLE_THINKING', 'CODESEEQ_THINKING')}
 os.environ['GGUF_BASE_URL'] = base + '/v1'
 os.environ['CODESEEQ_MODEL'] = 'gguf@auto'
 os.environ['CODESEEQ_PROVIDER'] = 'gguf'
@@ -100,6 +100,17 @@ async def run():
     except bridge.GGUFDiscoveryError:
         check(True, 'offline explicit endpoint never silently falls back')
     os.environ['GGUF_BASE_URL'] = base + '/v1'
+
+    # llama.cpp reasoning controls: max effort + thinking must reach the
+    # upstream chat-completions payload exactly as requested.
+    os.environ['CODESEEQ_GGUF_ENABLE_THINKING'] = 'true'
+    os.environ['CODESEEQ_REASONING_EFFORT'] = 'max'
+    result = await bridge.responses(FakeRequest({'model':'gguf@auto','stream':False,'input':'reason hard'}))
+    check(result.get('status') == 'completed', 'reasoning request completed')
+    check(Handler.requests[-1].get('reasoning_effort') == 'max',
+          'upstream received reasoning_effort=max')
+    check(Handler.requests[-1].get('chat_template_kwargs', {}).get('enable_thinking') is True,
+          'upstream received chat_template_kwargs.enable_thinking=true')
 
     Handler.auth = 'test-key'
     os.environ['GGUF_API_KEY'] = 'test-key'

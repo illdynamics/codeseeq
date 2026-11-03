@@ -361,6 +361,100 @@ for key in ("CODESEEQ_GGUF_MAX_OUTPUT_TOKENS", "CODESEEQ_GGUF_TEMPERATURE",
 bridge._gguf_models_cache = None
 os.remove(pm_cfg)
 
+# 12) Reasoning effort + thinking mode for llama.cpp. llama.cpp reads the
+#     top-level reasoning_effort field and chat_template_kwargs.enable_thinking;
+#     the DeepSeek-style top-level thinking object is not understood by it.
+for key in ("CODESEEQ_REASONING_EFFORT", "CODESEEQ_GGUF_ENABLE_THINKING", "CODESEEQ_THINKING"):
+    os.environ.pop(key, None)
+
+plain_spec = bridge.normalize_model(gguf_path)
+plain_payload = bridge.deepseek_payload(
+    {}, plain_spec, [{"role": "user", "content": "hello"}]
+)
+check(
+    "GGUF non-thinking sends enable_thinking=false",
+    plain_payload.get("chat_template_kwargs", {}).get("enable_thinking") is False,
+    str(plain_payload.get("chat_template_kwargs")),
+)
+check(
+    "GGUF non-thinking omits reasoning_effort",
+    "reasoning_effort" not in plain_payload,
+    str(plain_payload.get("reasoning_effort")),
+)
+
+os.environ["CODESEEQ_THINKING"] = "true"
+os.environ["CODESEEQ_GGUF_ENABLE_THINKING"] = "true"
+os.environ["CODESEEQ_REASONING_EFFORT"] = "max"
+think_spec = bridge.normalize_model(gguf_path)
+check(
+    "CODESEEQ_GGUF_ENABLE_THINKING enables GGUF thinking",
+    think_spec.thinking is True,
+    str(think_spec.thinking),
+)
+think_payload = bridge.deepseek_payload(
+    {}, think_spec, [{"role": "user", "content": "hello"}]
+)
+check(
+    "GGUF thinking sends enable_thinking=true",
+    think_payload.get("chat_template_kwargs", {}).get("enable_thinking") is True,
+    str(think_payload.get("chat_template_kwargs")),
+)
+check(
+    "GGUF thinking sends reasoning_effort=max",
+    think_payload.get("reasoning_effort") == "max",
+    str(think_payload.get("reasoning_effort")),
+)
+
+# Body reasoning is used when no env/config default is set; xhigh maps to max.
+os.environ.pop("CODESEEQ_REASONING_EFFORT", None)
+body_payload = bridge.deepseek_payload(
+    {"reasoning": {"effort": "xhigh"}},
+    think_spec,
+    [{"role": "user", "content": "hello"}],
+)
+check(
+    "GGUF maps body reasoning xhigh -> max",
+    body_payload.get("reasoning_effort") == "max",
+    str(body_payload.get("reasoning_effort")),
+)
+
+# Existing chat_template_kwargs survive, and env max wins over body low.
+os.environ["CODESEEQ_REASONING_EFFORT"] = "max"
+merged_payload = bridge.deepseek_payload(
+    {"reasoning": {"effort": "low"}, "chat_template_kwargs": {"foo": "bar"}},
+    think_spec,
+    [{"role": "user", "content": "hello"}],
+)
+check(
+    "GGUF preserves caller chat_template_kwargs",
+    merged_payload.get("chat_template_kwargs", {}).get("foo") == "bar",
+    str(merged_payload.get("chat_template_kwargs")),
+)
+check(
+    "GGUF env reasoning effort wins over body",
+    merged_payload.get("reasoning_effort") == "max",
+    str(merged_payload.get("reasoning_effort")),
+)
+
+# Other providers sharing the payload builder must not receive these fields.
+local_spec = bridge.normalize_model("local@reasoning-test")
+local_payload = bridge.deepseek_payload(
+    {}, local_spec, [{"role": "user", "content": "hello"}]
+)
+check(
+    "local provider does not get reasoning_effort",
+    "reasoning_effort" not in local_payload,
+    str(local_payload.get("reasoning_effort")),
+)
+check(
+    "local provider does not get llama.cpp chat_template_kwargs",
+    "chat_template_kwargs" not in local_payload,
+    str(local_payload.get("chat_template_kwargs")),
+)
+
+for key in ("CODESEEQ_REASONING_EFFORT", "CODESEEQ_GGUF_ENABLE_THINKING", "CODESEEQ_THINKING"):
+    os.environ.pop(key, None)
+
 os.remove(gguf_path)
 os.rmdir(tmp)
 

@@ -14,7 +14,7 @@ no API key of any kind) and run against OpenAI's ChatGPT Codex models with the
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.5.4` (from [`VERSION`](./VERSION)).
+Current version: `v0.5.5` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -162,8 +162,12 @@ host runtime (and host process bridge mode) for a `.gguf` model so the file path
 is looked up on the host filesystem rather than inside the container.
 
 ```bash
-# v0.5.4: re-use your running llama-server, no path or model id to enter
+# re-use your running llama-server, no path or model id to enter
 codeseeq --model gguf@auto -y "hello"
+
+# max reasoning + thinking through llama.cpp's native parameters
+CODESEEQ_REASONING_EFFORT=max CODESEEQ_GGUF_ENABLE_THINKING=true \
+  codeseeq run -m gguf@auto -R max --thinking -y "prompt"
 
 # by full path (launch a new llama-server instead)
 codeseeq --model /absolute/path/to/llama-3.2-3b-instruct-q4_k_m.gguf "prompt"
@@ -281,7 +285,7 @@ CODESEEQ_BASE_URL='http://127.0.0.1:8888/v1' \
 CODESEEQ_TEMPERATURE='0.0' \
 CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true \
 CODESEEQ_RUNTIME_MODE=host \
-codeseeq -m mlx@<path-to-model-directory> -y run "prompt"
+codeseeq run -m mlx@<path-to-model-directory> -y "prompt"
 
 # or add it through the config wizard (choose the "MLX" provider)
 codeseeq config
@@ -608,6 +612,7 @@ All supported variables are documented in [`.env.example`](./.env.example). Key 
 | `CODESEEQ_MODEL`              | `deepseek-v4-flash`  | Default model (`provider@model`, e.g. `anthropic@claude-sonnet-4`, `local@my-model`, `chatgpt@gpt-5-codex`) |
 | `CODESEEQ_PROVIDER`           | —                    | Optional explicit provider override (deepseek, anthropic, google, grok, venice, local, gguf, mlx, chatgpt) |
 | `CODESEEQ_THINKING`           | `false`              | Enable thinking mode                             |
+| `CODESEEQ_REASONING_EFFORT`   | —                    | Reasoning effort for DeepSeek and GGUF/llama.cpp (`low`, `high`, `max`) |
 | `CODESEEQ_APPROVAL_POLICY`    | `on-request`         | Codex approval policy                            |
 | `CODESEEQ_SANDBOX_MODE`       | `workspace-write`    | Codex sandbox mode                               |
 | `CODESEEQ_YOLO`               | `false`              | Bypass approvals and sandbox (equivalent to `-y`)|
@@ -882,8 +887,8 @@ To pin an exact release, set `CODESEEQ_RELEASE_TAG`. To forbid auto-fetching ent
 set `CODESEEQ_ALLOW_LATEST_RELEASE=false` (a pinned `CODESEEQ_RELEASE_TAG` is then required):
 
 ```bash
-CODESEEQ_RELEASE_TAG=v0.5.4 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
-CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.5.4 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_RELEASE_TAG=v0.5.5 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.5.5 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
 ```
 
 ### Uncensored Mode

@@ -321,10 +321,10 @@ ChatGPT account (Plus/Pro/Team, no API key):
 Local GGUF / MLX models (host runtime, no API key):
   GGUF: codeseeq --model gguf@auto "prompt" (autodetect running server)
         codeseeq --model /path/to/model.gguf "prompt"
-        codeseeq -m gguf@/path/to/model.gguf -y run "prompt"
+        codeseeq run -m gguf@/path/to/model.gguf -y "prompt"
         The bridge launches llama.cpp llama-server for you.
-  MLX:  codeseeq -m mlx@/path/to/model-directory -y run "prompt"
-        CODESEEQ_MLX_PORT=8888 codeseeq -m mlx@<dir> -y run "prompt"
+  MLX:  codeseeq run -m mlx@/path/to/model-directory -y "prompt"
+        CODESEEQ_MLX_PORT=8888 codeseeq run -m mlx@<dir> -y "prompt"
         The bridge launches Apple mlx_lm.server for you (requires mlx-lm:
         python3 -m pip install mlx-lm). Set CODESEEQ_MLX_PYTHON to the
         interpreter that has mlx_lm if it is not the default python3.
@@ -360,10 +360,14 @@ Uncensored mode:
   -U, --uncensored-mode  Load Dolfino aka Dirty D uncensored system prompt
   CODESEEQ_UNCENSORED_MODE Set uncensored mode via environment
 
-DeepSeek reasoning:
-  -R, --reasoning LEVEL  Set DeepSeek reasoning effort: low, high, or max
+Reasoning (DeepSeek and GGUF/llama.cpp):
+  -R, --reasoning LEVEL  Set reasoning effort: low, high, or max
                          (overrides the config default)
-  CODESEEQ_REASONING_EFFORT  Set default reasoning effort (DeepSeek only)
+  --thinking / --no-thinking
+                         Enable/disable thinking mode
+  CODESEEQ_REASONING_EFFORT  Set default reasoning effort
+  CODESEEQ_GGUF_ENABLE_THINKING
+                         Enable thinking for GGUF templates (llama.cpp)
 
 Image backend:
   --image-backend BACKEND       Set image backend: none (default) or venice

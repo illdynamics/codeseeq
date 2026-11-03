@@ -1,3 +1,21 @@
+## v0.5.5 - 2026-11-03
+
+### GGUF reasoning and thinking controls
+- Forward `reasoning_effort` (`low`/`high`/`max`) to llama.cpp for
+  `gguf@...` models, not just DeepSeek. `-R max` and
+  `CODESEEQ_REASONING_EFFORT=max` now reach the upstream chat-completions
+  request.
+- Normalize reasoning tokens consistently before forwarding: `xhigh` and
+  `ultra` map to `max`, `medium` to `high`, and `minimal` to `low`.
+- Send `chat_template_kwargs.enable_thinking` explicitly for GGUF in both
+  directions, so `--thinking` / `CODESEEQ_GGUF_ENABLE_THINKING=true` really
+  enables Qwen3, DeepSeek-R1 and gpt-oss thinking templates, while
+  non-thinking runs disable them.
+- Preserve caller-supplied `chat_template_kwargs` while applying the
+  requested thinking mode.
+- Add unit and loopback HTTP regression tests for the GGUF reasoning payload.
+- Fix local-model CLI examples so `run` precedes model/reasoning flags.
+
 ## v0.5.4 - 2026-10-19
 
 ### GGUF auto endpoint mode
