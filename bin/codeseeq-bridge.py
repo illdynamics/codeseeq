@@ -250,7 +250,7 @@ CHUNK_SIZE = int(os.environ.get("CODESEEQ_BRIDGE_STREAM_CHUNK_SIZE", "120"))
 # CODESEEQ_STREAM_IDLE_TIMEOUT_MS enforces an idle (between-chunk) timeout on
 # streaming responses so a stalled upstream/client cannot hang a uvicorn task.
 STREAM_IDLE_TIMEOUT_MS = float(os.environ.get("CODESEEQ_STREAM_IDLE_TIMEOUT_MS", "600000"))
-DEFAULT_DEEPSEEK_MAX_OUTPUT_TOKENS = 384000
+DEFAULT_DEEPSEEK_MAX_OUTPUT_TOKENS = 128000
 
 # ---------------------------------------------------------------------------
 # Per-model configuration.
@@ -701,7 +701,7 @@ def _build_model_specs() -> Dict[str, ModelSpec]:
         default_top_p: Optional[float] = None,
         default_top_k: Optional[int] = None,
         context_window: int = 1000000,
-        max_output_tokens: int = 384000,
+        max_output_tokens: int = 128000,
         timeout_seconds: float = 120.0,
         provider: str = PROVIDER_DEEPSEEK,
     ) -> ModelSpec:
@@ -781,7 +781,7 @@ def _build_model_specs() -> Dict[str, ModelSpec]:
             default_top_p=None,
             default_top_k=None,
             context_window=1000000,
-            max_output_tokens=384000,
+            max_output_tokens=128000,
             timeout_seconds=60,
         ),
         "deepseek@deepseek-v4-flash-thinking": _spec(
@@ -793,7 +793,7 @@ def _build_model_specs() -> Dict[str, ModelSpec]:
             default_top_p=None,
             default_top_k=None,
             context_window=1000000,
-            max_output_tokens=384000,
+            max_output_tokens=128000,
             timeout_seconds=600,
         ),
         "deepseek@deepseek-v4-pro": _spec(
@@ -805,7 +805,7 @@ def _build_model_specs() -> Dict[str, ModelSpec]:
             default_top_p=None,
             default_top_k=None,
             context_window=1000000,
-            max_output_tokens=384000,
+            max_output_tokens=128000,
             timeout_seconds=120,
         ),
         "deepseek@deepseek-v4-pro-thinking": _spec(
@@ -817,7 +817,7 @@ def _build_model_specs() -> Dict[str, ModelSpec]:
             default_top_p=None,
             default_top_k=None,
             context_window=1000000,
-            max_output_tokens=384000,
+            max_output_tokens=128000,
             timeout_seconds=1200,
         ),
         "qwibus@qwibus-qwikk": _spec(
@@ -2948,10 +2948,10 @@ def parse_positive_int(value: Any) -> Optional[int]:
 def resolve_max_tokens(body: Dict[str, Any], spec: "ModelSpec") -> int:
     """Resolve a safe upstream max_tokens value.
 
-    The wrapper historically exports CODESEEQ_MAX_OUTPUT_TOKENS=384000 as a
+    The wrapper historically exports CODESEEQ_MAX_OUTPUT_TOKENS=128000 as a
     DeepSeek/cloud default. That value must not override GGUF/MLX local-model
     caps: mlx_lm/llama.cpp may reserve KV/output buffers from this field and a
-    384k-token request can OOM a Mac even for a tiny prompt like "say hi".
+    128k-token request can OOM a Mac even for a tiny prompt like "say hi".
 
     Provider-specific local caps therefore win for local providers. Hosted and
     generic providers keep the legacy global cap behaviour.

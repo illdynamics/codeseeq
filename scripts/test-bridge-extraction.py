@@ -175,14 +175,14 @@ def main() -> None:
         assert payload["tools"][0]["function"]["name"] == "exec_command"
         assert payload["tools"][0]["function"]["parameters"]["properties"]["cmd"]["type"] == "string"
         assert payload["tool_choice"]["function"]["name"] == "exec_command"
-        assert payload["max_tokens"] == 384000
+        assert payload["max_tokens"] == 128000
 
         capped_payload = bridge.deepseek_payload(
             {"stream": False, "max_output_tokens": 999999},
             bridge.normalize_model("deepseek@deepseek-v4-flash"),
             [{"role": "user", "content": "pwd"}],
         )
-        assert capped_payload["max_tokens"] == 384000
+        assert capped_payload["max_tokens"] == 128000
     finally:
         if previous_max is not None:
             os.environ["CODESEEQ_MAX_OUTPUT_TOKENS"] = previous_max

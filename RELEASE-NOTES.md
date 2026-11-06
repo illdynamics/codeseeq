@@ -1,3 +1,15 @@
+## v0.6.0 - 2026-11-06
+
+### DeepSeek context and output limits
+- Use the full **1M-token context window** for all DeepSeek
+  `deepseek-v4-flash` and `deepseek-v4-pro` variants, including thinking
+  models.
+- Set the DeepSeek maximum output to **128K tokens** (128000), replacing the
+  previous 384K default in the bridge, launcher defaults, environment
+  defaults, and both model catalogs.
+- Keep local GGUF/MLX output caps independent from the cloud-provider default
+  so the smaller DeepSeek output limit does not raise local-model memory use.
+
 ## v0.5.5 - 2026-11-03
 
 ### GGUF reasoning and thinking controls

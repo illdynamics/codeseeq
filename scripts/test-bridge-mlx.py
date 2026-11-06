@@ -165,7 +165,7 @@ sc = bridge.normalize_model("mlx@" + mlx_dir)
 check("CODESEEQ_MLX_CONTEXT_WINDOW overrides model config.json", sc.context_window == 65536, str(sc.context_window))
 os.environ.pop("CODESEEQ_MLX_CONTEXT_WINDOW", None)
 
-os.environ["CODESEEQ_MAX_OUTPUT_TOKENS"] = "384000"
+os.environ["CODESEEQ_MAX_OUTPUT_TOKENS"] = "128000"
 s_safe = bridge.normalize_model("mlx@" + mlx_dir)
 check("global max output does not override MLX cap",
       bridge.resolve_max_tokens({}, s_safe) == 2048,
