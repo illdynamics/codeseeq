@@ -3460,18 +3460,28 @@ def output_payload_to_text(output: Any) -> str:
 
 
 def reasoning_item_to_text(item: Dict[str, Any]) -> str:
-    texts: List[str] = []
-    summary = item.get("summary")
-    if isinstance(summary, list):
-        for part in summary:
-            if isinstance(part, dict) and isinstance(part.get("text"), str):
-                texts.append(part["text"])
-    content = item.get("content")
-    if isinstance(content, list):
-        for part in content:
-            if isinstance(part, dict) and isinstance(part.get("text"), str):
-                texts.append(part["text"])
-    return "\n".join(t for t in texts if t).strip()
+    """Extract the fullest readable reasoning text from a Responses item.
+
+    Codex can resend both a summary and the raw reasoning content. Prefer
+    ``content`` (full reasoning) so the bridge does not duplicate the summary
+    prefix when reconstructing DeepSeek's ``reasoning_content``.
+    """
+    def _parts(value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        return [
+            str(part["text"])
+            for part in value
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ]
+
+    content_text = "\n".join(_parts(item.get("content"))).strip()
+    if content_text:
+        return content_text
+    raw_text = item.get("raw_content")
+    if isinstance(raw_text, str) and raw_text.strip():
+        return raw_text.strip()
+    return "\n".join(_parts(item.get("summary"))).strip()
 
 
 def input_to_messages(input_data: Any) -> List[Dict[str, Any]]:
@@ -3502,6 +3512,13 @@ def input_to_messages(input_data: Any) -> List[Dict[str, Any]]:
 
         if itype == "reasoning":
             reasoning = reasoning_item_to_text(item)
+            if not reasoning:
+                # Codex may resend an opaque reasoning item that only carries
+                # an id/encrypted_content and no readable summary/content.
+                # Creating an empty assistant message with an empty
+                # reasoning_content makes DeepSeek reject the next request
+                # ("reasoning_content in thinking mode must be passed back").
+                continue
             if current_msg and current_msg.get("role") == "assistant":
                 prev = current_msg.get("reasoning_content")
                 current_msg["reasoning_content"] = (
@@ -4197,10 +4214,17 @@ def deepseek_payload(
     if spec.slug.startswith("qwibus") and not thinking_enabled:
         payload["enable_thinking"] = False
 
-    # Thinking mode is toggled independently of reasoning effort. When
-    # thinking is disabled we omit the field entirely (DeepSeek defaults to
-    # its own mode), matching prior behavior.
-    if thinking_enabled:
+    # Thinking mode is toggled independently of reasoning effort. DeepSeek's
+    # API defaults to thinking enabled when the field is omitted, so
+    # non-thinking CodeSeeq models must send an explicit "disabled" value.
+    # Otherwise DeepSeek still reasons, emits reasoning_content, and then
+    # rejects the next tool-call continuation because the bridge never
+    # surfaced that reasoning to Codex (and therefore cannot pass it back).
+    if spec.provider == PROVIDER_DEEPSEEK:
+        payload["thinking"] = {
+            "type": "enabled" if thinking_enabled else "disabled"
+        }
+    elif thinking_enabled:
         payload["thinking"] = {"type": "enabled"}
 
     # Reasoning effort and thinking mode.
@@ -5860,19 +5884,28 @@ async def responses(request: Request) -> Any:
                     "text": full_reasoning,
                 },
             )
-            # Close reasoning output item
+            # Close reasoning output item. Include the full reasoning in
+            # "content" (not just the truncated summary) so Codex persists it
+            # and sends it back on the next tool-call turn. DeepSeek requires
+            # the complete reasoning_content when tools are in play.
+            reasoning_item_done: Dict[str, Any] = {
+                "id": reasoning_item_id_local,
+                "type": "reasoning",
+                "summary": [
+                    {"type": "summary_text", "text": full_reasoning[:1000]}
+                ] if full_reasoning else [],
+                "encrypted_content": None,
+            }
+            if full_reasoning:
+                reasoning_item_done["content"] = [
+                    {"type": "reasoning_text", "text": full_reasoning}
+                ]
             yield sse_event(
                 "response.output_item.done",
                 {
                     "type": "response.output_item.done",
                     "output_index": reasoning_output_index["value"],
-                    "item": {
-                        "id": reasoning_item_id_local,
-                        "type": "reasoning",
-                        "summary": [
-                            {"type": "summary_text", "text": full_reasoning[:1000]}
-                        ] if full_reasoning else [],
-                    },
+                    "item": reasoning_item_done,
                 },
             )
 

@@ -244,6 +244,11 @@ if ! scripts/test-bridge-anthropic.py; then
   fail "bridge Anthropic translation regression test failed"
 fi
 
+note "checking DeepSeek reasoning_content round-trip"
+if ! scripts/test-bridge-reasoning.py; then
+  fail "bridge DeepSeek reasoning_content regression test failed"
+fi
+
 note "checking wrapper/bridge per-model env-name agreement"
 if ! scripts/test-bridge-env-names.py; then
   fail "wrapper/bridge per-model env-name agreement test failed"

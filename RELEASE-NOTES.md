@@ -1,3 +1,21 @@
+## v0.7.0 - 2026-11-06
+
+### DeepSeek thinking-mode continuation fix
+- Non-thinking DeepSeek models now send `thinking: {"type": "disabled"}`.
+  DeepSeek defaults to thinking mode when the field is omitted, so the bridge
+  previously generated hidden `reasoning_content` that Codex never saw, then
+  failed the next tool-call turn with
+  `The reasoning_content in the thinking mode must be passed back to the API`.
+- Reconstruct assistant `reasoning_content` from the full raw reasoning text
+  (preferring `content` over the truncated summary) so summary + content is
+  not duplicated when Codex replays a reasoning item.
+- Ignore opaque/empty reasoning items instead of creating empty assistant
+  messages that DeepSeek rejects.
+- Include the complete reasoning text in streaming reasoning output items so
+  Codex persists it and sends it back on subsequent tool turns.
+- Add a bridge regression test covering the thinking toggle and
+  `reasoning_content` round-trip.
+
 ## v0.6.0 - 2026-11-06
 
 ### DeepSeek context and output limits
