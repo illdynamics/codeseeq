@@ -1,3 +1,28 @@
+## v0.7.3 - 2026-11-10
+
+### Execute DSML calls the local model wrapped in extra XML
+
+- **Symptom (from `mini.md`).** A GGUF/local model answered a real task with
+  an XML tool block instead of a native call, and CodeSeeQ printed the block
+  as plain text and exited. Nothing ran, so "installed and opened" was never
+  true. This is a CodeSeeQ bridge extraction bug, not LFM/GGUF model
+  behavior.
+- **Nested wrappers.** `<tool_calls><tool_calls><exec_command>...</...>` and
+  sibling wrapper blocks (`<tool_calls>..</tool_calls><tool_calls>..`) now
+  yield real executable calls. The previous matcher consumed the outer block
+  and returned zero calls, which made the turn look text-only.
+- **Escaped markup.** DSML that arrived as `&lt;tool_calls&gt;` or
+  `\u003ctool_calls\u003e` is decoded before extraction, including in
+  streaming mode where escapes are split across SSE chunks (`&l` + `t;...`,
+  `\\` + `u003c`).
+- **Double-encoded structured calls.** Tool arguments such as
+  `{"result": "<tool_calls><exec_command>..."}` are unwrapped into the inner
+  function call instead of being executed literally.
+- **Regression test:** `scripts/test-bridge-extraction.py` now covers nested
+  wrappers, entity/unicode escapes, split streaming escapes, and nested
+  structured arguments. Wired into `scripts/check.sh` as before.
+- Version bumped to `v0.7.3`.
+
 ## v0.7.2 - 2026-11-10
 
 ### Stop local models stalling on privilege escalation / approval questions

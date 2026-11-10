@@ -245,7 +245,101 @@ def main() -> None:
     )
     assert len(calls) == 1, calls
     assert json.loads(calls[0]["function"]["arguments"]) == {"cmd": "cat /workspace/test.txt", "tty": True}
-    print("[test-bridge-extraction] PASS")
+
+    # Nested wrapper tags: some local models put an extra <tool_calls> around
+    # the outer <tool_calls>, or emit one wrapper per call. Both must yield
+    # executable calls instead of being emitted as plain text.
+    _cleaned, calls = bridge.extract_dsml_tool_calls(
+        "<tool_calls><tool_calls><exec_command><cmd>ls</cmd></exec_command>"
+        "</tool_calls></tool_calls>",
+        {"exec_command"},
+        {"exec_command": {"cmd"}},
+    )
+    assert len(calls) == 1, calls
+    assert json.loads(calls[0]["function"]["arguments"]) == {"cmd": "ls", "tty": True}
+
+    _cleaned, calls = bridge.extract_dsml_tool_calls(
+        "<tool_calls><exec_command><cmd>ls</cmd></exec_command></tool_calls>"
+        "<tool_calls><exec_command><cmd>pwd</cmd></exec_command></tool_calls>",
+        {"exec_command"},
+        {"exec_command": {"cmd"}},
+    )
+    assert [json.loads(c["function"]["arguments"])["cmd"] for c in calls] == ["ls", "pwd"]
+
+    # Escaped DSML: &lt;...&gt; and \u003c...\u003e must both be decoded.
+    escaped_term = (
+        "&lt;tool_calls&gt;\n  &lt;exec_command&gt;\n"
+        "    &lt;cmd&gt;ls&lt;/cmd&gt;\n  &lt;/exec_command&gt;\n"
+        "&lt;/tool_calls&gt;"
+    )
+    assert_call(
+        escaped_term,
+        {"exec_command"},
+        {"exec_command": {"cmd"}},
+        "exec_command",
+        {"cmd": "ls", "tty": True},
+    )
+    assert_call(
+        escaped_term.replace("&lt;", "\\u003c").replace("&gt;", "\\u003e"),
+        {"exec_command"},
+        {"exec_command": {"cmd"}},
+        "exec_command",
+        {"cmd": "ls", "tty": True},
+    )
+
+    # A complete call is still unwrapped when the escaped block carries an
+    # ordinary escaped comparison inside its command text.
+    assert_call(
+        '<exec_command><cmd>test 1 &lt; 2</cmd></exec_command>',
+        {"exec_command"},
+        {"exec_command": {"cmd"}},
+        "exec_command",
+        {"cmd": "test 1 < 2", "tty": True},
+    )
+
+    # Streaming: escaped markup split across chunks must still produce a
+    # tool-call block, including splits inside the entity / \u003c escape.
+    for encoded in (
+        escaped_term,
+        escaped_term.replace("&lt;", "\\u003c").replace("&gt;", "\\u003e"),
+    ):
+        buf = bridge.StreamingDsmlBuffer({"exec_command"})
+        safe_parts = []
+        blocks = []
+        for i in range(0, len(encoded), 7):
+            safe, done = buf.feed(encoded[i : i + 7])
+            safe_parts.append(safe)
+            blocks.extend(done)
+        safe, done = buf.flush()
+        safe_parts.append(safe)
+        blocks.extend(done)
+        assert "".join(safe_parts) == "", repr("".join(safe_parts))
+        assert len(blocks) == 1, (encoded, blocks)
+        _, calls = bridge.extract_dsml_tool_calls(
+            blocks[0], {"exec_command"}, {"exec_command": {"cmd"}}
+        )
+        assert len(calls) == 1, calls
+        assert json.loads(calls[0]["function"]["arguments"]) == {"cmd": "ls", "tty": True}
+
+    # Structured double-encoding: {"result": "<tool_calls>..."} as arguments.
+    prepared, err = bridge.prepare_structured_tool_call(
+        {
+            "id": "call_nested",
+            "type": "function",
+            "function": {
+                "name": "exec_command",
+                "arguments": json.dumps({"result": escaped_term}),
+            },
+        },
+        registered_tools={"exec_command"},
+        registered_arg_names={"exec_command": {"cmd"}},
+    )
+    assert err is None, err
+    assert prepared is not None
+    assert prepared["function"]["name"] == "exec_command"
+    assert json.loads(prepared["function"]["arguments"]) == {"cmd": "ls", "tty": True}
+
+    print("[test-bridge-extraction] PASS: nested/escaped DSML extraction")
 
 
 if __name__ == "__main__":

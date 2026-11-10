@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `v0.7.2`
+Current version: `v0.7.3`
 
 ## `./codeseeq` is not executable
 
@@ -254,6 +254,43 @@ What to check if a local model still refuses:
 - If a model keeps refusing, it is not a sandbox problem: run it with more
   explicit instructions or switch models. Apex-class models follow the
   permission rule more reliably than small LFM/GGUF models.
+
+## Local Model Emits An XML Tool Block As Text
+
+Some local/GGUF models do not emit a native `tool_calls` field. Instead they
+print a DSML block, sometimes with an extra wrapper:
+
+```xml
+<tool_calls>
+  <tool_calls>
+    <exec_command><cmd>ssh root@host whoami</cmd></exec_command>
+  </tool_calls>
+</tool_calls>
+```
+
+Before v0.7.3 the bridge's block matcher consumed the outer wrapper and found
+zero calls, so CodeSeeQ rendered the XML as the answer and stopped. That looked
+like the model "claiming" it installed or opened something when nothing ran.
+
+Since v0.7.3 the bridge:
+
+1. extracts tool calls from nested `<tool_calls>` / `<function_calls>`
+   wrappers (including one wrapper per call);
+2. decodes entity-escaped (`&lt;tool_calls&gt;`) and unicode-escaped
+   (`\u003ctool_calls\u003e`) DSML before extraction, in streaming and
+   non-streaming responses;
+3. unwraps structured arguments of the form
+   `{"result": "<tool_calls>..."}` into the inner executable call.
+
+If output still looks text-only, check the bridge log for
+`parsed dsml tool calls` / `streaming dsml tool call`, or run:
+
+```bash
+scripts/test-bridge-extraction.py
+```
+
+A real SSH failure (`Permission denied (publickey)`) is separate: fix the key
+path/agent first, then retry.
 
 ## Local Codex Missing In Danger Mode
 
@@ -564,6 +601,9 @@ Rebuild and rerun:
 ```
 
 The bridge contains DSML/tool-call normalization for current CodeSeeq behavior.
+Since v0.7.3 it also unwraps nested `<tool_calls>` wrappers and decodes escaped
+markup (`&lt;tool_calls&gt;` / `\u003c`) so those blocks run as tool calls;
+see "Local Model Emits An XML Tool Block As Text" above.
 
 ## Requested Behavior Differs From Local Codex
 

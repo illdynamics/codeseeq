@@ -92,6 +92,15 @@ v0.3.9 patches:
   explicit env/config values take precedence over the model catalog.
 - Removed dead session-tracking code and CODESEEQ_SESSION_TTL_SECONDS.
 
+v0.7.3 patches:
+- Local models that wrap DSML in an extra <tool_calls>/<function_calls>
+  wrapper now produce executable calls instead of text-only turns.
+- Entity-escaped (&lt;tool_calls&gt;) and unicode-escaped
+  (\u003ctool_calls\u003e) DSML is decoded before extraction, including
+  streaming responses split across chunks.
+- Structured arguments of the form {"result": "<tool_calls>..."} are
+  unwrapped into the inner executable call.
+
 Prior patches:
 - Per-model endpoint + sampling configuration (base/chat URL, temperature,
   top_p, top_k, context window, max output tokens, timeout, thinking, and
@@ -2117,15 +2126,6 @@ _DSML_DISPLAY_PREFIX_CLOSE_RE = re.compile(
 )
 
 
-def normalize_dsml_display(text: str) -> str:
-    """Convert codex-display-obfuscated tags back to plain XML form."""
-    if not text or "DSML" not in text:
-        return text
-    text = _DSML_DISPLAY_PREFIX_RE.sub("<", text)
-    text = _DSML_DISPLAY_PREFIX_CLOSE_RE.sub("</", text)
-    return text
-
-
 # ---------------------------------------------------------------------------
 # Tool-name aliasing
 # ---------------------------------------------------------------------------
@@ -2304,12 +2304,110 @@ def parse_xml_attrs(raw_attrs: str) -> Dict[str, str]:
     return attrs
 
 
+_ESCAPED_XML_CHAR_RE = re.compile(r"&(?:amp;)*lt;", re.IGNORECASE)
+
+
+def decode_escaped_xml_markup(value: str) -> str:
+    """Undo escaped XML markup produced by JSON/literal string encodings.
+
+    Some local models escape an entire JSON ``arguments`` string (or a DSML
+    body) one or two levels deep, so the bridge receives
+    ``\u003ctool_calls\u003e`` or ``&lt;tool_calls&gt;`` instead of real
+    tags. Codex then sees the call as plain text for find/replace. Only
+    decode when the value *starts* with escaped markup so ordinary shell
+    comparisons such as ``test 1 &lt; 2`` are preserved.
+    """
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip()
+    if not stripped:
+        return value
+    if stripped.startswith("\\u003c") or stripped.startswith("\\u003C"):
+        try:
+            value = json.loads('"' + value.replace('"', '\\"') + '"')
+        except Exception:
+            value = (
+                value.replace("\\u003c", "<")
+                .replace("\\u003C", "<")
+                .replace("\\u003e", ">")
+                .replace("\\u003E", ">")
+            )
+    elif _ESCAPED_XML_CHAR_RE.match(stripped):
+        for _ in range(3):
+            decoded = (
+                value.replace("&amp;lt;", "<")
+                .replace("&amp;gt;", ">")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+            )
+            if decoded == value:
+                break
+            value = decoded
+    return value
+
+
+def normalize_dsml_display(text: str) -> str:
+    """Convert codex-display-obfuscated tags back to plain XML form.
+
+    Also undoes one level of escaped tool markup (``&lt;tool_calls&gt;`` or
+    ``\\u003ctool_calls\\u003e``) when the text starts with it, so a local
+    model that escapes its DSML block still produces an executable call.
+    """
+    if not text:
+        return text
+    if "DSML" in text:
+        text = _DSML_DISPLAY_PREFIX_RE.sub("<", text)
+        text = _DSML_DISPLAY_PREFIX_CLOSE_RE.sub("</", text)
+    stripped = text.lstrip()
+    if not (
+        _ESCAPED_XML_CHAR_RE.match(stripped)
+        or stripped.startswith(("\\u003c", "\\u003C"))
+    ):
+        return text
+    return decode_escaped_xml_markup(text)
+
+
 def clean_xml_value(raw_value: str) -> str:
-    value = raw_value.strip()
+    value = decode_escaped_xml_markup(raw_value.strip())
     cdata = XML_CDATA_RE.match(value)
     if cdata:
         value = cdata.group(1)
     return html.unescape(value.strip())
+
+
+def unwrap_dsml_tool_call_result(
+    value: Any,
+    registered_tools: Optional[Set[str]] = None,
+    registered_arg_names: Optional[Dict[str, Set[str]]] = None,
+) -> Any:
+    """Unwrap a double-encoded tool call returned as a string argument.
+
+    A local model can wrap its DSML block in ``{"result": "<tool_calls>..."}``
+    or pass it as a plain string. Codex would try to execute the literal
+    block as markup. Detect the complete callee + arguments here and let the
+    caller emit the inner function call instead.
+    """
+    if isinstance(value, dict) and set(value.keys()) == {"result"}:
+        value = value.get("result")
+    if not isinstance(value, str):
+        return value
+    decoded = decode_escaped_xml_markup(value)
+    if "<" not in decoded or ">" not in decoded:
+        return value
+    _cleaned, calls = extract_dsml_tool_calls(
+        decoded, registered_tools, registered_arg_names
+    )
+    if len(calls) != 1:
+        return value
+    fn = calls[0].get("function") if isinstance(calls[0].get("function"), dict) else {}
+    try:
+        parsed_args = json.loads(fn.get("arguments") or "{}")
+    except Exception:
+        return value
+    return {
+        "id": calls[0].get("id"),
+        "function": {"name": fn.get("name"), "arguments": parsed_args},
+    }
 
 
 def maybe_json_value(raw_value: str) -> Any:
@@ -2588,6 +2686,19 @@ def validate_tool_arguments_json(
     return json.dumps(normalized, ensure_ascii=False), None
 
 
+def _parse_maybe_json_arguments(arguments_value: Any) -> Any:
+    """Parse function-call arguments that may arrive as a JSON string."""
+    if not isinstance(arguments_value, str):
+        return arguments_value
+    stripped = arguments_value.strip()
+    if not stripped:
+        return {}
+    try:
+        return json.loads(stripped)
+    except Exception:
+        return arguments_value
+
+
 def prepare_structured_tool_call(
     tool_call: Dict[str, Any],
     *,
@@ -2605,6 +2716,46 @@ def prepare_structured_tool_call(
     resolved = resolve_tool_name(raw_name, registered_tools)
     if resolved != raw_name:
         log(f"structured tool name remapped: {raw_name!r} -> {resolved!r}")
+
+    # Some local models return a whole DSML block as the structured
+    # arguments, e.g. {"result": "<tool_calls><exec_command>..."}. Codex would
+    # try to execute the markup literally, so unwrap the inner call instead.
+    original_args = fn.get("arguments")
+    unwrapped = unwrap_dsml_tool_call_result(
+        _parse_maybe_json_arguments(original_args), registered_tools, registered_arg_names
+    )
+    if isinstance(unwrapped, dict) and isinstance(unwrapped.get("function"), dict):
+        inner_fn = unwrapped["function"]
+        inner_name = str(inner_fn.get("name") or "").strip()
+        inner_resolved = resolve_tool_name(inner_name, registered_tools)
+        if inner_resolved != inner_name:
+            log(f"structured nested tool name remapped: {inner_name!r} -> {inner_resolved!r}")
+        inner_args, inner_err = validate_tool_arguments_json(
+            inner_fn.get("arguments"),
+            raw_name=inner_name,
+            resolved_name=inner_resolved,
+            registered_arg_names=registered_arg_names,
+        )
+        if inner_err:
+            arg_len = len(_arguments_value_to_json_text(inner_fn.get("arguments")))
+            return (
+                None,
+                f"tool={inner_name or '<missing>'} argument_chars={arg_len} error={inner_err}",
+            )
+        fixed_inner, special_inner_err = _validate_special_tool_args(
+            inner_resolved, inner_args or "{}"
+        )
+        if special_inner_err:
+            return (None, special_inner_err)
+        log(f"unwrapped nested structured tool call {raw_name} -> {inner_resolved}")
+        prepared = dict(tool_call)
+        prepared["function"] = {
+            "name": inner_resolved,
+            "arguments": fixed_inner or inner_args or "{}",
+        }
+        if unwrapped.get("id"):
+            prepared["id"] = unwrapped["id"]
+        return prepared, None
 
     normalized_args, err = validate_tool_arguments_json(
         fn.get("arguments"),
@@ -3772,9 +3923,18 @@ def extract_dsml_tool_calls(
     registered_arg_names: Optional[Dict[str, Set[str]]] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Find XML-ish tool-call blocks in `text`. Returns (cleaned_text, tool_calls)."""
-    if not isinstance(text, str) or "<" not in text:
+    if not isinstance(text, str):
         return text, []
-
+    text = normalize_dsml_display(text)
+    if "<" not in text:
+        return text, []
+    if _ESCAPED_XML_CHAR_RE.match(text.lstrip()):
+        text = (
+            text.replace("&amp;lt;", "<")
+            .replace("&amp;gt;", ">")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+        )
     registered = registered_tools or set()
     extracted: List[Dict[str, Any]] = []
 
@@ -3799,6 +3959,20 @@ def extract_dsml_tool_calls(
         fixed_args, special_err = _validate_special_tool_args(resolved_name, args_json)
         if special_err:
             log(f"dsml tool call blocked: {resolved_name} error={special_err}")
+            continue
+        wrapped = unwrap_dsml_tool_call_result(
+            fixed_args or args_json, registered, registered_arg_names
+        )
+        if isinstance(wrapped, dict) and isinstance(wrapped.get("function"), dict):
+            log(f"unwrapped nested dsml tool call in {resolved_name}")
+            extracted.append(
+                {
+                    "id": wrapped.get("id") or f"call_{uuid.uuid4().hex[:12]}",
+                    "type": "function",
+                    "function": wrapped["function"],
+                    "_raw_name": raw_name,
+                }
+            )
             continue
         extracted.append(
             {
@@ -3874,6 +4048,18 @@ class StreamingDsmlBuffer:
     surfaces complete DSML tool-call blocks as soon as their closing tag is
     seen.
 
+    Handles three encodings transparently:
+
+    * plain DSML markup (``<tool_calls>...``)
+    * display-obfuscated markup (``<____DSML____tool_calls>``)
+    * escaped markup (``&lt;tool_calls&gt;`` / ``\\u003ctool_calls\\u003e``)
+
+    Escaped markup is decoded once per incoming chunk, carrying a partial
+    escape suffix (``&l`` / ``&lt`` / ``\\u00``) into the next chunk before
+    scanning for tags. Decoding only at the start of each chunk avoids pairing
+    an opening entity from a complete tag with a closing entity later in the
+    same content.
+
     Usage:
 
         buf = StreamingDsmlBuffer()
@@ -3889,12 +4075,41 @@ class StreamingDsmlBuffer:
                      # holding onto before we know whether to emit it as
                      # text or as part of a tool-call.
 
+    _PARTIAL_ESCAPE_RE = re.compile(
+        r"(?:&(?:(?:amp;)*(?:l|lt|g|gt)?)?|\\u?(?:0|00|003|003c|003e)?)$",
+        re.IGNORECASE,
+    )
+
     def __init__(self, registered_tools: Optional[Set[str]] = None) -> None:
         self._buffer = ""
         self._depth = 0
         self._scan_pos = 0  # only valid when _depth > 0
+        self._held_escape = ""
         self._open_hint_re = compile_stream_open_hint_re(registered_tools)
         self._close_hint_re = compile_stream_close_hint_re(registered_tools)
+
+    @classmethod
+    def _decode_escaped_chunk(cls, chunk: str) -> Tuple[str, str]:
+        """Decode escaped markup, holding back a trailing partial escape."""
+        if "&amp;" in chunk:
+            chunk = (
+                chunk.replace("&amp;lt;", "<")
+                .replace("&amp;gt;", ">")
+            )
+        if "&lt;" in chunk or "&gt;" in chunk:
+            chunk = chunk.replace("&lt;", "<").replace("&gt;", ">")
+        if "\\u003" in chunk.lower():
+            chunk = (
+                chunk.replace("\\u003c", "<")
+                .replace("\\u003C", "<")
+                .replace("\\u003e", ">")
+                .replace("\\u003E", ">")
+            )
+        match = cls._PARTIAL_ESCAPE_RE.search(chunk)
+        if match and match.group(0):
+            start = match.start()
+            return chunk[:start], chunk[start:]
+        return chunk, ""
 
     def feed(self, chunk: str) -> Tuple[str, List[str]]:
         """
@@ -3904,10 +4119,12 @@ class StreamingDsmlBuffer:
         Tracks open/close tag depth so that nested <invoke> inside an outer
         <function_calls> wrapper does not emit prematurely on the inner close.
         """
-        if not chunk:
+        if not chunk and not self._held_escape:
             return "", []
 
-        self._buffer += chunk
+        decoded, held = self._decode_escaped_chunk(self._held_escape + chunk)
+        self._held_escape = held
+        self._buffer += decoded
         # Display-mangled DSML can arrive split across SSE chunks. Normalize
         # after appending so `<____DS` + `ML____tool_calls>` becomes a normal
         # `<tool_calls>` tag before detection scans the buffer.
@@ -4007,11 +4224,31 @@ class StreamingDsmlBuffer:
         return emit_text, completed
 
     def flush(self) -> Tuple[str, List[str]]:
-        """End-of-stream flush. Anything still buffered is emitted as text."""
-        text = normalize_dsml_display(self._buffer)
+        """End-of-stream flush. Anything still buffered is emitted as text.
+
+        As a rescue, a complete escaped DSML block that stayed in the buffer
+        (e.g. the model streamed raw ``&lt;...&gt;`` entities) is decoded and
+        returned as a completed block so it still executes. Everything else
+        is emitted as ordinary text.
+        """
+        text = self._held_escape + self._buffer
+        self._held_escape = ""
+        text = normalize_dsml_display(text)
+        escaped = text
+        if _ESCAPED_XML_CHAR_RE.match(escaped.lstrip()):
+            escaped = (
+                escaped.replace("&amp;lt;", "<")
+                .replace("&amp;gt;", ">")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+            )
+        else:
+            escaped = ""
         self._buffer = ""
         self._depth = 0
         self._scan_pos = 0
+        if escaped and self._close_hint_re.search(escaped):
+            return "", [escaped]
         return text, []
 
 
