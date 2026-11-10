@@ -17,6 +17,7 @@ These checks pin both halves of the fix:
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -89,6 +90,20 @@ def main() -> None:
     assert thinking_payload.get("thinking") == {"type": "enabled"}, (
         thinking_payload.get("thinking")
     )
+
+    # DeepSeek keeps its low/high/max vocabulary: xhigh (the Codex ceiling)
+    # and max both become DeepSeek's top tier. This is intentionally different
+    # from GGUF, where xhigh stays xhigh for Qwen-compatible templates.
+    os.environ["CODESEEQ_REASONING_EFFORT"] = "xhigh"
+    try:
+        xhigh_payload = bridge.deepseek_payload(
+            {"stream": True}, thinking, [{"role": "user", "content": "hi"}]
+        )
+        assert xhigh_payload.get("reasoning_effort") == "max", (
+            xhigh_payload.get("reasoning_effort")
+        )
+    finally:
+        os.environ.pop("CODESEEQ_REASONING_EFFORT", None)
 
     input_items = [
         {"role": "user", "content": "run it", "type": "message"},

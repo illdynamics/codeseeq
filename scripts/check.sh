@@ -33,7 +33,7 @@ note "sanitizing ambient environment for deterministic checks"
 # Unset them here; every test sets exactly what it needs.
 unset CONTAINER IMAGE DOCKER_HOST PODMAN_HOST 2>/dev/null || true
 unset CODESEEQ_RUNTIME_MODE CODESEEQ_HOST_MODE CODESEEQ_AUTO_BUILD 2>/dev/null || true
-unset CODESEEQ_MODEL CODESEEQ_THINKING 2>/dev/null || true
+unset CODESEEQ_MODEL CODESEEQ_THINKING CODESEEQ_REASONING_EFFORT 2>/dev/null || true
 unset CODESEEQ_APPROVAL_POLICY CODESEEQ_SANDBOX_MODE 2>/dev/null || true
 unset CODESEEQ_BRIDGE_MODE CODESEEQ_RUNTIME_DIR CODESEEQ_LOG_DIR 2>/dev/null || true
 unset CODESEEQ_CONFIG_HOME CODESEEQ_CONFIG_JSON LOCAL_API_KEY 2>/dev/null || true
@@ -211,9 +211,50 @@ CFGEOF
     fail "config wizard (hosted provider) failed"
   fi
   rm -rf "${cfg_tmp}"
+
+  # GGUF provider: the wizard must offer and persist xhigh (the Qwen-safe
+  # llama.cpp tier) so it can be overridden per run with -R.
+  cfg_gguf_tmp="$(mktemp -d)"
+  mkdir -p "${cfg_gguf_tmp}/config"
+  if printf '7\n\n1\n\n' | CODESEEQ_CONFIG_HOME="${cfg_gguf_tmp}/config" ./codeseeq config >/dev/null 2>&1; then
+    if ! _rg -n '"CODESEEQ_REASONING_EFFORT": "xhigh"' "${cfg_gguf_tmp}/config/config.json" >/dev/null 2>&1; then
+      fail "GGUF config wizard did not save CODESEEQ_REASONING_EFFORT=xhigh"
+    fi
+    if ! _rg -n '"CODESEEQ_MODEL": "gguf@auto"' "${cfg_gguf_tmp}/config/config.json" >/dev/null 2>&1; then
+      fail "GGUF config wizard did not save gguf@auto"
+    fi
+  else
+    fail "config wizard (GGUF provider) failed"
+  fi
+  rm -rf "${cfg_gguf_tmp}"
 else
   note "python3 not available; skipping config wizard write check"
 fi
+
+note "checking reasoning effort normalization"
+_reasoning_fn="$(sed -n '/^reasoning_effort_normalize()/,/^}/p' codeseeq)"
+eval "${_reasoning_fn}"
+_reasoning_cases=(
+  "low low"
+  "medium medium"
+  "high high"
+  "xhigh xhigh"
+  "max max"
+  "ultra xhigh"
+  "minimal low"
+)
+for _case in "${_reasoning_cases[@]}"; do
+  _input="${_case%% *}"
+  _expected="${_case#* }"
+  _actual="$(reasoning_effort_normalize "$_input" 2>/dev/null || true)"
+  if [[ "$_actual" != "$_expected" ]]; then
+    fail "reasoning_effort_normalize('${_input}') = '${_actual}', expected '${_expected}'"
+  fi
+done
+if reasoning_effort_normalize "bogus" >/dev/null 2>&1; then
+  fail "reasoning_effort_normalize accepted an unsupported value"
+fi
+unset -f reasoning_effort_normalize
 
 note "checking version documentation"
 version="$(cat VERSION)"

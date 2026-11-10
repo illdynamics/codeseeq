@@ -1,3 +1,26 @@
+## v0.7.1 - 2026-11-10
+
+### Provider-aware reasoning effort for GGUF/Qwen
+
+- **`xhigh` is now preserved for GGUF/llama.cpp.** It was previously
+  normalized to DeepSeek's `max`, which Qwen-family chat templates reject with
+  `Unexpected reasoning effort max. Supported types are xhigh (default),
+  medium, and low.`
+- **Legacy `max`/`high` values no longer crash Qwen templates.** For GGUF,
+  `high`, `max`, and `ultra` are translated to `xhigh`; `medium` and `low`
+  pass through. DeepSeek still receives its native `low`/`high`/`max`
+  vocabulary (`xhigh`/`ultra` -> `max`).
+- **`-R` accepts the full Codex vocabulary** (`low`, `medium`, `high`,
+  `xhigh`, `max`, plus `minimal`/`ultra` aliases) and preserves `xhigh`
+  instead of collapsing it to `high`.
+- **`codeseeq config` now saves a GGUF reasoning default** (`xhigh` /
+  `medium` / `low`) as `CODESEEQ_REASONING_EFFORT` in `config.json`, and the
+  DeepSeek screen accepts `xhigh` as an alias for its `max` tier.
+  Environment variables and `-R` continue to override the saved default.
+- Update README, `.env.example`, architecture/security/troubleshooting docs,
+  and regression tests for the provider-specific reasoning mapping.
+- Version bumped to `v0.7.1`.
+
 ## v0.7.0 - 2026-11-06
 
 ### DeepSeek thinking-mode continuation fix

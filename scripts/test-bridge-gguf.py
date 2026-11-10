@@ -384,7 +384,7 @@ check(
 
 os.environ["CODESEEQ_THINKING"] = "true"
 os.environ["CODESEEQ_GGUF_ENABLE_THINKING"] = "true"
-os.environ["CODESEEQ_REASONING_EFFORT"] = "max"
+os.environ["CODESEEQ_REASONING_EFFORT"] = "xhigh"
 think_spec = bridge.normalize_model(gguf_path)
 check(
     "CODESEEQ_GGUF_ENABLE_THINKING enables GGUF thinking",
@@ -400,12 +400,13 @@ check(
     str(think_payload.get("chat_template_kwargs")),
 )
 check(
-    "GGUF thinking sends reasoning_effort=max",
-    think_payload.get("reasoning_effort") == "max",
+    "GGUF preserves reasoning_effort=xhigh",
+    think_payload.get("reasoning_effort") == "xhigh",
     str(think_payload.get("reasoning_effort")),
 )
 
-# Body reasoning is used when no env/config default is set; xhigh maps to max.
+# Body reasoning is used when no env/config default is set; xhigh stays xhigh
+# for llama.cpp templates (DeepSeek-only max is translated for GGUF).
 os.environ.pop("CODESEEQ_REASONING_EFFORT", None)
 body_payload = bridge.deepseek_payload(
     {"reasoning": {"effort": "xhigh"}},
@@ -413,12 +414,13 @@ body_payload = bridge.deepseek_payload(
     [{"role": "user", "content": "hello"}],
 )
 check(
-    "GGUF maps body reasoning xhigh -> max",
-    body_payload.get("reasoning_effort") == "max",
+    "GGUF maps body reasoning xhigh -> xhigh",
+    body_payload.get("reasoning_effort") == "xhigh",
     str(body_payload.get("reasoning_effort")),
 )
 
-# Existing chat_template_kwargs survive, and env max wins over body low.
+# Qwen-family templates reject max/high; GGUF maps them to xhigh so legacy
+# -R max configurations no longer crash llama.cpp.
 os.environ["CODESEEQ_REASONING_EFFORT"] = "max"
 merged_payload = bridge.deepseek_payload(
     {"reasoning": {"effort": "low"}, "chat_template_kwargs": {"foo": "bar"}},
@@ -432,9 +434,25 @@ check(
 )
 check(
     "GGUF env reasoning effort wins over body",
-    merged_payload.get("reasoning_effort") == "max",
+    merged_payload.get("reasoning_effort") == "xhigh",
     str(merged_payload.get("reasoning_effort")),
 )
+check(
+    "GGUF maps legacy max -> xhigh",
+    merged_payload.get("reasoning_effort") == "xhigh",
+    str(merged_payload.get("reasoning_effort")),
+)
+
+for source, expected in (("medium", "medium"), ("high", "xhigh"), ("ultra", "xhigh")):
+    os.environ["CODESEEQ_REASONING_EFFORT"] = source
+    variant = bridge.deepseek_payload(
+        {}, think_spec, [{"role": "user", "content": "hello"}]
+    )
+    check(
+        f"GGUF maps {source} -> {expected}",
+        variant.get("reasoning_effort") == expected,
+        str(variant.get("reasoning_effort")),
+    )
 
 # Other providers sharing the payload builder must not receive these fields.
 local_spec = bridge.normalize_model("local@reasoning-test")

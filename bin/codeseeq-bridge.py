@@ -2,6 +2,12 @@
 """
 codeseeq-bridge: OpenAI Responses API <-> provider translation bridge.
 
+v0.7.1 patches:
+- GGUF/llama.cpp reasoning effort is provider-aware. xhigh now stays xhigh
+  instead of being converted to DeepSeek's max; high/max/ultra map to xhigh
+  for Qwen-family templates that only accept xhigh/medium/low. DeepSeek keeps
+  its low/high/max vocabulary.
+
 v0.4.7 patches:
 - MLX local-model provider: select a local Apple MLX model directory with
   mlx@<path> (e.g. mlx@~/Qoding/ai/My-Model-mlx-4bit). The bridge lazily
@@ -4108,6 +4114,40 @@ def normalize_deepseek_reasoning_effort(value: Any) -> Optional[str]:
     return None
 
 
+def normalize_gguf_reasoning_effort(value: Any) -> Optional[str]:
+    """Normalize a reasoning-effort value for llama.cpp chat templates.
+
+    Unlike DeepSeek, llama.cpp does not validate/translate
+    ``reasoning_effort``: it passes the string straight into the GGUF model's
+    Jinja chat template. Templates disagree about the accepted vocabulary.
+    Qwen-family templates (for example Qwen 3.8) accept ``xhigh``, ``medium``
+    and ``low`` and raise an exception for ``max``/``high``, which previously
+    crashed the upstream server with::
+
+        Unexpected reasoning effort max. Supported types are xhigh (default),
+        medium, and low.
+
+    CodeSeeq therefore normalizes GGUF effort to that portable three-level
+    vocabulary: ``high``/``max``/``ultra`` become ``xhigh`` (the highest tier
+    those templates expose), while ``medium`` and ``low`` pass through. This
+    keeps ``-R xhigh`` intact and makes legacy ``-R max`` configurations safe
+    for Qwen models.
+
+    Returns ``None`` for empty or unsupported values so the caller can omit
+    the field entirely.
+    """
+    if not isinstance(value, str):
+        return None
+    effort = value.strip().lower()
+    if effort in {"low", "medium", "xhigh"}:
+        return effort
+    if effort in {"high", "max", "ultra"}:
+        return "xhigh"
+    if effort == "minimal":
+        return "low"
+    return None
+
+
 def deepseek_payload(
     body: Dict[str, Any],
     spec: "ModelSpec",
@@ -4241,7 +4281,10 @@ def deepseek_payload(
         # CODESEEQ_REASONING_EFFORT (config default or -R flag) wins over any
         # reasoning.effort that Codex may pass in the Responses body.
         effort = os.environ.get("CODESEEQ_REASONING_EFFORT", "") or reasoning.get("effort", "")
-        effort = normalize_deepseek_reasoning_effort(effort)
+        if spec.provider == PROVIDER_GGUF:
+            effort = normalize_gguf_reasoning_effort(effort)
+        else:
+            effort = normalize_deepseek_reasoning_effort(effort)
         if effort:
             payload["reasoning_effort"] = effort
 

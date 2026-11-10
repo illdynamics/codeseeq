@@ -14,7 +14,7 @@ no API key of any kind) and run against OpenAI's ChatGPT Codex models with the
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.7.0` (from [`VERSION`](./VERSION)).
+Current version: `v0.7.1` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -165,9 +165,11 @@ is looked up on the host filesystem rather than inside the container.
 # re-use your running llama-server, no path or model id to enter
 codeseeq --model gguf@auto -y "hello"
 
-# max reasoning + thinking through llama.cpp's native parameters
-CODESEEQ_REASONING_EFFORT=max CODESEEQ_GGUF_ENABLE_THINKING=true \
-  codeseeq run -m gguf@auto -R max --thinking -y "prompt"
+# max reasoning + thinking through llama.cpp's native parameters.
+# Prefer xhigh for Qwen-family GGUF templates: they accept xhigh/medium/low
+# and reject max. CodeSeeq maps legacy max/high to xhigh automatically.
+CODESEEQ_REASONING_EFFORT=xhigh CODESEEQ_GGUF_ENABLE_THINKING=true \
+  codeseeq run -m gguf@auto -R xhigh --thinking -y "prompt"
 
 # by full path (launch a new llama-server instead)
 codeseeq --model /absolute/path/to/llama-3.2-3b-instruct-q4_k_m.gguf "prompt"
@@ -258,6 +260,29 @@ The resolved context window is applied everywhere consistently: the
 Supported keys: `context_window`, `max_output_tokens`, `n_gpu_layers`,
 `threads`, `parallel`, `port`, `timeout_seconds`, `temperature`,
 `enable_thinking`. Point at a custom file with `CODESEEQ_GGUF_MODELS_JSON`.
+
+#### GGUF reasoning effort (Qwen-safe)
+
+`CODESEEQ_REASONING_EFFORT` / `-R` set the default reasoning effort. The bridge
+keeps each provider's native vocabulary:
+
+- **DeepSeek** accepts `low` / `high` / `max`; CodeSeeq maps `xhigh` (the Codex
+  ceiling) and `ultra` to `max`.
+- **GGUF/llama.cpp** forwards the value to the model's Jinja chat template.
+  Qwen-family templates accept only `xhigh` / `medium` / `low` and raise
+  `Unexpected reasoning effort max` for `max`. CodeSeeq therefore sends
+  `xhigh` for `xhigh`, `high`, `max`, and `ultra`, while `medium` and `low`
+  pass through unchanged.
+
+Set it in `codeseeq config` (the GGUF screen offers `xhigh`, `medium`, `low`),
+in `~/.config/codeseeq/config.json` as `"CODESEEQ_REASONING_EFFORT": "xhigh"`,
+or per run:
+
+```bash
+codeseeq run -m gguf@auto -R xhigh --thinking -y "prompt"
+```
+
+Environment variables and `-R` always override the saved config value.
 
 ### Run a local MLX model (Apple Silicon)
 
@@ -612,7 +637,7 @@ All supported variables are documented in [`.env.example`](./.env.example). Key 
 | `CODESEEQ_MODEL`              | `deepseek-v4-flash`  | Default model (`provider@model`, e.g. `anthropic@claude-sonnet-4`, `local@my-model`, `chatgpt@gpt-5-codex`) |
 | `CODESEEQ_PROVIDER`           | —                    | Optional explicit provider override (deepseek, anthropic, google, grok, venice, local, gguf, mlx, chatgpt) |
 | `CODESEEQ_THINKING`           | `false`              | Enable thinking mode                             |
-| `CODESEEQ_REASONING_EFFORT`   | —                    | Reasoning effort for DeepSeek and GGUF/llama.cpp (`low`, `high`, `max`) |
+| `CODESEEQ_REASONING_EFFORT`   | —                    | Reasoning effort for DeepSeek and GGUF/llama.cpp (`low`, `medium`, `high`, `xhigh`, `max`; DeepSeek maps `xhigh`/`max` to its top tier, GGUF maps `high`/`max` to `xhigh` for Qwen-compatible templates) |
 | `CODESEEQ_APPROVAL_POLICY`    | `on-request`         | Codex approval policy                            |
 | `CODESEEQ_SANDBOX_MODE`       | `workspace-write`    | Codex sandbox mode                               |
 | `CODESEEQ_YOLO`               | `false`              | Bypass approvals and sandbox (equivalent to `-y`)|
@@ -648,7 +673,8 @@ JSON config is read from `CODESEEQ_CONFIG_JSON` if set, otherwise
   "CODESEEQ_MODEL": "anthropic@claude-sonnet-4",
   "CODESEEQ_PROVIDER": "anthropic",
   "ANTHROPIC_API_KEY": "sk-ant-...",
-  "CODESEEQ_BRIDGE_MODE": "process"
+  "CODESEEQ_BRIDGE_MODE": "process",
+  "CODESEEQ_REASONING_EFFORT": "xhigh"
 }
 ```
 
@@ -887,8 +913,8 @@ To pin an exact release, set `CODESEEQ_RELEASE_TAG`. To forbid auto-fetching ent
 set `CODESEEQ_ALLOW_LATEST_RELEASE=false` (a pinned `CODESEEQ_RELEASE_TAG` is then required):
 
 ```bash
-CODESEEQ_RELEASE_TAG=v0.7.0 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
-CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.7.0 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_RELEASE_TAG=v0.7.1 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.7.1 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
 ```
 
 ### Uncensored Mode

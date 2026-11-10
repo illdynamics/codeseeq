@@ -101,16 +101,23 @@ async def run():
         check(True, 'offline explicit endpoint never silently falls back')
     os.environ['GGUF_BASE_URL'] = base + '/v1'
 
-    # llama.cpp reasoning controls: max effort + thinking must reach the
-    # upstream chat-completions payload exactly as requested.
+    # llama.cpp reasoning controls: xhigh effort + thinking must reach the
+    # upstream chat-completions payload exactly as requested. max/high are
+    # translated to xhigh because Qwen-family templates reject them.
     os.environ['CODESEEQ_GGUF_ENABLE_THINKING'] = 'true'
-    os.environ['CODESEEQ_REASONING_EFFORT'] = 'max'
+    os.environ['CODESEEQ_REASONING_EFFORT'] = 'xhigh'
     result = await bridge.responses(FakeRequest({'model':'gguf@auto','stream':False,'input':'reason hard'}))
     check(result.get('status') == 'completed', 'reasoning request completed')
-    check(Handler.requests[-1].get('reasoning_effort') == 'max',
-          'upstream received reasoning_effort=max')
+    check(Handler.requests[-1].get('reasoning_effort') == 'xhigh',
+          'upstream received reasoning_effort=xhigh')
     check(Handler.requests[-1].get('chat_template_kwargs', {}).get('enable_thinking') is True,
           'upstream received chat_template_kwargs.enable_thinking=true')
+
+    os.environ['CODESEEQ_REASONING_EFFORT'] = 'max'
+    result = await bridge.responses(FakeRequest({'model':'gguf@auto','stream':False,'input':'legacy max'}))
+    check(result.get('status') == 'completed', 'legacy max reasoning request completed')
+    check(Handler.requests[-1].get('reasoning_effort') == 'xhigh',
+          'upstream received xhigh for legacy max')
 
     Handler.auth = 'test-key'
     os.environ['GGUF_API_KEY'] = 'test-key'

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `v0.7.0`
+Current version: `v0.7.1`
 
 ## `./codeseeq` is not executable
 
@@ -606,6 +606,33 @@ of inside the container. If the file exists on the host but you still see this
 error, confirm the host runtime prerequisites are installed: the Codex CLI,
 Python with the bridge dependencies, and `llama-server` (or
 `CODESEEQ_GGUF_LLAMA_SERVER_PATH`).
+
+## GGUF/Qwen: `Unexpected reasoning effort max`
+
+Qwen-family GGUF chat templates accept only `xhigh`, `medium`, and `low` for
+`reasoning_effort`. Sending `max` (or `high`) makes `llama-server` return:
+
+```text
+Jinja Exception: Unexpected reasoning effort max.
+Supported types are xhigh (default), medium, and low.
+```
+
+CodeSeeq v0.7.1 translates GGUF efforts to the template-safe vocabulary:
+`high`, `max`, and `ultra` become `xhigh`, while `medium` and `low` pass
+through. If you are on an older build, or want to be explicit, set `xhigh`:
+
+```bash
+# one run
+codeseeq run -m gguf@auto -R xhigh --thinking -y "prompt"
+
+# persisted default
+codeseeq config     # choose GGUF, then xhigh
+
+# or in ~/.config/codeseeq/config.json
+# "CODESEEQ_REASONING_EFFORT": "xhigh"
+```
+
+The environment variable and `-R` always override the saved config value.
 
 ## Reuse an already-running llama-server (don't spawn a second GGUF server)
 
