@@ -1,3 +1,35 @@
+## v0.7.2 - 2026-11-10
+
+### Stop local models stalling on privilege escalation / approval questions
+
+- **Root cause of the LFM failure.** The model called `request_user_input`
+  (or stopped to ask a plain-text "should I proceed / approve this SSH or
+  sudo command?" question). Codex v0.154+ answers
+  `request_user_input is unavailable in Default mode`, and with
+  `approval_policy = "never"` it *also* rejects `sandbox_permissions:
+  "require_escalated"` with `you cannot request additional permissions unless
+  the approval policy is OnRequest` — regardless of `danger-full-access`.
+  The model then concluded it had no permission, even though approvals/sandbox
+  already allow the command. This is model behavior surfaced by the bridge,
+  not a sandbox regression.
+- **Bridge blocks out-of-mode `request_user_input`.** Instead of forwarding a
+  call that Codex is guaranteed to reject, the bridge returns actionable
+  feedback ("unavailable in Default mode; call `exec_command` without
+  `sandbox_permissions` escalation and let the configured policy enforce
+  permission; report exact errors"). Opt out with
+  `CODESEEQ_BRIDGE_BLOCK_DEFAULT_MODE_INPUT=false`.
+- **Permission-model steering.** The tool-steering system prompt now tells
+  every model to never use `request_user_input` (or prose questions) for
+  command approval, SSH logins, `sudo`/root, privilege escalation, or
+  sandbox/network access; to run `exec_command` directly; and not to retry
+  `sandbox_permissions` escalation when approvals are `never`.
+- **Regression test:** `scripts/test-bridge-request-user-input.py`, wired into
+  `scripts/check.sh`.
+- **Docs:** TROUBLESHOOTING gained "Local Model Asks For Permission Instead
+  Of Running The Command" explaining the Apex-vs-LFM difference and the
+  `--yolo` / key-check workflow. README documents the two new bridge env vars.
+- Version bumped to `v0.7.2`.
+
 ## v0.7.1 - 2026-11-10
 
 ### Provider-aware reasoning effort for GGUF/Qwen

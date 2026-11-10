@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Current version: `v0.7.1`
+Current version: `v0.7.2`
 
 ## `./codeseeq` is not executable
 
@@ -204,6 +204,56 @@ These forms should trigger host Codex mode:
 ```
 
 In that mode CodeSeeq starts a bridge (process or container), then runs local host `codex` with `CODEX_HOME=$PWD/.codeseeq`.
+
+## Local Model Asks For Permission Instead Of Running The Command
+
+Symptoms: with `sandbox_mode = "danger-full-access"` and
+`approval_policy = "never"` the model stops and says something like
+"request_user_input is unavailable in Default mode" / "I cannot execute
+privileged actions", and offers to retry SSH or `sudo` only with approval.
+Another model (for example Apex) running the same command works.
+
+This is model behavior amplified by the bridge, not a missing permission:
+
+- **`request_user_input` is a Plan-mode-only tool.** Codex v0.154+ rejects
+  it in Default mode with
+  `request_user_input is unavailable in Default mode`. Models that reach for
+  it to ask "should I proceed?" therefore dead-end.
+- **`approval_policy = "never"` forbids escalation.** In never mode Codex
+  rejects `sandbox_permissions: "require_escalated"` with
+  `you cannot request additional permissions unless the approval policy is
+  OnRequest`, even under `danger-full-access`. Approvals disabled means "run
+  it or fail"; it does not mean "auto-approve an escalation request".
+- **Steering matters more than capabilities.** Some models (Apex-class) just
+  run the command; others (small local LFM/GGUF models) interpret "elevated
+  privileges" as needing an approval dialog.
+
+Since v0.7.2 the bridge:
+
+1. Adds an explicit permission-model rule to the tool-steering system prompt:
+   never ask for approval via `request_user_input` or plain text, never use
+   `sandbox_permissions` escalation under `never`, run `exec_command` as-is
+   and report exact errors.
+2. Blocks any `request_user_input` call the model still emits before it
+   reaches Codex, and returns actionable feedback instead of the fatal
+   mode error (set `CODESEEQ_BRIDGE_BLOCK_DEFAULT_MODE_INPUT=false` to
+   restore the old forward-and-let-Codex-reject behavior).
+
+What to check if a local model still refuses:
+
+```bash
+./codeseeq --print-config | grep -E 'approval_policy|sandbox_mode'
+./codeseeq --yolo "ssh root@10.20.30.16 whoami"
+```
+
+- Prefer `--yolo` (danger host mode) when you actually need host-level SSH,
+  `sudo`, or `-o StrictHostKeyChecking` style commands; container runtimes
+  can still isolate networking/keys.
+- Verify the SSH failure itself (`Permission denied (publickey)`) is real:
+  `ssh -vvv -i ~/.ssh/your_key root@host` — a wrong key fails for every model.
+- If a model keeps refusing, it is not a sandbox problem: run it with more
+  explicit instructions or switch models. Apex-class models follow the
+  permission rule more reliably than small LFM/GGUF models.
 
 ## Local Codex Missing In Danger Mode
 
@@ -617,7 +667,7 @@ Jinja Exception: Unexpected reasoning effort max.
 Supported types are xhigh (default), medium, and low.
 ```
 
-CodeSeeq v0.7.1 translates GGUF efforts to the template-safe vocabulary:
+CodeSeeq v0.7.1+ translates GGUF efforts to the template-safe vocabulary:
 `high`, `max`, and `ultra` become `xhigh`, while `medium` and `low` pass
 through. If you are on an older build, or want to be explicit, set `xhigh`:
 

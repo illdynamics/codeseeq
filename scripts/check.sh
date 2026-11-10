@@ -295,6 +295,11 @@ if ! scripts/test-bridge-env-names.py; then
   fail "wrapper/bridge per-model env-name agreement test failed"
 fi
 
+note "checking request_user_input gating outside Plan mode"
+if ! scripts/test-bridge-request-user-input.py; then
+  fail "request_user_input gating regression test failed"
+fi
+
 note "checking bridge chat-endpoint derivation under base-URL overrides"
 if ! scripts/test-bridge-chat-url.py; then
   fail "bridge chat-endpoint derivation regression test failed"

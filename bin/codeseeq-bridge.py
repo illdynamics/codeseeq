@@ -2653,17 +2653,24 @@ def _validate_special_tool_args(
     if not isinstance(args, dict):
         return arguments_json, None
 
-    # request_user_input should only be called in Plan mode. DeepSeek
-    # often calls it in Default mode. If we detect this is likely a
-    # default-mode call (no goal context), block it gracefully.
+    # request_user_input should only be called in Plan mode. Local models
+    # (and DeepSeek in production default mode) frequently call it in Default
+    # mode, often to ask for permission. Codex rejects that call with
+    # "request_user_input is unavailable in Default mode" and the model then
+    # stalls, believing it cannot continue. Block it here with actionable
+    # feedback instead of forwarding a call that is guaranteed to fail.
     if resolved_name.lower() == "request_user_input":
-        # Let it through if args look complete; Codex will handle the
-        # mode check. But flag it with a log.
-        if not args.get("questions"):
-            args["questions"] = [
-                {"id": "input", "header": "Input",
-                 "question": "Please provide additional information:"}
-            ]
+        if env_bool("CODESEEQ_BRIDGE_BLOCK_DEFAULT_MODE_INPUT", True):
+            log("request_user_input blocked before Codex: unavailable outside Plan mode "
+                f"(args={json.dumps(args, ensure_ascii=False)[:200]})")
+            return arguments_json, (
+                "request_user_input is unavailable in Default mode. Do not ask the "
+                "user for approval or input via a tool. If a command needs to run, "
+                "call exec_command without sandbox_permissions escalation and let "
+                "the configured approval policy/sandbox enforce permission; if a "
+                "command fails, report the exact error and continue with a different "
+                "non-interactive approach."
+            )
         log(f"request_user_input forwarded (Codex mode-check will apply): {json.dumps(args, ensure_ascii=False)[:200]}")
         return json.dumps(args, ensure_ascii=False), None
 
@@ -4048,7 +4055,19 @@ TOOL_STEERING_INSTRUCTION_TEMPLATE = (
     'to write_stdin for subsequent input to the same process.\n'
     '- exec_command always requires \'tty\': true to keep stdin open '
     'for subsequent write_stdin calls. Always include \'tty\': true '
-    'in every exec_command call.'
+    'in every exec_command call.\n'
+    '- Permission model: never use request_user_input (or plain-text questions) '
+    'to ask the user to approve commands, SSH logins, sudo/root, privilege '
+    'escalation, or sandbox/network access. The effective approval policy and '
+    'sandbox mode already decide whether a command may run; just call '
+    'exec_command and let Codex enforce them. If a command fails (e.g. SSH '
+    'Permission denied (publickey)), report the exact error and try the next '
+    'non-interactive approach instead of stopping to ask for approval.\n'
+    '- When approvals are disabled (approval_policy = "never") Codex rejects '
+    'sandbox_permissions escalation outright ("you cannot request additional '
+    'permissions unless the approval policy is OnRequest"). Do not retry such '
+    'commands with sandbox_permissions escalation; run them without it or use '
+    'a host/danger-full-access session.'
 )
 def build_tool_steering_message(tool_names: List[str]) -> Optional[Dict[str, Any]]:
     if not tool_names:
