@@ -57,6 +57,11 @@
           "description": "Low reasoning effort"
         },
         {
+          "level": "medium",
+          "effort": "medium",
+          "description": "Medium reasoning effort"
+        },
+        {
           "level": "high",
           "effort": "high",
           "description": "High reasoning effort"
@@ -64,7 +69,12 @@
         {
           "level": "xhigh",
           "effort": "xhigh",
-          "description": "Max reasoning effort"
+          "description": "Extra-high reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "max",
+          "description": "Max reasoning effort (DeepSeek top tier)"
         }
       ],
       "input_modalities": [
@@ -73,7 +83,8 @@
       "supports_search_tool": true,
       "support_verbosity": false,
       "experimental_supported_tools": [],
-      "reasoning_summary": "auto"
+      "reasoning_summary": "auto",
+      "default_reasoning_level": "max"
     },
     {
       "slug": "deepseek@deepseek-v4-pro",
@@ -132,6 +143,11 @@
           "description": "Low reasoning effort"
         },
         {
+          "level": "medium",
+          "effort": "medium",
+          "description": "Medium reasoning effort"
+        },
+        {
           "level": "high",
           "effort": "high",
           "description": "High reasoning effort"
@@ -139,7 +155,12 @@
         {
           "level": "xhigh",
           "effort": "xhigh",
-          "description": "Max reasoning effort"
+          "description": "Extra-high reasoning effort"
+        },
+        {
+          "level": "max",
+          "effort": "max",
+          "description": "Max reasoning effort (DeepSeek top tier)"
         }
       ],
       "input_modalities": [
@@ -148,7 +169,8 @@
       "supports_search_tool": true,
       "support_verbosity": false,
       "experimental_supported_tools": [],
-      "reasoning_summary": "auto"
+      "reasoning_summary": "auto",
+      "default_reasoning_level": "max"
     },
     {
       "slug": "qwibus@qwibus-qwikk",

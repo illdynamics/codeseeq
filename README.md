@@ -14,7 +14,7 @@ no API key of any kind) and run against OpenAI's ChatGPT Codex models with the
   <img src="./codeseeq.jpg" alt="CodeSeeq" width="80%">
 </p>
 
-Current version: `v0.7.3` (from [`VERSION`](./VERSION)).
+Current version: `v0.7.4` (from [`VERSION`](./VERSION)).
 
 Release notes: [`RELEASE-NOTES.md`](./RELEASE-NOTES.md)
 
@@ -261,28 +261,57 @@ Supported keys: `context_window`, `max_output_tokens`, `n_gpu_layers`,
 `threads`, `parallel`, `port`, `timeout_seconds`, `temperature`,
 `enable_thinking`. Point at a custom file with `CODESEEQ_GGUF_MODELS_JSON`.
 
-#### GGUF reasoning effort (Qwen-safe)
+#### Reasoning effort (`-R` / `--reasoning`)
 
-`CODESEEQ_REASONING_EFFORT` / `-R` set the default reasoning effort. The bridge
-keeps each provider's native vocabulary:
+`-R` / `--reasoning` sets the reasoning effort for a run. It accepts
+`low`, `medium`, `high`, `xhigh`, `max`, and `unset`:
 
-- **DeepSeek** accepts `low` / `high` / `max`; CodeSeeq maps `xhigh` (the Codex
-  ceiling) and `ultra` to `max`.
+```bash
+codeseeq run -m deepseek-v4-pro-thinking -R max -y "prompt"
+```
+
+- `-R max` and `-R xhigh` both reach DeepSeek's top API tier (`max`).
+- `-R unset` forces the provider default (nothing is sent).
+- Omitting `-R` lets an explicit `CODESEEQ_REASONING_EFFORT` /
+  `CODESEEQ_DEFAULT_REASONING_EFFORT` win. If nothing is set, DeepSeek
+  **thinking** models default to `max`; other models use the provider default.
+
+Precedence (highest first): `-R` → `CODESEEQ_REASONING_EFFORT` →
+`CODESEEQ_DEFAULT_REASONING_EFFORT` → DeepSeek-thinking `max` default →
+provider default.
+
+CodeSeeq forwards the resolved value to **both** Codex
+(`-c model_reasoning_effort=...`, with `max` sent as Codex's `xhigh` ceiling)
+and the bridge, so the client and API agree. The bridge keeps each provider's
+native vocabulary:
+
+- **DeepSeek** accepts `low` / `high` / `max`; CodeSeeq maps `xhigh` and
+  `ultra` to `max`, and `medium` to `high`.
 - **GGUF/llama.cpp** forwards the value to the model's Jinja chat template.
   Qwen-family templates accept only `xhigh` / `medium` / `low` and raise
   `Unexpected reasoning effort max` for `max`. CodeSeeq therefore sends
   `xhigh` for `xhigh`, `high`, `max`, and `ultra`, while `medium` and `low`
   pass through unchanged.
 
-Set it in `codeseeq config` (the GGUF screen offers `xhigh`, `medium`, `low`),
-in `~/.config/codeseeq/config.json` as `"CODESEEQ_REASONING_EFFORT": "xhigh"`,
-or per run:
+Save a persistent default in `codeseeq config`, or in
+`~/.config/codeseeq/config.json`:
 
-```bash
-codeseeq run -m gguf@auto -R xhigh --thinking -y "prompt"
+```json
+{
+  "CODESEEQ_DEFAULT_REASONING_EFFORT": "max"
+}
 ```
 
-Environment variables and `-R` always override the saved config value.
+`CODESEEQ_REASONING_EFFORT` (env or config.json) sets the effort directly and
+is overridden only by `-R`. `CODESEEQ_DEFAULT_REASONING_EFFORT` is a fallback
+used only when neither `-R` nor `CODESEEQ_REASONING_EFFORT` is set.
+
+**Maximum reasoning in one command** (max reasoning + thinking + host runtime):
+
+```bash
+CODESEEQ_ALLOW_UPSTREAM_CODEX_SERVICES=true CODESEEQ_RUNTIME_MODE=host \
+  codeseeq -m deepseek-v4-pro-thinking -R max -y run "prompt"
+```
 
 ### Run a local MLX model (Apple Silicon)
 
@@ -639,7 +668,8 @@ All supported variables are documented in [`.env.example`](./.env.example). Key 
 | `CODESEEQ_MODEL`              | `deepseek-v4-flash`  | Default model (`provider@model`, e.g. `anthropic@claude-sonnet-4`, `local@my-model`, `chatgpt@gpt-5-codex`) |
 | `CODESEEQ_PROVIDER`           | —                    | Optional explicit provider override (deepseek, anthropic, google, grok, venice, local, gguf, mlx, chatgpt) |
 | `CODESEEQ_THINKING`           | `false`              | Enable thinking mode                             |
-| `CODESEEQ_REASONING_EFFORT`   | —                    | Reasoning effort for DeepSeek and GGUF/llama.cpp (`low`, `medium`, `high`, `xhigh`, `max`; DeepSeek maps `xhigh`/`max` to its top tier, GGUF maps `high`/`max` to `xhigh` for Qwen-compatible templates) |
+| `CODESEEQ_REASONING_EFFORT`   | —                    | Reasoning effort for DeepSeek and GGUF/llama.cpp (`low`, `medium`, `high`, `xhigh`, `max`, `unset`; DeepSeek maps `xhigh`/`max` to its top tier, GGUF maps `high`/`max` to `xhigh` for Qwen-compatible templates) |
+| `CODESEEQ_DEFAULT_REASONING_EFFORT` | —             | Fallback reasoning effort used only when neither `-R` nor `CODESEEQ_REASONING_EFFORT` is set (`low`, `medium`, `high`, `xhigh`, `max`, `unset`) |
 | `CODESEEQ_APPROVAL_POLICY`    | `on-request`         | Codex approval policy                            |
 | `CODESEEQ_SANDBOX_MODE`       | `workspace-write`    | Codex sandbox mode                               |
 | `CODESEEQ_YOLO`               | `false`              | Bypass approvals and sandbox (equivalent to `-y`)|
@@ -915,8 +945,8 @@ To pin an exact release, set `CODESEEQ_RELEASE_TAG`. To forbid auto-fetching ent
 set `CODESEEQ_ALLOW_LATEST_RELEASE=false` (a pinned `CODESEEQ_RELEASE_TAG` is then required):
 
 ```bash
-CODESEEQ_RELEASE_TAG=v0.7.3 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
-CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.7.3 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_RELEASE_TAG=v0.7.4 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
+CODESEEQ_ALLOW_LATEST_RELEASE=false CODESEEQ_RELEASE_TAG=v0.7.4 curl -fsSL https://raw.githubusercontent.com/illdynamics/codeseeq/main/scripts/install.sh | bash
 ```
 
 ### Uncensored Mode

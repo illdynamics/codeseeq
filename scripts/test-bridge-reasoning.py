@@ -105,6 +105,29 @@ def main() -> None:
     finally:
         os.environ.pop("CODESEEQ_REASONING_EFFORT", None)
 
+    # Every first-class level maps to a valid DeepSeek effort, and "unset"
+    # (or empty) omits the field so DeepSeek applies its own default.
+    for level, expected in (
+        ("low", "low"),
+        ("medium", "high"),
+        ("high", "high"),
+        ("xhigh", "max"),
+        ("max", "max"),
+        ("unset", None),
+        ("", None),
+    ):
+        os.environ["CODESEEQ_REASONING_EFFORT"] = level
+        try:
+            payload = bridge.deepseek_payload(
+                {"stream": True}, thinking, [{"role": "user", "content": "hi"}]
+            )
+            assert payload.get("reasoning_effort") == expected, (
+                level,
+                payload.get("reasoning_effort"),
+            )
+        finally:
+            os.environ.pop("CODESEEQ_REASONING_EFFORT", None)
+
     input_items = [
         {"role": "user", "content": "run it", "type": "message"},
         {

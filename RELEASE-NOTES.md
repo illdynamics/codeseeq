@@ -1,3 +1,21 @@
+## v0.7.4 - 2026-11-23
+
+- `-R/--reasoning` now forwards the resolved effort to Codex itself
+  (`-c model_reasoning_effort=...`), not just the bridge, so the Codex client
+  and the upstream API agree. `max` is sent to Codex as its `xhigh` ceiling and
+  reaches DeepSeek as `max`.
+- Reasoning levels are first-class everywhere: `low`, `medium`, `high`,
+  `xhigh`, `max`, and `unset`. The DeepSeek thinking model catalog now
+  advertises all five levels plus `max` as its default.
+- New `CODESEEQ_DEFAULT_REASONING_EFFORT` config fallback, used only when
+  neither `-R` nor `CODESEEQ_REASONING_EFFORT` is set.
+- DeepSeek thinking models (`deepseek-v4-*-thinking`) default to `max` when no
+  effort is specified, so `codeseeq -m deepseek-v4-pro-thinking -y run ...`
+  runs with full reasoning. `-R unset` opts back into the provider default.
+- `codeseeq config` DeepSeek screen offers `unset`, `low`, `medium`, `high`,
+  `xhigh`, and `max`.
+- Version bumped to `v0.7.4`.
+
 ## v0.7.3 - 2026-11-10
 
 ### Execute DSML calls the local model wrapped in extra XML
